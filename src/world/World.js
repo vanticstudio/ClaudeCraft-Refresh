@@ -14,6 +14,7 @@ export class World {
     this.seedString = seedString;
     this.worldSeed = hashString(seedString);
     this.chunks = new Map();            // "cx,cz" → Chunk
+    this.chunkVersion = 0;              // bumped on add/remove (cache invalidation)
     this.time = 0;                      // worldTime (persisted; DayNight advances)
     this.skyDarken = 0;                 // int 0–11, DayNight recomputes per tick
     this.playerChunk = null;            // {cx, cz}, Game sets each tick
@@ -27,10 +28,18 @@ export class World {
   }
 
   // ---------------------------------------------------------------- reads
+  // chunkVersion bumps on chunk add/remove so 1-entry caches can invalidate.
 
   getChunkAt(x, z) {
-    const c = this.chunks.get(chunkKey(x >> 4, z >> 4));
-    return c && c.state >= ChunkState.GENERATED ? c : null;
+    const cx = x >> 4, cz = z >> 4;
+    if (this._cc && this._ccx === cx && this._ccz === cz && this._ccv === this.chunkVersion) {
+      return this._cc;
+    }
+    const c = this.chunks.get(chunkKey(cx, cz));
+    const valid = c && c.state >= ChunkState.GENERATED ? c : null;
+    this._cc = valid;
+    this._ccx = cx; this._ccz = cz; this._ccv = this.chunkVersion;
+    return valid;
   }
 
   isLoaded(x, z) { return this.getChunkAt(x, z) !== null; }

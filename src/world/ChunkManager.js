@@ -132,6 +132,7 @@ export class ChunkManager {
       if (this.world.chunks.has(key)) continue;
       const chunk = new Chunk(cx, cz);
       this.world.chunks.set(key, chunk);
+      this.world.chunkVersion++;
       if (this.save?.hasChunk(key)) {
         // saved chunks skip the worker entirely (01 §9)
         const jobId = this.nextJobId++;
@@ -219,6 +220,7 @@ export class ChunkManager {
       this.game?.onChunkUnloading?.(chunk);       // discard its entities
       this.disposeChunkMeshes(chunk);
       this.world.chunks.delete(chunk.key);
+      this.world.chunkVersion++;
       this.remeshQueue.delete(chunk.key);
     }
   }

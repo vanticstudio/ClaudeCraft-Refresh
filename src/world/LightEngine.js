@@ -59,10 +59,20 @@ export class LightEngine {
   }
 
   // ---- raw cell access (drops writes into missing / ungenerated chunks) ----
+  // BFS locality is high, so a 1-entry chunk cache removes almost every
+  // string-keyed Map lookup (the initialLight hot path).
 
   chunkAt(x, z) {
-    const c = this.world.chunks.get(chunkKey(x >> 4, z >> 4));
-    return c && c.state >= ChunkState.GENERATED ? c : null;
+    const cx = x >> 4, cz = z >> 4;
+    const w = this.world;
+    if (this._cc && this._ccx === cx && this._ccz === cz && this._ccv === w.chunkVersion) {
+      return this._cc;
+    }
+    const c = w.chunks.get(chunkKey(cx, cz));
+    const valid = c && c.state >= ChunkState.GENERATED ? c : null;
+    this._cc = valid;
+    this._ccx = cx; this._ccz = cz; this._ccv = w.chunkVersion;
+    return valid;
   }
 
   getLightArr(channel, c) { return channel === SKY ? c.skyLight : c.blockLight; }

@@ -212,7 +212,7 @@ export class Game {
     }
 
     const dt = performance.now() - tickStart;
-    if (dt > 40) {
+    if (dt > 40 && this.state !== STATE.LOADING) {
       if (++this.slowTicks >= 2) console.warn(`[game] slow tick: ${dt.toFixed(1)} ms`);
     } else this.slowTicks = 0;
   }
