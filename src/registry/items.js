@@ -1,0 +1,290 @@
+// Canonical item registry (06 §7), crafting recipes (06 §10), smelting (06
+// §11.2) and fuel values (06 §11.3). Item ids 256–345; block-items share
+// their block's id (0–66).
+
+import { BLOCKS, B } from './blocks.js';
+
+export const ITEMS = new Map();
+export const NAME_TO_ID = new Map();
+
+function defItem(id, name, opts = {}) {
+  const displayName = opts.displayName
+    ?? name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  const item = {
+    id, name, displayName,
+    stack: 64,
+    kind: 'material',
+    toolClass: null,
+    tier: null,
+    speedMult: 1,
+    attackDamage: 1,
+    attackSpeed: 4.0,       // hand / any non-tool (05 §13.2)
+    durability: 0,
+    armorSlot: null,
+    armorPoints: 0,
+    toughness: 0,
+    hunger: 0,
+    saturation: 0,
+    poisonChance: 0,
+    fuel: 0,
+    place: null,            // block id placed by right-click
+    placesAs: null,         // 'bed' | 'door' (two-block placers)
+    plantsCrop: null,       // crop block id for seeds/carrot/potato
+    bucketFluid: undefined, // null = empty bucket, 'water' | 'lava'
+    sprite: `item_${name}`,
+    debugOnly: false,
+    ...opts,
+  };
+  ITEMS.set(id, item);
+  if (!NAME_TO_ID.has(name)) NAME_TO_ID.set(name, id);
+  return item;
+}
+
+// Block-item fuel values (06 §11.3)
+const FUEL_BLOCKS = {
+  [B.COAL_BLOCK]: 16000,
+  [B.OAK_LOG]: 300, [B.BIRCH_LOG]: 300, [B.SPRUCE_LOG]: 300,
+  [B.OAK_PLANKS]: 300, [B.BIRCH_PLANKS]: 300, [B.SPRUCE_PLANKS]: 300,
+  [B.CRAFTING_TABLE]: 300, [B.CHEST]: 300, [B.BOOKSHELF]: 300,
+  [B.LADDER]: 300, [B.OAK_FENCE]: 300,
+  [B.OAK_SAPLING]: 100, [B.BIRCH_SAPLING]: 100, [B.SPRUCE_SAPLING]: 100,
+  [B.WOOL_WHITE]: 100, [B.WOOL_RED]: 100, [B.WOOL_BLUE]: 100, [B.WOOL_BLACK]: 100,
+};
+
+// --- auto block-items (06 §1) ---
+const NO_BLOCK_ITEM = new Set([
+  B.AIR, B.WATER, B.LAVA, B.FIRE, B.FURNACE_LIT,
+  B.WHEAT_CROP, B.CARROT_CROP, B.POTATO_CROP,
+  B.BED_BLOCK, B.OAK_DOOR, B.FARMLAND,
+]);
+const DEBUG_ONLY = new Set([B.BEDROCK, B.GLOWSTONE, B.WOOL_RED, B.WOOL_BLUE, B.WOOL_BLACK]);
+
+for (const block of BLOCKS) {
+  if (!block || NO_BLOCK_ITEM.has(block.id)) continue;
+  defItem(block.id, block.name, {
+    displayName: block.displayName,
+    kind: 'block',
+    place: block.id,
+    fuel: FUEL_BLOCKS[block.id] ?? 0,
+    sprite: null,
+    debugOnly: DEBUG_ONLY.has(block.id),
+  });
+}
+
+// --- tools & weapons (06 §7.1; attack speed 05 §13.2) ---
+const TIERS = {
+  wooden: { tier: 0, speedMult: 2, dur: 59 },
+  stone:  { tier: 1, speedMult: 4, dur: 131 },
+  iron:   { tier: 2, speedMult: 6, dur: 250 },
+  golden: { tier: 0, speedMult: 12, dur: 32 },   // gold harvests as tier 0, speed 12
+  diamond:{ tier: 3, speedMult: 8, dur: 1561 },
+};
+const SWORD_DMG = { wooden: 4, stone: 5, iron: 6, golden: 4, diamond: 7 };
+const AXE_DMG = { wooden: 7, stone: 9, iron: 9, golden: 7, diamond: 9 };
+const PICK_DMG = { wooden: 2, stone: 3, iron: 4, golden: 2, diamond: 5 };
+const SHOVEL_DMG = { wooden: 2.5, stone: 3.5, iron: 4.5, golden: 2.5, diamond: 5.5 };
+const AXE_SPD = { wooden: 0.8, stone: 0.8, iron: 0.9, golden: 1.0, diamond: 1.0 };
+const HOE_SPD = { wooden: 1.0, stone: 2.0, iron: 3.0, golden: 1.0, diamond: 4.0 };
+
+let id = 256;
+for (const mat of ['wooden', 'stone', 'iron', 'golden', 'diamond']) {
+  const t = TIERS[mat];
+  const base = { stack: 1, tier: t.tier, speedMult: t.speedMult, durability: t.dur };
+  defItem(id++, `${mat}_sword`, { ...base, kind: 'sword', toolClass: 'sword', speedMult: 1, attackDamage: SWORD_DMG[mat], attackSpeed: 1.6, fuel: mat === 'wooden' ? 200 : 0 });
+  defItem(id++, `${mat}_pickaxe`, { ...base, kind: 'tool', toolClass: 'pickaxe', attackDamage: PICK_DMG[mat], attackSpeed: 1.2, fuel: mat === 'wooden' ? 200 : 0 });
+  defItem(id++, `${mat}_axe`, { ...base, kind: 'tool', toolClass: 'axe', attackDamage: AXE_DMG[mat], attackSpeed: AXE_SPD[mat], fuel: mat === 'wooden' ? 200 : 0 });
+  defItem(id++, `${mat}_shovel`, { ...base, kind: 'tool', toolClass: 'shovel', attackDamage: SHOVEL_DMG[mat], attackSpeed: 1.0, fuel: mat === 'wooden' ? 200 : 0 });
+  defItem(id++, `${mat}_hoe`, { ...base, kind: 'tool', toolClass: 'hoe', attackDamage: 1, attackSpeed: HOE_SPD[mat], fuel: mat === 'wooden' ? 200 : 0 });
+}
+// ids 256–280 consumed above
+defItem(281, 'bow', { kind: 'bow', stack: 1, durability: 384, fuel: 300 });
+defItem(282, 'arrow', { kind: 'material' });
+defItem(283, 'shears', { kind: 'shears', toolClass: 'shears', stack: 1, durability: 238, speedMult: 15, attackDamage: 1 });
+defItem(284, 'flint_and_steel', { displayName: 'Flint and Steel', kind: 'flint_and_steel', stack: 1, durability: 64, attackDamage: 1 });
+defItem(285, 'bucket', { kind: 'bucket', stack: 16, bucketFluid: null });
+defItem(286, 'water_bucket', { kind: 'bucket', stack: 1, bucketFluid: 'water' });
+defItem(287, 'lava_bucket', { kind: 'bucket', stack: 1, bucketFluid: 'lava', fuel: 20000 });
+
+// --- armor (06 §7.2) ---
+const ARMOR = [
+  ['leather', [[55, 1], [80, 3], [75, 2], [65, 1]], 0],
+  ['golden',  [[77, 2], [112, 5], [105, 3], [91, 1]], 0],
+  ['iron',    [[165, 2], [240, 6], [225, 5], [195, 2]], 0],
+  ['diamond', [[363, 3], [528, 8], [495, 6], [429, 3]], 2],
+];
+const PIECES = ['helmet', 'chestplate', 'leggings', 'boots'];
+id = 288;
+for (const [mat, pieces, tough] of ARMOR)
+  for (let slot = 0; slot < 4; slot++) {
+    const [dur, pts] = pieces[slot];
+    defItem(id++, `${mat}_${PIECES[slot]}`, {
+      kind: 'armor', stack: 1, durability: dur,
+      armorSlot: slot, armorPoints: pts, toughness: tough,
+    });
+  }
+// ids 288–303 consumed above
+
+// --- food (06 §7.3) ---
+const FOOD = [
+  [304, 'apple', 4, 2.4, 0],
+  [305, 'bread', 5, 6.0, 0],
+  [306, 'porkchop', 3, 1.8, 0, 'Raw Porkchop'],
+  [307, 'cooked_porkchop', 8, 12.8, 0],
+  [308, 'beef', 3, 1.8, 0, 'Raw Beef'],
+  [309, 'cooked_beef', 8, 12.8, 0, 'Steak'],
+  [310, 'chicken', 2, 1.2, 0.3, 'Raw Chicken'],
+  [311, 'cooked_chicken', 6, 7.2, 0],
+  [312, 'mutton', 2, 1.2, 0, 'Raw Mutton'],
+  [313, 'cooked_mutton', 6, 9.6, 0],
+  [314, 'rotten_flesh', 4, 0.8, 0.8],
+  [315, 'carrot', 3, 3.6, 0],
+  [316, 'potato', 1, 0.6, 0],
+  [317, 'baked_potato', 5, 6.0, 0],
+];
+for (const [fid, name, hunger, sat, poison, display] of FOOD)
+  defItem(fid, name, {
+    kind: 'food', hunger, saturation: sat, poisonChance: poison,
+    ...(display ? { displayName: display } : {}),
+  });
+ITEMS.get(315).plantsCrop = B.CARROT_CROP;
+ITEMS.get(316).plantsCrop = B.POTATO_CROP;
+
+// --- materials & misc (06 §7.4) ---
+defItem(318, 'stick', { fuel: 100 });
+defItem(319, 'coal', { fuel: 1600 });
+defItem(320, 'charcoal', { fuel: 1600 });
+defItem(321, 'raw_iron', {});
+defItem(322, 'iron_ingot', {});
+defItem(323, 'raw_gold', {});
+defItem(324, 'gold_ingot', {});
+defItem(325, 'diamond', {});
+defItem(326, 'flint', {});
+defItem(327, 'string', {});
+defItem(328, 'feather', {});
+defItem(329, 'gunpowder', {});
+defItem(330, 'leather', {});
+defItem(331, 'bone', {});
+defItem(332, 'bone_meal', {});
+defItem(333, 'egg', { kind: 'throwable', stack: 16 });
+defItem(334, 'ender_pearl', { kind: 'throwable', stack: 16 });
+defItem(335, 'snowball', { kind: 'throwable', stack: 16 });
+defItem(336, 'wheat', {});
+defItem(337, 'wheat_seeds', { kind: 'seed', plantsCrop: B.WHEAT_CROP });
+defItem(338, 'sugar_cane', { place: B.SUGAR_CANE_BLOCK });
+defItem(339, 'sugar', {});
+defItem(340, 'paper', {});
+defItem(341, 'book', {});
+defItem(342, 'redstone', {});
+defItem(343, 'lapis_lazuli', {});
+defItem(344, 'bed', { kind: 'bed', stack: 1, placesAs: 'bed' });
+defItem(345, 'oak_door', { kind: 'door', placesAs: 'door' });
+
+export const idOf = name => {
+  const v = NAME_TO_ID.get(name);
+  if (v === undefined) throw new Error(`unknown item/block name: ${name}`);
+  return v;
+};
+export const itemById = i => ITEMS.get(i);
+
+// ========================= CRAFTING (06 §10) =========================
+// Shaped: {shaped:true, pattern:['MMM','.S.'], key:{M:[ids],S:[ids]}, output}.
+// Matching also tries the horizontally mirrored pattern. Shapeless:
+// {shaped:false, ingredients:[[ids],[ids],…], output}.
+
+const PLANKS = [B.OAK_PLANKS, B.BIRCH_PLANKS, B.SPRUCE_PLANKS];
+const LOGS = [B.OAK_LOG, B.BIRCH_LOG, B.SPRUCE_LOG];
+const WOOLS = [B.WOOL_WHITE, B.WOOL_RED, B.WOOL_BLUE, B.WOOL_BLACK];
+
+export const RECIPES = [];
+const shaped = (output, count, pattern, key) =>
+  RECIPES.push({ shaped: true, pattern, key, output: { id: output, count } });
+const shapeless = (output, count, ingredients) =>
+  RECIPES.push({ shaped: false, ingredients, output: { id: output, count } });
+
+// 10.1 blocks & utility
+shapeless(B.OAK_PLANKS, 4, [[B.OAK_LOG]]);
+shapeless(B.BIRCH_PLANKS, 4, [[B.BIRCH_LOG]]);
+shapeless(B.SPRUCE_PLANKS, 4, [[B.SPRUCE_LOG]]);
+shaped(318, 4, ['P', 'P'], { P: PLANKS });
+shaped(B.CRAFTING_TABLE, 1, ['PP', 'PP'], { P: PLANKS });
+shaped(B.FURNACE, 1, ['CCC', 'C.C', 'CCC'], { C: [B.COBBLESTONE] });
+shaped(B.CHEST, 1, ['PPP', 'P.P', 'PPP'], { P: PLANKS });
+shaped(B.TORCH, 4, ['C', 'S'], { C: [319, 320], S: [318] });
+shaped(B.LADDER, 3, ['S.S', 'SSS', 'S.S'], { S: [318] });
+shaped(345, 3, ['PP', 'PP', 'PP'], { P: PLANKS });          // oak_door item
+shaped(B.OAK_FENCE, 3, ['PSP', 'PSP'], { P: PLANKS, S: [318] });
+shaped(344, 1, ['WWW', 'PPP'], { W: WOOLS, P: PLANKS });    // bed item
+shaped(B.TNT, 1, ['GSG', 'SGS', 'GSG'], { G: [329], S: [B.SAND] });
+shaped(B.BOOKSHELF, 1, ['PPP', 'BBB', 'PPP'], { P: PLANKS, B: [341] });
+shaped(B.JACK_O_LANTERN, 1, ['P', 'T'], { P: [B.PUMPKIN], T: [B.TORCH] });
+shaped(B.SANDSTONE, 1, ['SS', 'SS'], { S: [B.SAND] });
+shaped(B.SNOW_BLOCK, 1, ['SS', 'SS'], { S: [335] });
+shaped(B.SNOW_LAYER, 6, ['SSS'], { S: [B.SNOW_BLOCK] });
+shaped(B.WOOL_WHITE, 1, ['SS', 'SS'], { S: [327] });
+shaped(B.COAL_BLOCK, 1, ['CCC', 'CCC', 'CCC'], { C: [319] });   // coal only, NOT charcoal
+shaped(B.IRON_BLOCK, 1, ['III', 'III', 'III'], { I: [322] });
+shaped(B.GOLD_BLOCK, 1, ['GGG', 'GGG', 'GGG'], { G: [324] });
+shaped(B.DIAMOND_BLOCK, 1, ['DDD', 'DDD', 'DDD'], { D: [325] });
+shapeless(319, 9, [[B.COAL_BLOCK]]);
+shapeless(322, 9, [[B.IRON_BLOCK]]);
+shapeless(324, 9, [[B.GOLD_BLOCK]]);
+shapeless(325, 9, [[B.DIAMOND_BLOCK]]);
+
+// 10.2 tools — M ∈ {planks, cobblestone, iron, gold, diamond}, S = stick
+const TOOL_MATS = [
+  ['wooden', PLANKS],
+  ['stone', [B.COBBLESTONE]],
+  ['iron', [322]],
+  ['golden', [324]],
+  ['diamond', [325]],
+];
+for (const [mat, M] of TOOL_MATS) {
+  const key = { M, S: [318] };
+  shaped(idOf(`${mat}_pickaxe`), 1, ['MMM', '.S.', '.S.'], key);
+  shaped(idOf(`${mat}_axe`), 1, ['MM.', 'MS.', '.S.'], key);
+  shaped(idOf(`${mat}_shovel`), 1, ['M', 'S', 'S'], key);
+  shaped(idOf(`${mat}_sword`), 1, ['M', 'M', 'S'], key);
+  shaped(idOf(`${mat}_hoe`), 1, ['MM.', '.S.', '.S.'], key);
+}
+shaped(281, 1, ['.ST', 'S.T', '.ST'], { S: [318], T: [327] });
+shaped(282, 4, ['F', 'S', 'E'], { F: [326], S: [318], E: [328] });
+shaped(283, 1, ['.I', 'I.'], { I: [322] });
+shapeless(284, 1, [[322], [326]]);
+shaped(285, 1, ['I.I', '.I.'], { I: [322] });
+
+// 10.3 armor — A ∈ {leather, gold, iron, diamond}
+const ARMOR_MATS = [['leather', [330]], ['golden', [324]], ['iron', [322]], ['diamond', [325]]];
+for (const [mat, A] of ARMOR_MATS) {
+  shaped(idOf(`${mat}_helmet`), 1, ['AAA', 'A.A'], { A });
+  shaped(idOf(`${mat}_chestplate`), 1, ['A.A', 'AAA', 'AAA'], { A });
+  shaped(idOf(`${mat}_leggings`), 1, ['AAA', 'A.A', 'A.A'], { A });
+  shaped(idOf(`${mat}_boots`), 1, ['A.A', 'A.A'], { A });
+}
+
+// 10.4 food & materials
+shaped(305, 1, ['WWW'], { W: [336] });
+shapeless(332, 3, [[331]]);
+shapeless(339, 1, [[338]]);
+shaped(340, 3, ['CCC'], { C: [338] });
+shapeless(341, 1, [[340], [340], [340], [330]]);
+
+// ========================= SMELTING (06 §11.2) =========================
+export const SMELTING = new Map([
+  [321, { out: 322, xp: 0.7 }],       // raw_iron → iron_ingot
+  [323, { out: 324, xp: 1.0 }],       // raw_gold → gold_ingot
+  [B.SAND, { out: B.GLASS, xp: 0.1 }],
+  [B.COBBLESTONE, { out: B.STONE, xp: 0.1 }],
+  [B.OAK_LOG, { out: 320, xp: 0.15 }],
+  [B.BIRCH_LOG, { out: 320, xp: 0.15 }],
+  [B.SPRUCE_LOG, { out: 320, xp: 0.15 }],
+  [306, { out: 307, xp: 0.35 }],      // porkchop
+  [308, { out: 309, xp: 0.35 }],      // beef
+  [310, { out: 311, xp: 0.35 }],      // chicken
+  [312, { out: 313, xp: 0.35 }],      // mutton
+  [316, { out: 317, xp: 0.35 }],      // potato
+]);
+
+// ========================= FUEL (06 §11.3) =========================
+export function fuelValue(itemId) {
+  return ITEMS.get(itemId)?.fuel ?? 0;
+}
