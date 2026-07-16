@@ -73,11 +73,8 @@ export class ChunkManager {
       this.pending.delete(msg.jobId);
       const chunk = this.world.chunks.get(chunkKey(msg.cx, msg.cz));
       if (!chunk || chunk.state !== ChunkState.REQUESTED || key !== chunk.key) return;   // stale
-      chunk.install(
-        new Uint8Array(msg.blocks),
-        new Uint8Array(msg.heightMap),
-        new Uint8Array(msg.biomes),
-      );
+      // transferred views are used as-is (zero-copy, 01 §9)
+      chunk.install(msg.blocks, msg.heightMap, msg.biomes);
       chunk.pendingSpawns = msg.spawns?.length ? msg.spawns : null;
       this.game?.onChunkGenerated?.(chunk);
     }
