@@ -1,11 +1,17 @@
-// Inventory / crafting / furnace / chest screens + click semantics (06 §9, §14).
+// Inventory / crafting / furnace / chest screens + click semantics
+// (06 §9 crafting, §10 recipes, §14 layout+clicks, §15.3 screens;
+//  UPDATE-08 §7 offhand slot 45 + F-swap).
+// Geometry: absolute GUI-px on a 176×166 reference panel (Java 1.20 survival
+// coordinates), scaled uniformly by --gpx. Slot (x,y) = top-left INNER corner.
 import { ITEMS, RECIPES, SMELTING, fuelValue } from '../registry/items.js';
 import { iconCss, tileForItemId } from './hud.js';
 
 const stackMax = id => ITEMS.get(id)?.stack ?? 64;
 const same = (a, b) => a && b && a.id === b.id && (a.damage ?? 0) === (b.damage ?? 0);
 
-// ---------------------------------------------------------------- recipe matching (06 §9)
+// ------------------------------------------------------------------------
+// Shared recipe resolver (06 §9) — the ONLY matcher; serves 2×2 AND 3×3.
+// ------------------------------------------------------------------------
 
 function gridBounds(grid, w) {
   let x0 = 9, y0 = 9, x1 = -1, y1 = -1;
@@ -18,19 +24,38 @@ function gridBounds(grid, w) {
   return x1 < 0 ? null : { x0, y0, w: x1 - x0 + 1, h: y1 - y0 + 1 };
 }
 
+// Trimmed bounding box of the PATTERN's non-empty chars (§4.2 step 2 —
+// axe/hoe patterns carry an empty third column that must not block a match).
+function patternBounds(rows) {
+  const h = rows.length;
+  const w = Math.max(...rows.map(r => r.length));
+  let x0 = w, y0 = h, x1 = -1, y1 = -1;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const ch = rows[y][x] ?? '.';
+      if (ch !== '.' && ch !== ' ') {
+        if (x < x0) x0 = x; if (x > x1) x1 = x;
+        if (y < y0) y0 = y; if (y > y1) y1 = y;
+      }
+    }
+  }
+  return { x0, y0, w: x1 - x0 + 1, h: y1 - y0 + 1 };
+}
+
 function matchShaped(recipe, grid, gw) {
   const b = gridBounds(grid, gw);
   if (!b) return false;
   const rows = recipe.pattern;
-  const rh = rows.length, rw = rows[0].length;
-  if (b.w !== rw || b.h !== rh) return false;
+  const pb = (recipe._pb ??= patternBounds(rows));
+  if (b.w !== pb.w || b.h !== pb.h) return false;
   const tryMirror = mirror => {
-    for (let y = 0; y < rh; y++) {
-      for (let x = 0; x < rw; x++) {
-        const ch = rows[y][mirror ? rw - 1 - x : x];
+    for (let y = 0; y < pb.h; y++) {
+      for (let x = 0; x < pb.w; x++) {
+        const px = pb.x0 + (mirror ? pb.w - 1 - x : x);
+        const ch = rows[pb.y0 + y][px] ?? '.';
         const cell = grid[(b.y0 + y) * gw + (b.x0 + x)];
         if (ch === '.' || ch === ' ') {
-          if (cell) return false;
+          if (cell) return false;          // filled cell where pattern is blank
         } else {
           const ids = recipe.key[ch];
           if (!cell || !ids || !ids.includes(cell.id)) return false;
@@ -54,14 +79,19 @@ function matchShapeless(recipe, grid) {
   return true;
 }
 
+// resolveCraft(gridItems, W[, H]) → matching recipe or null. Consumption is
+// always "one from each non-empty cell" for the 06 §10 recipe set.
 export function findRecipe(grid, gw) {
   for (const r of RECIPES) {
     if (r.shaped ? matchShaped(r, grid, gw) : matchShapeless(r, grid)) return r;
   }
   return null;
 }
+export const resolveCraft = findRecipe;
 
-// ---------------------------------------------------------------- containers
+// ------------------------------------------------------------------------
+// Screens (absolute GUI-px geometry per UPDATE §2.2/§3.1)
+// ------------------------------------------------------------------------
 
 export class Containers {
   constructor(game, screensEl) {
@@ -77,11 +107,11 @@ export class Containers {
     this.tooltipEl.id = 'tooltip';
     document.body.appendChild(this.tooltipEl);
 
-    this.cursor = null;         // stack on the mouse
+    this.cursor = null;
     this.kind = null;
-    this.pos = null;            // block entity position
-    this.slots = [];            // slot descriptors
-    this.craftGrid = null;      // array(4|9)
+    this.pos = null;
+    this.slots = [];
+    this.craftGrid = null;
     this.craftW = 2;
     this.hovered = null;
     this.lastClick = { time: 0, index: -1 };
@@ -99,17 +129,17 @@ export class Containers {
     });
     document.addEventListener('keydown', e => {
       if (!this.isOpen() || this.hovered == null) return;
-      const digit = 'Digit123456789'.indexOf(e.code.slice(0, 6)) === 0 ? +e.code[5] - 1 : -1;
       if (e.code.startsWith('Digit')) {
         const n = +e.code.slice(5) - 1;
         if (n >= 0 && n < 9) this.numberSwap(this.hovered, n);
+      } else if (e.code === 'KeyF') {
+        this.offhandSwap(this.hovered);            // UPDATE-08 §7
       } else if (e.code === 'KeyQ') {
         this.dropFromSlot(this.hovered, e.shiftKey);
       }
     });
     this.root.addEventListener('mousedown', e => {
       if (e.target === this.root && this.cursor) {
-        // click outside panel: drop cursor (06 §14.2)
         if (e.button === 0) { this.game.throwStack(this.cursor); this.cursor = null; }
         else if (e.button === 2) {
           const one = { ...this.cursor, count: 1 };
@@ -130,7 +160,7 @@ export class Containers {
 
   open(kind, x, y, z) {
     this.close(true);
-    this.kind = kind === 'crafting' ? 'crafting' : kind;
+    this.kind = kind;
     this.pos = x !== undefined ? { x, y, z } : null;
     this.be = this.pos ? this.game.getBlockEntity(x, y, z) : null;
     if (kind === 'inventory' || kind === 'crafting') {
@@ -147,8 +177,7 @@ export class Containers {
   close(silent = false) {
     if (!this.kind) return;
     const p = this.game.player;
-    // return craft grid + cursor (06 §14.1)
-    if (this.craftGrid) {
+    if (this.craftGrid) {                        // grid returns to inventory (06 §5.4)
       for (let i = 0; i < this.craftGrid.length; i++) {
         const s = this.craftGrid[i];
         if (!s) continue;
@@ -171,37 +200,34 @@ export class Containers {
     if (!silent) this.game.onContainerClosed?.();
   }
 
-  // ---------------------------------------------------- slot model
+  // ---------------------------------------------------- slot defs
 
-  playerSlots() {
+  playerStorageDefs() {
     const p = this.game.player;
-    const out = [];
-    for (let i = 9; i < 36; i++) out.push({ region: 'main', get: () => p.inventory[i], set: v => { p.inventory[i] = v; } });
-    for (let i = 0; i < 9; i++) out.push({ region: 'hotbar', hotbarIndex: i, get: () => p.inventory[i], set: v => { p.inventory[i] = v; } });
-    return out;
+    const defs = [];
+    // main 9–35 at y 84/102/120; hotbar 0–8 at y 142 (06 §14.1)
+    for (let row = 0; row < 3; row++) {
+      for (let col = 0; col < 9; col++) {
+        const i = 9 + row * 9 + col;
+        defs.push({
+          x: 8 + col * 18, y: 84 + row * 18, region: 'main', slotIndex: i,
+          get: () => p.inventory[i], set: v => { p.inventory[i] = v; },
+        });
+      }
+    }
+    for (let col = 0; col < 9; col++) {
+      const i = col;
+      defs.push({
+        x: 8 + col * 18, y: 142, region: 'hotbar', slotIndex: i, hotbarIndex: i,
+        get: () => p.inventory[i], set: v => { p.inventory[i] = v; },
+      });
+    }
+    return defs;
   }
 
-  armorSlots() {
-    const p = this.game.player;
-    return [0, 1, 2, 3].map(i => ({
-      region: 'armor', armorIndex: i,
-      get: () => p.armor[i],
-      set: v => { p.armor[i] = v; },
-      canPut: s => ITEMS.get(s.id)?.armorSlot === i,
-    }));
-  }
-
-  craftSlots() {
-    return this.craftGrid.map((_, i) => ({
-      region: 'craft',
-      get: () => this.craftGrid[i],
-      set: v => { this.craftGrid[i] = v; },
-    }));
-  }
-
-  resultSlot() {
+  resultDef(x, y) {
     return {
-      region: 'result', takeOnly: true,
+      x, y, region: 'result', takeOnly: true,
       get: () => {
         const r = findRecipe(this.craftGrid, this.craftW);
         return r ? { id: r.output.id, count: r.output.count } : null;
@@ -222,87 +248,154 @@ export class Containers {
   build() {
     this.root.innerHTML = '';
     this.slots = [];
+    const p = this.game.player;
     const panel = document.createElement('div');
-    panel.className = 'panel';
+    panel.className = 'panel-abs';
     const title = { inventory: 'Inventory', crafting: 'Crafting', furnace: 'Furnace', chest: 'Chest' }[this.kind];
-    panel.innerHTML = `<h3>${title}</h3>`;
+    panel.innerHTML = `<div class="panel-title">${title}</div>`;
+    this.panel = panel;
 
-    const addGrid = (slotDefs, cols) => {
-      const grid = document.createElement('div');
-      grid.className = 'slot-grid';
-      grid.style.gridTemplateColumns = `repeat(${cols}, var(--slot))`;
-      for (const def of slotDefs) {
-        const el = document.createElement('div');
-        el.className = 'slot' + (def.takeOnly ? ' take-only' : '');
-        el.innerHTML = `<div></div><div class="slot-count"></div>`;
-        const index = this.slots.length;
-        this.slots.push({ ...def, el });
-        el.addEventListener('mousedown', e => { this.onSlotClick(index, e); e.preventDefault(); e.stopPropagation(); });
-        el.addEventListener('mouseenter', () => { this.hovered = index; this.showTooltip(index); });
-        el.addEventListener('mouseleave', () => { if (this.hovered === index) this.hovered = null; this.tooltipEl.style.display = 'none'; });
-        grid.appendChild(el);
-      }
-      panel.appendChild(grid);
-      return grid;
-    };
+    const defs = [];
 
     if (this.kind === 'inventory') {
-      const row = document.createElement('div');
-      row.style.display = 'flex';
-      row.style.gap = '20px';
-      const armorGrid = document.createElement('div');
-      panel.appendChild(row);
-      addGrid(this.armorSlots(), 1);
-      addGrid(this.craftSlots(), 2);
-      addGrid([this.resultSlot()], 1);
+      // armor 39/38/37/36 at x=8, y=8/26/44/62 (06 §14.1 + UPDATE §2.2)
+      const armorY = [8, 26, 44, 62];
+      for (let i = 0; i < 4; i++) {
+        const slot = i;   // 0 helmet … 3 boots
+        defs.push({
+          x: 8, y: armorY[i], region: 'armor', armorIndex: slot,
+          placeholder: ['helmet', 'chestplate', 'leggings', 'boots'][i],
+          get: () => p.armor[slot],
+          set: v => { p.armor[slot] = v; },
+          canPut: s => ITEMS.get(s.id)?.armorSlot === slot,
+        });
+      }
+      // offhand slot 45 at (77,62) with shield placeholder (UPDATE-08 §7.1)
+      defs.push({
+        x: 77, y: 62, region: 'offhand', slotIndex: 45, placeholder: 'shield',
+        get: () => p.offhand, set: v => { p.offhand = v; },
+      });
+      // 2×2 craft grid 40–43 at (98/116, 18/36) + result 44 at (154,28)
+      const gxy = [[98, 18], [116, 18], [98, 36], [116, 36]];
+      for (let i = 0; i < 4; i++) {
+        defs.push({
+          x: gxy[i][0], y: gxy[i][1], region: 'craft', slotIndex: 40 + i,
+          get: () => this.craftGrid[i], set: v => { this.craftGrid[i] = v; },
+        });
+      }
+      defs.push(this.resultDef(154, 28));
+      this.addArrow(panel, 130, 27);
+      this.addPlayerPreview(panel, 26, 8, 50, 70);
+      defs.push(...this.playerStorageDefs());
     } else if (this.kind === 'crafting') {
-      addGrid(this.craftSlots(), 3);
-      addGrid([this.resultSlot()], 1);
+      // 3×3 at cols 30/48/66, rows 17/35/53; result (124,35) (UPDATE §3.1)
+      for (let row = 0; row < 3; row++) {
+        for (let col = 0; col < 3; col++) {
+          const i = row * 3 + col;
+          defs.push({
+            x: 30 + col * 18, y: 17 + row * 18, region: 'craft',
+            get: () => this.craftGrid[i], set: v => { this.craftGrid[i] = v; },
+          });
+        }
+      }
+      defs.push(this.resultDef(124, 35));
+      this.addArrow(panel, 94, 34);
+      defs.push(...this.playerStorageDefs());
     } else if (this.kind === 'chest') {
       const be = this.be.data;
-      addGrid(be.slots.map((_, i) => ({
-        region: 'container',
-        get: () => be.slots[i],
-        set: v => { be.slots[i] = v; this.markBeDirty(); },
-      })), 9);
+      for (let row = 0; row < 3; row++) {
+        for (let col = 0; col < 9; col++) {
+          const i = row * 9 + col;
+          defs.push({
+            x: 8 + col * 18, y: 18 + row * 18, region: 'container',
+            get: () => be.slots[i], set: v => { be.slots[i] = v; this.markBeDirty(); },
+          });
+        }
+      }
+      defs.push(...this.playerStorageDefs());
     } else if (this.kind === 'furnace') {
       const f = this.be.data;
-      const widgets = document.createElement('div');
-      widgets.className = 'furnace-widgets';
-      addGrid([{
-        region: 'furnaceIn',
+      defs.push({
+        x: 56, y: 17, region: 'furnaceIn',
         get: () => f.slots[0], set: v => { f.slots[0] = v; this.markBeDirty(); },
-      }], 1);
-      widgets.innerHTML = `<div class="gauge-flame"><div id="g-flame"></div></div>
-        <div class="gauge-arrow"><div id="g-arrow"></div></div>`;
-      panel.appendChild(widgets);
-      addGrid([{
-        region: 'furnaceFuel',
+      });
+      defs.push({
+        x: 56, y: 53, region: 'furnaceFuel',
         get: () => f.slots[1], set: v => { f.slots[1] = v; this.markBeDirty(); },
         canPut: s => fuelValue(s.id) > 0,
-      }], 1);
-      addGrid([{
-        region: 'furnaceOut', takeOnly: true,
+      });
+      defs.push({
+        x: 116, y: 35, region: 'furnaceOut', takeOnly: true,
         get: () => f.slots[2], set: v => { f.slots[2] = v; this.markBeDirty(); },
-        onTakeOut: n => {
-          // banked XP payout (06 §11.1)
+        onTakeOut: () => {
           const xp = Math.floor(f.xpBank);
           if (xp > 0) { this.game.player.addXp(xp); f.xpBank -= xp; }
         },
-      }], 1);
+      });
+      this.addArrow(panel, 80, 34, 'g-arrow');
+      const flame = document.createElement('div');
+      flame.className = 'gauge-flame-abs';
+      flame.innerHTML = '<div id="g-flame"></div>';
+      panel.appendChild(flame);
+      defs.push(...this.playerStorageDefs());
     }
 
-    const spacer = document.createElement('div');
-    spacer.className = 'spacer-row';
-    panel.appendChild(spacer);
-    addGrid(this.playerSlots().slice(0, 27), 9);
-    const spacer2 = document.createElement('div');
-    spacer2.className = 'spacer-row';
-    panel.appendChild(spacer2);
-    addGrid(this.playerSlots().slice(27), 9);
-
+    for (const def of defs) this.addSlot(panel, def);
     this.root.appendChild(panel);
     this.refresh();
+  }
+
+  addSlot(panel, def) {
+    const el = document.createElement('div');
+    el.className = 'slot-abs' + (def.takeOnly ? ' take-only' : '');
+    if (def.placeholder) el.dataset.ph = def.placeholder;
+    el.style.left = `calc(${def.x - 1} * var(--gpx))`;
+    el.style.top = `calc(${def.y - 1} * var(--gpx))`;
+    el.innerHTML = `<div></div><div class="slot-count"></div><div class="slot-ph"></div>`;
+    const index = this.slots.length;
+    this.slots.push({ ...def, el });
+    el.addEventListener('mousedown', e => { this.onSlotClick(index, e); e.preventDefault(); e.stopPropagation(); });
+    el.addEventListener('mouseenter', () => { this.hovered = index; this.showTooltip(index); });
+    el.addEventListener('mouseleave', () => { if (this.hovered === index) this.hovered = null; this.tooltipEl.style.display = 'none'; });
+    panel.appendChild(el);
+  }
+
+  // procedural right-pointing arrow (grid → result); optional fill gauge id
+  addArrow(panel, x, y, id = null) {
+    const a = document.createElement('div');
+    a.className = 'craft-arrow';
+    a.style.left = `calc(${x} * var(--gpx))`;
+    a.style.top = `calc(${y} * var(--gpx))`;
+    a.innerHTML = `<div class="arrow-shaft">${id ? `<div id="${id}" class="arrow-fill"></div>` : ''}</div><div class="arrow-head"></div>`;
+    panel.appendChild(a);
+  }
+
+  // player preview panel — procedural blocky silhouette (no dead space)
+  addPlayerPreview(panel, x, y, w, h) {
+    const box = document.createElement('div');
+    box.className = 'player-preview';
+    box.style.left = `calc(${x} * var(--gpx))`;
+    box.style.top = `calc(${y} * var(--gpx))`;
+    box.style.width = `calc(${w} * var(--gpx))`;
+    box.style.height = `calc(${h} * var(--gpx))`;
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#141414';
+    ctx.fillRect(0, 0, w, h);
+    const cx = Math.floor(w / 2);
+    ctx.fillStyle = '#3a4152';
+    ctx.fillRect(cx - 8, 6, 16, 16);          // head
+    ctx.fillRect(cx - 8, 24, 16, 22);         // body
+    ctx.fillRect(cx - 13, 24, 5, 20);         // arms
+    ctx.fillRect(cx + 8, 24, 5, 20);
+    ctx.fillRect(cx - 8, 48, 7, 17);          // legs
+    ctx.fillRect(cx + 1, 48, 7, 17);
+    ctx.fillStyle = '#5b6680';
+    ctx.fillRect(cx - 6, 10, 4, 3);           // eye glints
+    ctx.fillRect(cx + 2, 10, 4, 3);
+    box.appendChild(c);
+    panel.appendChild(box);
   }
 
   markBeDirty() {
@@ -327,7 +420,6 @@ export class Containers {
     if (e.shiftKey && e.button === 0) {
       this.shiftMove(slot);
     } else if (e.button === 0) {
-      // double-click collect
       const now = performance.now();
       if (cur && now - this.lastClick.time < 300 && this.lastClick.index === index) {
         this.collectAll();
@@ -348,7 +440,7 @@ export class Containers {
       this.lastClick = { time: now, index };
     } else if (e.button === 2) {
       if (!cur && inSlot) {
-        const take = Math.ceil(inSlot.count / 2);
+        const take = Math.ceil(inSlot.count / 2);       // split-half
         const taken = { ...inSlot, count: take };
         inSlot.count -= take;
         if (inSlot.count <= 0) slot.set(null);
@@ -370,8 +462,8 @@ export class Containers {
     if (!out) return;
     if (slot.region === 'result') {
       if (shift) {
-        // craft repeatedly (06 §9)
-        for (let n = 0; n < 64; n++) {
+        // craft-max: until ingredients run out or inventory is full (§4.6)
+        for (let n = 0; n < 576; n++) {
           const r = slot.get();
           if (!r) break;
           if (this.game.player.give({ ...r }) > 0) break;
@@ -382,10 +474,9 @@ export class Containers {
             this.cursor.count + out.count <= stackMax(out.id))) return;
         if (this.cursor) this.cursor.count += out.count;
         else this.cursor = { ...out };
-        slot.onCraft();
+        slot.onCraft();                                  // consume exactly one each
       }
     } else {
-      // furnace output
       if (shift) {
         const leftover = this.game.player.give(out);
         if (leftover > 0) out.count = leftover;
@@ -427,12 +518,11 @@ export class Containers {
   shiftTargets(slot, stack) {
     const bySel = regions => this.slots.filter(x => regions.includes(x.region) && !x.takeOnly);
     const item = ITEMS.get(stack.id);
-    if (slot.region === 'container' || slot.region === 'furnaceIn' ||
-        slot.region === 'furnaceFuel' || slot.region === 'furnaceOut' ||
-        slot.region === 'craft' || slot.region === 'armor' || slot.region === 'result') {
+    if (['container', 'furnaceIn', 'furnaceFuel', 'furnaceOut', 'craft', 'armor', 'result', 'offhand']
+        .includes(slot.region)) {
       return bySel(['hotbar', 'main']);
     }
-    // from player inventory:
+    // from player storage:
     if (this.kind === 'chest') return bySel(['container']);
     if (this.kind === 'furnace') {
       if (SMELTING.has(stack.id)) return bySel(['furnaceIn']);
@@ -471,6 +561,19 @@ export class Containers {
     if (slot.canPut && tmp && !slot.canPut(tmp)) return;
     p.inventory[hotbarN] = s;
     slot.set(tmp);
+    this.refresh();
+  }
+
+  // F: swap hovered ↔ offhand slot 45 (UPDATE-08 §7)
+  offhandSwap(index) {
+    const slot = this.slots[index];
+    if (!slot || slot.takeOnly || slot.region === 'offhand') return;
+    const p = this.game.player;
+    const s = slot.get();
+    const off = p.offhand;
+    if (slot.canPut && off && !slot.canPut(off)) return;
+    p.offhand = s ?? null;
+    slot.set(off ?? null);
     this.refresh();
   }
 
@@ -525,7 +628,10 @@ export class Containers {
   }
 
   refresh() {
-    for (const slot of this.slots) this.renderStackInto(slot.el, slot.get());
+    for (const slot of this.slots) {
+      this.renderStackInto(slot.el, slot.get());
+      slot.el.classList.toggle('empty-ph', !slot.get() && !!slot.placeholder);
+    }
     this.renderCursor();
     if (this.kind === 'furnace' && this.be) {
       const f = this.be.data;
@@ -538,7 +644,6 @@ export class Containers {
 
   tickOpen() {
     if (!this.isOpen()) return;
-    // block gone or player walked away → close
     if (this.pos) {
       const p = this.game.player;
       const d = Math.hypot(this.pos.x + 0.5 - p.pos.x, this.pos.y + 0.5 - (p.pos.y + 1), this.pos.z + 0.5 - p.pos.z);

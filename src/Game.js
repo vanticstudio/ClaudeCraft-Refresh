@@ -387,11 +387,39 @@ export class Game {
     const drop = vm.switchAnim > 0 ? 0.3 : 0;
     vm.group.position.set(0.56 - 0.10 * k, -0.52 - 0.25 * k - drop, -0.72);
     vm.group.rotation.set(-75 * k * Math.PI / 180, -25 * k * Math.PI / 180, 0);
+    // offhand item in the left hand (UPDATE-08 §7.1), mirrored transform
+    const offId = this.player.offhand?.id;
+    if (offId !== vm.offhandId) {
+      vm.offhandId = offId;
+      if (!vm.offGroup) {
+        vm.offGroup = new THREE.Group();
+        this.viewmodelScene.add(vm.offGroup);
+      }
+      vm.offGroup.clear();
+      if (offId !== undefined && offId !== null) {
+        const item = ITEMS.get(offId);
+        let mesh;
+        if (item?.kind === 'block' && item.place != null) {
+          mesh = new THREE.Mesh(blockCubeGeometry(item.place, 0.32), makeAtlasMaterial());
+          mesh.position.y = -0.16;
+          mesh.rotation.y = -Math.PI / 4;
+        } else {
+          mesh = new THREE.Mesh(tileSpriteGeometry(itemTileFor(offId), 0.4), makeAtlasMaterial({ doubleSide: true }));
+          mesh.position.y = -0.2;
+          mesh.rotation.set(0.25, Math.PI / 2 - 0.35, -0.44);
+        }
+        vm.offGroup.add(mesh);
+      }
+    }
+    if (vm.offGroup) vm.offGroup.position.set(-0.56, -0.56, -0.72);
+
     // brightness follows the player's light
     const ls = this.player.lightScalar;
-    vm.group.traverse(o => {
-      if (o.isMesh && o.material?.userData?.baseColor) o.material.color.setRGB(ls, ls, ls);
-    });
+    for (const grp of [vm.group, vm.offGroup]) {
+      grp?.traverse(o => {
+        if (o.isMesh && o.material?.userData?.baseColor) o.material.color.setRGB(ls, ls, ls);
+      });
+    }
   }
 
   // ---------------------------------------------------------------- block entities

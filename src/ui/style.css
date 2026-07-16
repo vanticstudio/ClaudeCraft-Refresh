@@ -199,7 +199,10 @@ html, body {
 }
 #loading-bar { height: 100%; width: 0%; background: #6fbf4a; }
 
-/* ---------- container screens (06 §14–15) ---------- */
+/* ---------- container screens (06 §14–15; UPDATE geometry §2–§3) ---------- */
+/* --gpx = 1 GUI pixel. Reference panel 176×166 GUI-px scales uniformly. */
+:root { --gpx: 3px; }
+
 #container-root {
   position: absolute; inset: 0;
   display: none;
@@ -209,26 +212,126 @@ html, body {
 }
 #container-root.visible { display: flex; }
 
-.panel {
-  background: #c6c6c6;
-  border: 3px solid; border-color: #fefefe #565656 #565656 #fefefe;
-  padding: calc(2 * var(--px));
-  color: #3f3f3f;
-}
-.panel h3 { font-size: 15px; margin: 4px 6px; color: #3f3f3f; }
-
-.slot-grid { display: grid; gap: 2px; margin: 4px; }
-.slot {
-  width: var(--slot); height: var(--slot);
-  background: #8b8b8b;
-  border: 2px solid; border-color: #373737 #fff #fff #373737;
+.panel-abs {
   position: relative;
-  display: flex; align-items: center; justify-content: center;
+  width: calc(176 * var(--gpx));
+  height: calc(166 * var(--gpx));
+  background: #c6c6c6;
+  border: calc(1 * var(--gpx)) solid;
+  border-color: #fefefe #565656 #565656 #fefefe;
+  border-radius: calc(1 * var(--gpx));
+  color: #3f3f3f;
+  image-rendering: pixelated;
 }
-.slot:hover { background: #a5a5a5; }
-.slot.take-only { background: #7d7d95; }
+.panel-title {
+  position: absolute;
+  left: calc(8 * var(--gpx));
+  top: calc(-1 * var(--gpx));
+  transform: translateY(-100%);
+  padding: 2px 8px;
+  background: #c6c6c6;
+  border: 2px solid; border-color: #fefefe #565656 transparent #fefefe;
+  font-size: calc(6 * var(--gpx));
+  font-weight: bold;
+}
 
-.spacer-row { height: 10px; }
+/* slot: 16 GUI-px inner icon + 1 GUI-px bevel border = 18 pitch.
+   Positioned by top-left of the border box = (innerX-1, innerY-1). */
+.slot-abs {
+  position: absolute;
+  width: calc(16 * var(--gpx));
+  height: calc(16 * var(--gpx));
+  background: #8b8b8b;
+  border: calc(1 * var(--gpx)) solid;
+  border-color: #373737 #fff #fff #373737;
+  box-sizing: content-box;
+}
+.slot-abs:hover { background: #a5a5a5; }
+.slot-abs.take-only {
+  background: #8b8b95;
+  /* result slot renders slightly enlarged like MC's output well */
+  outline: calc(1 * var(--gpx)) solid #76767e;
+}
+.slot-abs > .icon { position: absolute; inset: 0; }
+.slot-abs .slot-count {
+  position: absolute; right: 1px; bottom: -1px;
+  font-size: calc(6 * var(--gpx));
+}
+
+/* faint procedural placeholders for empty armor/offhand slots */
+.slot-ph { position: absolute; inset: 0; opacity: 0; pointer-events: none; }
+.slot-abs.empty-ph .slot-ph { opacity: 0.35; }
+.slot-abs[data-ph="shield"] .slot-ph {
+  background: #4a4f5c;
+  clip-path: polygon(15% 12%, 85% 12%, 85% 55%, 50% 90%, 15% 55%);
+}
+.slot-abs[data-ph="helmet"] .slot-ph {
+  background: #575d6b;
+  clip-path: polygon(20% 65%, 20% 40%, 35% 20%, 65% 20%, 80% 40%, 80% 65%, 62% 65%, 62% 48%, 38% 48%, 38% 65%);
+}
+.slot-abs[data-ph="chestplate"] .slot-ph {
+  background: #575d6b;
+  clip-path: polygon(15% 15%, 35% 15%, 50% 28%, 65% 15%, 85% 15%, 85% 85%, 15% 85%);
+}
+.slot-abs[data-ph="leggings"] .slot-ph {
+  background: #575d6b;
+  clip-path: polygon(20% 15%, 80% 15%, 80% 85%, 58% 85%, 58% 45%, 42% 45%, 42% 85%, 20% 85%);
+}
+.slot-abs[data-ph="boots"] .slot-ph {
+  background: #575d6b;
+  clip-path: polygon(25% 15%, 55% 15%, 55% 55%, 80% 55%, 80% 85%, 25% 85%);
+}
+
+/* procedural grid → result arrow (UPDATE §2.2/§3.1) */
+.craft-arrow {
+  position: absolute;
+  width: calc(22 * var(--gpx));
+  height: calc(6 * var(--gpx));
+  pointer-events: none;
+}
+.craft-arrow .arrow-shaft {
+  position: absolute;
+  left: 0; top: calc(1.5 * var(--gpx));
+  width: calc(15 * var(--gpx));
+  height: calc(3 * var(--gpx));
+  background: #8b8b8b;
+  overflow: hidden;
+}
+.craft-arrow .arrow-head {
+  position: absolute;
+  right: 0; top: calc(-1.5 * var(--gpx));
+  width: 0; height: 0;
+  border-top: calc(4.5 * var(--gpx)) solid transparent;
+  border-bottom: calc(4.5 * var(--gpx)) solid transparent;
+  border-left: calc(7 * var(--gpx)) solid #8b8b8b;
+}
+.arrow-fill { height: 100%; width: 0%; background: #fff; }
+
+/* player preview (UPDATE §2.2) */
+.player-preview {
+  position: absolute;
+  background: #141414;
+  border: calc(1 * var(--gpx)) solid;
+  border-color: #373737 #fff #fff #373737;
+  overflow: hidden;
+}
+.player-preview canvas {
+  width: 100%; height: 100%;
+  image-rendering: pixelated;
+}
+
+/* furnace flame gauge */
+.gauge-flame-abs {
+  position: absolute;
+  left: calc(57 * var(--gpx));
+  top: calc(36 * var(--gpx));
+  width: calc(14 * var(--gpx));
+  height: calc(14 * var(--gpx));
+  background: #555;
+  display: flex; align-items: flex-end;
+  pointer-events: none;
+}
+#g-flame { width: 100%; background: linear-gradient(#ffd23c, #ff9a00); }
 
 #cursor-stack {
   position: fixed;
@@ -236,6 +339,11 @@ html, body {
   z-index: 100;
   display: none;
   transform: translate(-50%, -50%);
+}
+#cursor-stack .slot-count {
+  position: absolute; right: -4px; bottom: -6px;
+  font-size: calc(6 * var(--gpx));
+  color: #fff; font-weight: bold; text-shadow: 2px 2px 0 #3f3f3f;
 }
 
 #tooltip {
@@ -250,19 +358,3 @@ html, body {
   padding: 4px 8px;
   white-space: nowrap;
 }
-
-.furnace-widgets {
-  display: flex; align-items: center; gap: 12px; margin: 6px;
-}
-.gauge-flame {
-  width: 22px; height: 22px; position: relative;
-  background: #555;
-}
-.gauge-flame > div {
-  position: absolute; bottom: 0; left: 0; right: 0;
-  background: #ff9a00;
-}
-.gauge-arrow {
-  width: 60px; height: 14px; background: #555; position: relative;
-}
-.gauge-arrow > div { height: 100%; background: #fff; width: 0%; }

@@ -69,12 +69,17 @@ autosaves to the browser's IndexedDB every 30 seconds — close the tab and
 | Worldgen | Seeded simplex-noise stack in a worker; chunks are pure functions of `(seed, cx, cz)` |
 | Physics | Axis-separated AABB vs voxel grid, swept collision |
 | Persistence | IndexedDB — only modified chunks are saved; the seed regenerates the rest |
-| Specs | The entire game was implemented from the six spec files in this repo (`01`–`06-*.md`); deviations are logged in [DEVIATIONS.md](DEVIATIONS.md) |
+| Specs | The entire game was implemented from six frozen spec documents (preserved in git history); deviations are logged in [DEVIATIONS.md](DEVIATIONS.md) |
 
 ## Additions log
 
 *This section is updated as new features land.*
 
+- **2026-07-17** — Crafting/inventory UI overhaul: canonical 176×166 GUI-px
+  layout (armor / player preview / offhand / 2×2 grid / arrow / result), fixed
+  shaped-recipe matching (pattern bounding-box trim — axes and hoes craft now,
+  recipes match at any grid offset and mirrored), offhand slot 45 with F-swap
+  and left-hand rendering.
 - **2026-07-17** — Mouse look fix: pointer-lock deltas now drive the camera
   (0.15°/count, ±90° pitch clamp).
 - **2026-07-17** — Performance: chunk-lookup caching in the lighting/world hot

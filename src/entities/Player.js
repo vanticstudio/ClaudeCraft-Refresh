@@ -50,9 +50,11 @@ export class Player extends LivingEntity {
     this.xpPoints = 0;
     this.xpPickupCooldown = 0;
 
-    // inventory: hotbar 0–8, main 9–35, armor [helmet,chest,legs,boots]
+    // inventory: hotbar 0–8, main 9–35, armor [helmet,chest,legs,boots],
+    // offhand = slot 45 (UPDATE-08 §7.1)
     this.inventory = new Array(36).fill(null);
     this.armor = new Array(4).fill(null);
+    this.offhand = null;
     this.selectedSlot = 0;
 
     // combat charge (05 §13.1)
@@ -558,6 +560,7 @@ export class Player extends LivingEntity {
     for (let i = 0; i < 4; i++) {
       if (this.armor[i]) { game?.dropStackAt(this.armor[i], this.pos.x, this.pos.y + 0.6, this.pos.z); this.armor[i] = null; }
     }
+    if (this.offhand) { game?.dropStackAt(this.offhand, this.pos.x, this.pos.y + 0.6, this.pos.z); this.offhand = null; }
     const orbXp = Math.min(7 * this.xpLevel, 100);
     if (orbXp > 0) game?.spawnXpOrb(this.pos.x, this.pos.y + 0.6, this.pos.z, orbXp);
     this.xpLevel = 0; this.xpPoints = 0;
@@ -603,6 +606,7 @@ export class Player extends LivingEntity {
       gameMode: this.gameMode,
       inventory: packStacks(this.inventory),
       armor: packStacks(this.armor),
+      offhand: this.offhand ? { id: this.offhand.id, count: this.offhand.count, damage: this.offhand.damage } : null,
       selectedSlot: this.selectedSlot,
       spawnPoint: this.spawnPoint,
     };
@@ -623,6 +627,7 @@ export class Player extends LivingEntity {
     this.selectedSlot = rec.selectedSlot ?? 0;
     this.spawnPoint = rec.spawnPoint ?? null;
     if (rec.inventory) rec.inventory.forEach((s, i) => { this.inventory[i] = s || null; });
+    this.offhand = rec.offhand || null;
     if (rec.armor) rec.armor.forEach((s, i) => { this.armor[i] = s || null; });
     this.xpTotal = 0; this.xpLevel = 0; this.xpPoints = 0;
     if (rec.xp) this.addXp(rec.xp);

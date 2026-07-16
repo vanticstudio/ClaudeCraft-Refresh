@@ -1,112 +1,50 @@
 # DEVIATIONS.md
 
-Deviations, ambiguity resolutions, and conflict rulings made during implementation.
-Items marked `> Adaptation:` in the specs are not repeated here — only decisions
-the implementation added on top of them.
+Deviations and ambiguity rulings. (The base-spec `.md` files were removed from
+the working tree during repo cleanup; the pre-UPDATE deviation log for the
+initial build lives in git history — `git show 8441ac9:DEVIATIONS.md`.)
 
-## Spec-conflict rulings (per CLAUDE.md §2 precedence)
+## UPDATE — crafting/inventory UI fix (2026-07-17)
 
-1. **Water light opacity = 1**, not 2. 01 §5's comment says "water 2 (approx; 04
-   owns the propagation rule)"; 04 §8 rule 3 and 06's acceptance ("3 blocks of
-   water reads 12 beneath") both require 1. 04 owns lighting → 1.
-2. **Heightmap "sky-terminating" test** unified as `opacity > 0 OR snow_layer OR
-   cactus` so the generator's heightmap (02 §13.1 counts snow/cactus) and the
-   runtime recompute agree byte-for-byte. Light stays correct either way because
-   the straight-down 15 rule re-floods through opacity-0 cells.
-3. **Carver determinism vs the 02 §14 early-out**: skipping a whole tunnel's
-   simulation would desynchronize later draws from the shared per-origin-chunk
-   stream when different chunks make different skip decisions. Each worm/ravine
-   therefore gets a child stream derived from the origin-chunk stream; the
-   origin stream only rolls counts/positions/parameters. Whole-tunnel AABB
-   early-outs are then stream-safe. Verified: byte-identical chunks regardless
-   of generation order.
-4. **Ore Y-band acceptance**: 02 §9.3 distributions govern vein *origins*; the
-   §9.2 vein walk drifts a few blocks, so ≤1 % of placed ore blocks sit just
-   outside the band (e.g. coal slightly below Y32). Matches the algorithm as
-   specced.
+Conformed to `06 §9/§10/§14/§15`, `03 §3/§16.3/§23`, UPDATE-08 §7. Root causes
+fixed: (1) the shaped matcher trimmed the grid's bounding box but not the
+**pattern's** — axe `MM./MS./.S.` and hoe `MM./.S./.S.` carry an empty third
+column, so they could never match; both boxes are now trimmed per §4.2 and the
+horizontal mirror is applied on the trimmed box. (2) Screens now use absolute
+GUI-px geometry on the 176×166 reference panel (§2.2/§3.1 coordinates) instead
+of stacked CSS grids.
 
-## Registry / blocks
+1. **GUI scale is 3×, not the 2× named in `06 §15.3`** — the existing icon
+   pipeline (`--px: 3`) renders atlas tiles at 3 css px per texture px; the
+   panel scales uniformly via `--gpx: 3px` to match. Pure scale factor; all
+   §2.2/§3.1 GUI-px coordinates are used verbatim.
+2. **Offhand (UPDATE-08 §7.1) is held-item storage + rendering**: slot 45 in
+   the inventory screen (77,62) with shield-silhouette placeholder, `F` swap
+   with the hovered slot, persistence (`meta.player.offhand`, backward
+   compatible — old saves load with an empty offhand), death-drop, and a
+   left-hand viewmodel render. No offhand *use* actions (place/eat from
+   offhand) — 06's interaction pipeline has no offhand use channel and the
+   UPDATE's guardrails restrict this change to UI/resolver paths.
+3. **Armor/offhand placeholders and the grid→result arrow are CSS/canvas
+   procedural** (clip-path silhouettes, border-triangle arrow, canvas player
+   silhouette in the preview panel) — no downloaded art, per guardrails.
+4. **Furnace/chest screens were re-anchored** to the same 176×166 absolute
+   panel (furnace input 56,17 / fuel 56,53 / output 116,35; chest 9×3 from
+   (8,18)) so all containers share one geometry system. The UPDATE mandates
+   only the inventory + crafting-table screens; this is a consistency choice.
+5. **`resolveCraft` consumption**: returns the matched recipe; consumption is
+   uniformly "decrement one item from every non-empty grid cell", which is
+   exact for the entire `06 §10` recipe set (no recipe consumes multiples per
+   cell or leaves container items).
+6. **Right-click drag-painting** remains out of scope per `06 §14.2`'s stated
+   adaptation (right-click-place-one covers it).
 
-5. Jack o'lantern face on all four side faces (no facing state; noted in 06 as
-   acceptable simplification).
-6. Chest gets a cosmetic facing state using the shared FACING convention (06
-   defines none).
-7. Door: single hinge; closed panel on the cell edge opposite facing, open =
-   facing rotated 90° CW. `doorBox()` is shared by mesher + collision.
-8. `dead_bush` placeable on sand **or dirt**; flowers/grass/saplings on
-   grass_block or dirt.
-9. Torch/ladder wall states: 1–4 = facing +Z/−Z/+X/−X, support on the opposite
-   side (documented in `registry/blocks.js`).
-
-## Rendering
-
-10. Water/lava tiles are painted opaque; translucency is a per-vertex alpha
-    (water 0.7, lava 1.0) so both fluids share one material. Ice bakes α 0.8
-    into its tile and renders in the translucent bucket.
-11. All custom shapes (torch, ladder, snow layer, cactus, fence, door, bed,
-    farmland, crops) render in the cutout bucket regardless of their 06 §3 pass
-    column — visually identical for opaque texels, one less material switch.
-12. Torch renders as a 2/16 box with side-cropped tile UVs; wall torches offset
-    toward the support block without tilt.
-13. Fluid side faces don't crop UVs to the 14/16 surface height (invisible on
-    the noise texture).
-14. No biome tinting of grass/foliage/water — the specs' render path defines no
-    tint pipeline; grass_top is painted plains-green.
-15. Mob textures: procedural 16×16 canvases per body-role following 05 §16.2
-    palettes; the face detail sits on the model's +Z face. Sheep wool tint is a
-    material color multiply.
-16. Inventory icons use flat atlas tiles for blocks (06 §8.2's 48×48 isometric
-    WebGL pre-render skipped); items use their sprite tiles.
-17. F3 draw-call/triangle counters reflect the last render pass of the frame
-    (world + viewmodel are separate passes; `renderer.info` resets per pass).
-18. EnvLights lives inside `render/Sky.js`; the mob AI/goals live in
-    `entities/mobs/{ai,models,passive,index}.js` instead of an `ai/` subdir —
-    same responsibilities, fewer files.
-
-## Gameplay
-
-19. Sleep completes once started (getting out of bed mid-skip not implemented);
-    the spawn point is still set on first click per 06 §5.7.
-20. Item pickup is instant inside the expanded pickup box (the ~3-tick fly-to-
-    player animation is skipped).
-21. Explosion exposure sampling = 8 AABB corners + center (the adaptation 05
-    §12.3 itself suggests).
-22. Falling blocks are persisted as falling-block entities rather than being
-    written back as solid blocks on save (they resume falling on load).
-23. Autosave serializes all modified chunks synchronously; heavy-edit sessions
-    can show one ~40–80 ms tick at the 30 s autosave boundary.
-24. Bed "monsters nearby" check uses a single AABB (±8 horizontal / ±5 vertical)
-    without wall-occlusion, per 04 §14.2's box semantics.
-25. Egg-throw chick spawning (1/8) is implemented (06 lists it as an optional
-    hook).
-26. Player arrows use inaccuracy 1 (05 §11); skeleton arrows frequently miss at
-    range with Normal inaccuracy 6 — authentic to MC.
-
-## Verified against acceptance checklists (headless Chrome, 2026-07-17)
-
-- Worldgen: deterministic across generation order and generator instances;
-  2.7 ms/chunk average (budget 12); sea-level/bedrock/water-guard/lava-flood
-  rules hold; ore bands correct.
-- Movement: walk 4.317 / sprint 5.612 / sneak 1.295 m/s (exact); jump apex
-  1.252; sneak edge-guard holds; ladder climb ≈2.35 m/s; 10-block fall = 7 HP;
-  water cancels fall damage.
-- Lighting: sealed cave 0/0; torch 14→13 adjacent→12 diagonal; removal restores
-  prior values exactly; day/night causes zero remeshes.
-- Time: celestialAngle(6000)=0, (18000)=0.5; skyDarken 0 noon / 11 midnight.
-- Mining: stone+wooden pick 23 ticks; drops spawn; durability spends; instant
-  breaks skip the inter-block delay.
-- Mobs: zombie acquires/paths/attacks; skeleton strafes, draws 20 ticks, fires
-  every 60; creeper swells and craters terrain; explosion damage + knockback
-  reach the player; night packs spawn only in darkness ≥24 blocks away.
-- Survival: exhaustion→saturation→hunger drain exact; bread +5 hunger; eating
-  takes 32 ticks; starvation floors at 1 HP; XP orbs magnet + collect.
-- Systems: water spreads exactly 7 and drains on source removal; furnace smelts
-  in 200 ticks and swaps lit/unlit; crafting matcher handles shaped, shapeless,
-  mirrored, and 2×2-in-3×3; sand falls and re-lands; TNT chains; doors toggle;
-  beds deny by day, skip to dawn at night and advance the day counter.
-- Save/load: seed, worldTime, block edits, torch light, chest contents, damaged
-  tools, XP, hunger, position, entities all restored after reload; unmodified
-  chunks regenerate identically.
-- Performance: 95 fps minimum (avg 109) sprint-flying 844 blocks at render
-  distance 8 in headless Chrome/SwiftShader; ~777 k scene triangles; no
-  geometry leak after a fly-out-and-back pass.
+Verified 2026-07-17 (headless Chrome): 46 slots, zero overlapping rects,
+result at (154,28), offhand at (77,62); sticks resolve in the 2×2 and at
+top-left/center/bottom-right offsets of the 3×3; `PP/PP` in both grids;
+furnace/chest resolve only in the 3×3; axe normal + mirrored + offset; hoe;
+shears; shapeless log→variant planks anywhere and `coal_block → 9 coal`;
+live result recompute on every grid mutation; take-one consumes exactly one
+per cell; shift-craft loops to depletion routing hotbar-first; result slot
+refuses deposits; `F`-swap, number-swap, Q-drop, double-click collect,
+click-outside drop, and close-returns-grid all pass.
