@@ -235,6 +235,7 @@ export class Game {
     this.renderer.clear(true, true, true);
     if (!this.world || this.state === STATE.TITLE) return;
 
+    this.applyMouseLook();
     this.debug.lastRemeshes = this.chunkManager.drainRemesh(this.player.pos.x, this.player.pos.z);
     this.updateCamera(alpha);
     this.dayNight.updateRender(alpha, this.camera);
@@ -251,6 +252,28 @@ export class Game {
     }
     this.ui?.hud?.update?.();
     this.ui?.debug?.update?.();
+  }
+
+  // Mouse-look applied per FRAME (03 §18.1): 0.15°/count at sensitivity 1.0
+  applyMouseLook() {
+    const p = this.player;
+    if (!p || this.state !== STATE.PLAYING || !this.input.locked || this.sleeping) {
+      this.input.consumeMouseDelta();   // discard stale deltas
+      return;
+    }
+    const { dx, dy } = this.input.consumeMouseDelta();
+    if (!dx && !dy) return;
+    const RATE = 0.15 * Math.PI / 180;
+    p.yaw -= dx * RATE;
+    p.pitch -= dy * RATE;
+    const lim = Math.PI / 2;
+    if (p.pitch > lim) p.pitch = lim;
+    else if (p.pitch < -lim) p.pitch = -lim;
+    if (p.yaw > Math.PI * 4 || p.yaw < -Math.PI * 4) {
+      const w = p.yaw % (Math.PI * 2);
+      p.prevYaw += w - p.yaw;   // keep interpolation continuous across the wrap
+      p.yaw = w;
+    }
   }
 
   updateCamera(alpha) {
