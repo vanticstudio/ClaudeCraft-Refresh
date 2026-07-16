@@ -75,6 +75,12 @@ autosaves to the browser's IndexedDB every 30 seconds — close the tab and
 
 *This section is updated as new features land.*
 
+- **2026-07-17** — Sky/sun render fix: sun, moon and sunset band now depth-test
+  against terrain (leaves/hills occlude them; the "grey blob at spawn" was the
+  moon drawing through the ground), horizon visibility gates at `dir.y > −0.3`,
+  the sun dims and warms through dusk via the §6 `sunIntensity` curve and the
+  sunset-band window, soft zero-edge sun texture (no more hard square), moon
+  alpha scales with phase and the new-moon cell is 25 % alpha per spec.
 - **2026-07-17** — Crafting/inventory UI overhaul: canonical 176×166 GUI-px
   layout (armor / player preview / offhand / 2×2 grid / arrow / result), fixed
   shaped-recipe matching (pattern bounding-box trim — axes and hoes craft now,

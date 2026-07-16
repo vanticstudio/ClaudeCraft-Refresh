@@ -4,6 +4,51 @@ Deviations and ambiguity rulings. (The base-spec `.md` files were removed from
 the working tree during repo cleanup; the pre-UPDATE deviation log for the
 initial build lives in git history — `git show 8441ac9:DEVIATIONS.md`.)
 
+## UPDATE — sky/sun render fix (2026-07-17)
+
+Conformed to `04 §5.2/§5.3/§5.5/§6` and `01 §8.7/§14`. Root causes fixed:
+(1) sun/moon/sunrise-band materials had `depthTest: false` — being
+`transparent`, they draw **after** the opaque terrain pass, so they painted
+over leaves/terrain/clouds instead of being occluded (the dusk "hard white
+square" and the persistent grey blob at spawn, which was the moon rendering
+through the ground from below the horizon); (2) no `dir.y > −0.3` visibility
+gate on sun/moon, so the moon was drawn all day (at world time 0 it sits ~12°
+*below* the −X horizon — the "static grey square at ground level");
+(3) the sun billboard was never dimmed/warmed at dusk; (4) the sun texture's
+outermost alpha ring was 0.125, not 0, stamping a faint square edge; (5) the
+new-moon cell was painted near-opaque instead of `#1A1A2A` at 25 % alpha
+(`04 §5.3`).
+
+1. **Sun/moon/band use `depthTest: true`** — diverges from `01 §14`'s
+   `depthTest: false` on the sun. With `transparent` materials three.js
+   renders the whole sky *after* the opaque pass regardless of
+   `renderOrder ≤ −1`, so a depth test is the only mechanism that realizes
+   `04 §5`'s draw-order intent (terrain/leaves occlude sky objects; leaves
+   work because the cutout pass keeps `depthWrite: true` per `01 §8.4`).
+   The dome still doesn't write depth, so nothing occludes wrongly.
+2. **Sun billboard modulated by `sunIntensity` + sunset-band warming**
+   (UPDATE mandate; extra-spec vs `04 §5.2`, which only gates visibility and
+   fades by rain): per frame `sunColor = sunIntensity × #FFFFE5`, then within
+   the `§5.5` band window `g ×= 1 − 0.35·band.a`, `b ×= 1 − 0.6·band.a`.
+   Opacity stays `1 − rainLevel` per `§5.2`.
+3. **Moon alpha × `(0.6 + 0.4 · MOON_BRIGHTNESS)`** — `04 §5.3` says the
+   phase factor scales "star/moon alpha slightly" but gives no formula;
+   stars keep `§5.4`'s exact opacity formula (resolving the self-conflict in
+   favor of the verbatim code), the moon takes the phase scaling.
+4. **Sun texture samples with `LinearFilter`** (other canvas textures stay
+   `NearestFilter`): the spec's "soft 4-px falloff" renders as visible
+   banding steps at nearest sampling on a 240-unit quad; spec is silent on
+   filtering. Falloff now reaches exactly 0 at the texture border, corners
+   rounded via a Chebyshev/Euclidean blend.
+
+Verified 2026-07-17 (headless Chromium, fresh world, seed `skyfix`): additive
+sun soft square at midday; a placed leaf wall fully occludes the sun (glints
+only through alpha-test holes); dusk 12000→12786 dims/warms the disc
+(probe: color 1.0 → 0.496/0.338/0.203 → 0.35/0.228/0.126) with the sunset
+band; sun hidden at 14500 (gate); moon rises +X opposite the sunset, tracked
+under clouds, full-moon square overhead at 18000 with 1500 stars; 360° spawn
+pan at dawn shows no grey blob and no stray quads; zero console errors.
+
 ## UPDATE — crafting/inventory UI fix (2026-07-17)
 
 Conformed to `06 §9/§10/§14/§15`, `03 §3/§16.3/§23`, UPDATE-08 §7. Root causes

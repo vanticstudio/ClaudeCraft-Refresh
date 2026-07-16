@@ -351,6 +351,7 @@ export class DayNight {
       sunDir: sunDir.y > 0 ? sunDir : { x: -sunDir.x, y: -sunDir.y, z: 0 },
       world: this.world,
       rainLevel: this.rainLevel,
+      moonBright: this.moonBrightness(),
       isSnowAt: (x, z) => this.isSnowAtColumn(x, z),
       dtSec,
     });

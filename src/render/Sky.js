@@ -46,19 +46,24 @@ export class Sky {
     this.pivot = new THREE.Group();
     this.group.add(this.pivot);
 
-    // sun: white-yellow rounded square, additive (04 §5.2)
+    // sun: white-yellow rounded square, additive (04 §5.2) — alpha must reach 0
+    // at the quad border or the edge stamps a visible band
     const sunTex = makeCanvasTexture(32, 32, ctx => {
       for (let y = 0; y < 32; y++) {
         for (let x = 0; x < 32; x++) {
-          const d = Math.max(Math.abs(x - 15.5), Math.abs(y - 15.5));
-          const a = d < 12 ? 1 : Math.max(0, 1 - (d - 12) / 4);
+          const dx = Math.abs(x - 15.5), dy = Math.abs(y - 15.5);
+          const cheb = Math.max(dx, dy);
+          const d = cheb + (Math.hypot(dx, dy) - cheb) * 0.3;   // rounded corners
+          const a = Math.min(1, Math.max(0, (15.5 - d) / 4));
           if (a > 0) { ctx.fillStyle = `rgba(255,255,229,${a})`; ctx.fillRect(x, y, 1, 1); }
         }
       }
     });
+    sunTex.magFilter = THREE.LinearFilter;
+    sunTex.minFilter = THREE.LinearFilter;
     this.sunMat = new THREE.MeshBasicMaterial({
       map: sunTex, blending: THREE.AdditiveBlending, transparent: true,
-      depthWrite: false, depthTest: false, fog: false,
+      depthWrite: false, depthTest: true, fog: false,
     });
     this.sun = new THREE.Mesh(new THREE.PlaneGeometry(240, 240), this.sunMat);
     this.sun.position.set(0, R_SKY, 0);
@@ -70,12 +75,15 @@ export class Sky {
     const moonTex = makeCanvasTexture(128, 64, ctx => {
       for (let phase = 0; phase < 8; phase++) {
         const cx = (phase % 4) * 32, cy = phase < 4 ? 0 : 32;
+        if (phase === 4) {
+          // new moon: fully dark, 25% alpha (04 §5.3)
+          ctx.fillStyle = 'rgba(26,26,42,0.25)';
+          ctx.fillRect(cx + 8, cy + 8, 16, 16);
+          continue;
+        }
         ctx.fillStyle = '#C3C3C3';
         ctx.fillRect(cx + 8, cy + 8, 16, 16);
-        if (phase === 4) {
-          ctx.fillStyle = 'rgba(26,26,42,0.95)';
-          ctx.fillRect(cx + 8, cy + 8, 16, 16);
-        } else if (phase !== 0) {
+        if (phase !== 0) {
           // shadowed lune: offset dark square
           const frac = [0, 0.25, 0.5, 0.75, 1, 0.75, 0.5, 0.25][phase];
           const dir = phase < 4 ? 1 : -1;
@@ -87,7 +95,7 @@ export class Sky {
     moonTex.repeat.set(0.25, 0.5);
     this.moonTex = moonTex;
     this.moonMat = new THREE.MeshBasicMaterial({
-      map: moonTex, transparent: true, depthWrite: false, depthTest: false, fog: false,
+      map: moonTex, transparent: true, depthWrite: false, depthTest: true, fog: false,
     });
     this.moon = new THREE.Mesh(new THREE.PlaneGeometry(160, 160), this.moonMat);
     this.moon.position.set(0, -R_SKY, 0);
@@ -126,7 +134,7 @@ export class Sky {
         void main(){ float r = length(vXY);
           gl_FragColor = vec4(uColor, uAlpha * max(0.0, 1.0 - r)); }`,
       transparent: true, blending: THREE.AdditiveBlending,
-      depthWrite: false, depthTest: false, fog: false, side: THREE.DoubleSide,
+      depthWrite: false, depthTest: true, fog: false, side: THREE.DoubleSide,
     });
     this.band = new THREE.Mesh(new THREE.CircleGeometry(140, 12), this.bandMat);
     this.band.renderOrder = -9;
@@ -202,14 +210,28 @@ export class Sky {
 
   // Called every frame by DayNight
   update({ camera, angle, zenith, horizon, starAlpha, sunAlpha, sunrise,
-           cloudTint, sunIntensity, ambient, sunDir, world, rainLevel, isSnowAt, dtSec }) {
+           cloudTint, sunIntensity, ambient, sunDir, world, rainLevel, isSnowAt,
+           moonBright = 1, dtSec }) {
     this.group.position.copy(camera.position);
     this.pivot.rotation.z = angle * Math.PI * 2;
     this.zenith.copy(zenith);
     this.horizon.copy(horizon);
     this.starMat.opacity = starAlpha;
+
+    // horizon visibility gates (04 §5.2): sun world dir y = cos(angle·2π)
+    const sunY = Math.cos(angle * Math.PI * 2);
+    this.sun.visible = sunY > -0.3;
+    this.moon.visible = -sunY > -0.3;
+
+    // sun fades with sunIntensity (04 §6) and warms through the sunset
+    // band window (04 §5.5); alpha ×(1−rainLevel) per 04 §5.2
     this.sunMat.opacity = sunAlpha;
-    this.moonMat.opacity = sunAlpha;
+    this.sunMat.color.setRGB(sunIntensity, sunIntensity, sunIntensity * 0.898);
+    if (sunrise) {
+      this.sunMat.color.g *= 1 - 0.35 * sunrise.a;
+      this.sunMat.color.b *= 1 - 0.6 * sunrise.a;
+    }
+    this.moonMat.opacity = sunAlpha * (0.6 + 0.4 * moonBright);
 
     if (sunrise) {
       this.bandMat.uniforms.uColor.value.setRGB(sunrise.r, sunrise.g, sunrise.b);
@@ -217,7 +239,6 @@ export class Sky {
       // on the sun's horizon side
       const rising = angle > 0.5;
       this.band.position.set(rising ? R_SKY * 0.9 : -R_SKY * 0.9, 0, 0);
-      this.band.lookAt(this.group.position.x + this.band.position.x * 2, this.group.position.y, this.group.position.z);
       this.band.rotation.set(0, rising ? -Math.PI / 2 : Math.PI / 2, 0);
       this.band.visible = true;
     } else {
