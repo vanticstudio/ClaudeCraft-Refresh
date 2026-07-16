@@ -65,10 +65,11 @@ export class SaveManager {
       }
     }
     return {
+      // buffers written as-is — the structured clone copies them (01 §16.2)
       cx: chunk.cx, cz: chunk.cz,
-      blocks: chunk.blocks.slice().buffer,
-      states: chunk.states.slice().buffer,
-      biomes: chunk.biomes ? chunk.biomes.slice().buffer : new ArrayBuffer(256),
+      blocks: chunk.blocks.buffer,
+      states: chunk.states.buffer,
+      biomes: chunk.biomes ? chunk.biomes.buffer : new ArrayBuffer(256),
       blockEntities,
       spawnsDone: chunk.spawnsDone,
       spawns: chunk.pendingSpawns ?? null,

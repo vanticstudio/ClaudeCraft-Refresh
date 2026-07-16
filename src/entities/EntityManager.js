@@ -31,6 +31,7 @@ export class EntityManager {
 
   tick(player) {
     const p = this.world.playerChunk;
+    if (player) this.register(player);   // player ticks separately but must stay indexed
     for (const entity of this.entities.values()) {
       if (entity === player) continue;
       if (entity.dead) {
@@ -63,7 +64,9 @@ export class EntityManager {
     if (entity.object3d) {
       this.scene.remove(entity.object3d);
       entity.object3d.traverse(o => {
-        if (o.isMesh && o.material && !o.material.userData.shared) o.material.dispose();
+        if (!o.isMesh || !o.material) return;
+        const mats = Array.isArray(o.material) ? o.material : [o.material];
+        for (const m of mats) if (!m.userData?.shared) m.dispose();
       });
       entity.object3d = null;
     }

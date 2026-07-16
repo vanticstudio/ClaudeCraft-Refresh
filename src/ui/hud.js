@@ -130,8 +130,8 @@ export class Hud {
       const pips = this.el.hearts.children;
       for (let i = 0; i < 10; i++) {
         const v = hp - i * 2;
-        pips[i].textContent = v >= 2 ? '❤' : v === 1 ? '💔' : '🖤';
-        pips[i].style.filter = v >= 1 ? 'none' : 'grayscale(1) brightness(0.5)';
+        pips[i].textContent = v >= 2 ? '❤' : v === 1 ? '❥' : '❤';
+        pips[i].style.color = v >= 2 ? '#e0241c' : v === 1 ? '#e0241c' : '#3a0d0d';
       }
       this.el.hearts.style.transform = p.hurtTime > 0
         ? `translateX(${(p.hurtTime % 2 ? 1 : -1) * 2}px)` : '';

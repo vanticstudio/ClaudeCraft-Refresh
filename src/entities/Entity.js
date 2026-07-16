@@ -114,13 +114,14 @@ export class Entity {
   applyLightScalar() {
     if (!this.object3d) return;
     const s = this.lightScalar;
+    const hurtMul = this.hurtTime > 0 ? 0.35 : 1;
     this.object3d.traverse(o => {
-      if (o.isMesh && o.material && o.material.userData.baseColor) {
-        const base = o.material.userData.baseColor;
-        let mul = 1;
-        if (this.hurtTime > 0) mul = 1;   // tint handled below via g/b
-        o.material.color.setRGB(base.r * s, base.g * s * (this.hurtTime > 0 ? 0.35 : 1),
-                                base.b * s * (this.hurtTime > 0 ? 0.35 : 1));
+      if (!o.isMesh || !o.material) return;
+      const mats = Array.isArray(o.material) ? o.material : [o.material];
+      for (const mat of mats) {
+        const base = mat.userData?.baseColor;
+        if (!base) continue;
+        mat.color.setRGB(base.r * s, base.g * s * hurtMul, base.b * s * hurtMul);
       }
     });
   }
