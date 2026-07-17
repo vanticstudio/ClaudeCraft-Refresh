@@ -4,6 +4,223 @@ Deviations and ambiguity rulings. (The base-spec `.md` files were removed from
 the working tree during repo cleanup; the pre-UPDATE deviation log for the
 initial build lives in git history — `git show 8441ac9:DEVIATIONS.md`.)
 
+## E2 — 15-FIRE-WATERLOGGING: fire spread + the global bit-7 allocation (2026-07-17)
+
+Built to `15-FIRE-WATERLOGGING.md`. **CRITICAL tier: this phase allocates the
+global `states` bit 7 = waterlogged. That layout is now FROZEN — every later
+block-state consumer must honor it.**
+
+### THE BIT-7 CONTRACT (frozen — read before touching any block state)
+
+Written at the head of `src/registry/blocks.js`, where every state consumer will
+see it. Verbatim rules:
+
+```
+bit 7 (0x80) of every voxel's `states` byte = WATERLOGGED. Owned by 15 for every
+block in the game; NO other file may assign it.
+Per-block nibble meanings occupy bits 0-3 ONLY. Bits 4-6 remain free.
+```
+
+Invariants, each enforced in code and pinned by a test:
+
+| Invariant | Where it lives |
+|---|---|
+| `setBlock` CLEARS bit 7 whenever the new id is not `waterloggable` | `World.setBlock`, **before** the no-op early-return |
+| A bit-7 cell IS a water source for EVERY system | `isWaterCellAt` / `isWaterSourceAt`, exported from the registry |
+| Nibble reads MUST mask (`state & 0x0F`) | `Fluids.isSource` — a bare `state === 0` is the bug that deleted fences |
+| Toggling bit 7 runs the light edit AND neighbor updates despite an unchanged id | `World.setBlock`'s `waterlogFlip` |
+| Removing a bit-7 block leaves a water SOURCE, never air | `World.clearedCell`, used by every erase path |
+
+The API later phases should use: `WATERLOGGED`, `STATE_NIBBLE`, `isWaterCellAt(id, state)`,
+`isWaterSourceAt(id, state)`, `effFireEnc/effFireBurn(id, state)`,
+`world.isWaterCell/isWaterSource(x,y,z)`, `world.setWaterlogged(x,y,z,on)`,
+`world.clearedCell(x,y,z)`.
+
+### Amendments applied to the codebase (base specs stay frozen)
+
+| AMENDS | Applied as |
+|---|---|
+| 06 §5.14 | fire's registry entry now delegates to `world/fire.js`; the "never spreads" stub is gone |
+| 06 §5.6 | fire no longer primes TNT on placement — only when `tryBurn` CONSUMES it (burn 100, fuse 80) |
+| 06 §1 | the bit-7 contract block in `blocks.js` |
+| 06 §6.1/§6.2/§6.3 | `Fluids`: `isSource` masks the nibble; `strength` returns 8 for bit 7; `adjacentSources`/`solidOrSource` count bit-7 cells; `checkInteractions` treats a bit-7 neighbor as water |
+| 06 §5.11 / §5.9 | farmland moisture and sugar-cane support use `isWaterCellAt` |
+| 06 §17 | fire scheduled tick (30+rand(10)); lava randomTick → fire attempt; fire survival on neighbor update |
+| 01 §5 | registry gains `fireEnc` / `fireBurn` / `lavaIgnite` / `waterloggable` / `infiniteBurn` |
+| 01 §4.6 / §4.2 | `setBlock` relights on a bit-7 flip; `terminatesSky(id, state)` terminates the heightmap on a bit-7 cell |
+| 01 §8.1/§8.4 | mesher's same-fluid water test is `isWaterCell`; §12 dual emission |
+| 03 §10 | `overlapsFluid` (the single writer of `inWater`, player AND mobs) and `eyeSubmerged` use bit 7 |
+| 03 §16.2 | placement into a water source waterlogs; breaking a bit-7 block leaves a source |
+| 04 §8 | `LightEngine.opacity` = `max(opacity(id), bit7 ? 1 : 0)` |
+| 04 §12.6 | lightning → `lightningIgnite`: canSurvive + 4 extra ±1 attempts, origins registered |
+| 05 §12 | per-cell blast resistance = `bit7 ? max(blast, 100) : blast` |
+
+### Deviations
+
+1. **`BLOCKS[id].skyOpacity` does not exist.** AMENDS 01 §4.6/§4.2 specifies
+   `max(BLOCKS[id].skyOpacity, bit7 ? 1 : 0)`. This codebase has no such field —
+   the heightmap predicate is `terminatesSky(id)` in `LightEngine.js`. The
+   amendment lands as `terminatesSky(id, state)` instead. The gen-side heightmap
+   (`features.js`, in the worker) stays id-only and still agrees, because
+   worldgen never emits bit 7.
+2. **`LightEngine.onBlockChanged` gained `oldState`/`newState` params.** It
+   derived everything from `BLOCKS[oldId]`/`BLOCKS[newId]`, so a waterlog toggle
+   (same id) compared `oldB === newB`, every opacity test read false, and it did
+   **no light work at all**. Bit 7 is unexpressible in an id-only signature.
+3. **The fire-origin map is keyed by string, not bit-packed.** §6 says
+   `packedPos(x,y,z)`. World coords span ±1e6 (01 §4), so packing x/y/z into one
+   JS number overflows `Number.MAX_SAFE_INTEGER` and silently aliases distant
+   fires onto each other — in a *safety valve*. The map holds ≤ 512 entries and
+   is touched once per fire tick (every 30-39 t); correctness wins.
+4. **`world.igniteTnt` is called for fire-consumed TNT** rather than a local
+   `primeTNT` (§2.5). Same thing: `igniteTnt(x, y, z, 80)` is the base's single
+   prime choke point and already carries the §3.5 fuse loop from E1.
+5. **The MAX_ACTIVE cap gates the new fire but NOT the fuel; the RADIUS cap gates
+   both.** §6.3 folds both into one `fireBudgetAllows` and says a failure must not
+   consume the fuel — but §6 also promises a direct ignition "can't cascade
+   further **until the count drops**", and with fuel never consumed at the cap the
+   count *cannot* drop: on a wool field §2.4a returns early (flammable neighbor)
+   and §2.4b never fires (the floor is fuel), so 512 fires would burn eternally
+   and nothing could ever spread again. That is a deadlock, not the "plateaus
+   ≤ 512" the acceptance list describes. §6.3's "don't consume" rationale is
+   explicitly spatial — "the fire front stalls instead of silently deleting the
+   world edge" — so it is scoped to `RADIUS_CAP`; the concurrency cap withholds
+   only the fire (§6: "MAX_ACTIVE only gates new spread fires"), letting the
+   cascade drain. Found by the review.
+6. **`HUMID_BURNOUT_BIOMES` = `{SNOWY_TUNDRA, MOUNTAINS}`** by id from
+   `biomes.js`, per §2.6's own adaptation note (02 has no jungle/swamp).
+7. **Fire's rolls use `Math.random()`, never `world.rng`.** §2's note permits it,
+   and it is load-bearing: `world.rng` is a seeded stream shared with weather and
+   worldgen, so drawing fire rolls from it would desync the simulation.
+8. **`§7 rendering (4-frame animated tiles) is NOT implemented in this pass.**
+   See "Deferred" below — it is the one acceptance item outstanding.
+
+### Defects found and fixed before landing
+
+- **A waterlogged fence deleted itself on its first fluid tick.** `isSource(state)`
+  was a bare `state === 0`; a bit-7 fence (`0x80`) read as non-source, entered the
+  re-derive branch, and hit `best <= 0 → setBlock(AIR)`. Found by the scout, not
+  by testing.
+- **A waterlogged cell spread FENCES.** The spread branch passes the current
+  cell's `id` to `setFluid` — for a bit-7 fence that replicated fences sideways
+  and downward. Now spreads `B.WATER`.
+- **`blockTick` never routed a waterlogged cell to `fluids.step`** (its id has no
+  `.fluid`), so its water could never spread at all.
+- **The fire-origin map leaked on five removal paths.** §6.4 requires *any*
+  removal to drop its entry, but fire is removed by water flowing in, punching,
+  explosions, block placement and the engine itself — only the last called
+  `forgetFire`. A leaked map silently starves `MAX_ACTIVE` until nothing may
+  spread. Now hooked in `World.setBlock`, the one chokepoint every write funnels
+  through. `forgetFireInChunk` was also never called; now wired to
+  `Game.onChunkUnloading` per §6.4.
+- **§6.3's stall rule was inverted.** The budget check sat inside the placeFire
+  condition, so an out-of-leash fuel block still burned away. The gate now
+  precedes the branch: the front stalls without consuming fuel.
+- **`world.popBlock` / `removeBlock` erased waterlogged cells to air**, silently
+  contradicting §10.6 — a support-pop would drink the lake even though
+  `breakBlock` did it right. Both now route through `World.clearedCell`.
+- **The creative insta-break bypassed `breakBlock`** and had the same bug.
+- **Farmland and sugar cane used a bare `=== B.WATER`** (§13.4), so a waterlogged
+  fence irrigated nothing.
+- **Flint & steel could only light the TOP face** and tested `isSolidSupport`
+  rather than §1.2's `canSurvive` — you could not light a wooden wall from the
+  side, which is exactly what `anyFlammableNeighbor` exists for.
+- **Lightning used a strict subset of `canSurvive`** (`isSolidSupport` only), made
+  no extra attempts, and bypassed the origin map.
+- **`Game.explode` read the cell state six lines AFTER the blast-resistance gate**,
+  so §13.6 needed the read hoisted.
+
+### Defects found by the CRITICAL-tier review pass and fixed
+
+A 3-dimension Opus review (bit-7 contract / fire engine / Part-B integration),
+each finding then put to an independent refuter. Confirmed and fixed:
+
+- **A waterlogged ladder popped itself within ~5 ticks.** `ladderNeighbor` read
+  the RAW state as a `WALL_DIR` key; a bit-7 ladder is `0x81`–`0x84`, `WALL_DIR`
+  has keys 1–4, so the lookup returned `undefined` and the `?? WALL_DIR[1]`
+  fallback probed the *wrong wall* — found no support and destroyed the ladder.
+  This is precisely the "bare state read" the contract exists to prevent, and it
+  landed in the one wall-mounted waterloggable block. Every `WALL_DIR` lookup now
+  masks the nibble.
+- **§2.4/§2.5/§2.6 were driven by the post-aging `newAge`.** The spec binds
+  `newAge` for the state write and uses the PRE-tick `age` for every decision —
+  deliberate, and vanilla (`FireBlock#tick` stores `j` but passes `i` to
+  `checkBurnOut` and the spread odds). My first pass called this a spec
+  inconsistency and used `newAge` throughout, which shifts every fire probability
+  on the ~1/3 of ticks that bump the age. The reviewer was right and that
+  "deviation" is withdrawn.
+- **Water directly under any waterlogged cell blinked out every 5 ticks.** The
+  re-derive branch's `fromAbove` feeder test was a bare `.fluid` compare, so a
+  bit-7 cell above did not count as a feeder; the cell below found none, hit
+  `best <= 0` and deleted itself.
+- **The MAX_ACTIVE deadlock** (deviation 5 above).
+- **`ChunkManager.hydrate` rebuilt the heightmap id-only**, so every waterlogged
+  column lost its sky terminator across a save/reload — the live and reloaded
+  worlds disagreed about identical voxel data, and `isRainingAt` below a bit-7
+  cell flipped from false to true. It had `states` in scope two lines earlier.
+- **`emitLadder` dispatched on the whole state byte**, so every waterlogged ladder
+  rendered on the wrong wall (all three `===` tests missed and it fell through to
+  the state-4 branch).
+- **`World.neighborUpdates` never woke a waterlogged neighbor** (bare `.fluid`
+  test), so a bit-7 cell could never re-spread after an adjacent block opened up.
+- **§1.3's neighbor-update removal was silent** — §15 makes the quiet age-out of
+  §2.4 the *only* silent removal.
+- **§2.3's age write dirtied the chunk**, forcing a remesh the spec explicitly
+  says is unnecessary ("no remesh needed (texture ageless)"); a burning floor
+  remeshed its chunks several times a second for no visual change. `setState`
+  gained a `noRemesh` option.
+
+### Deferred (declared, not silently skipped)
+
+**§7 — the 4-frame animated-tile pipeline is not built.** Fire/water/lava still
+animate by the existing atlas-repaint path (`atlas.js`'s `animate()`, 2 frames at
+4 Hz), which is 06 §3's mechanism and remains fully functional — nothing
+regressed. §7's `anim` vertex attribute + `uAnimFrame` UV shift (AMENDS 01
+§7.1/§8.5/§8.7) is unimplemented, and the acceptance line "fire/water/lava render
+4-frame animation at 4 Hz via `uAnimFrame`" therefore FAILS.
+
+The scout surfaced why this is not a mechanical port, and the reasons are worth
+recording for whoever picks it up:
+
+- **The three tiles cannot get 4 consecutive same-row slots where they sit.**
+  `water` = tile 93 (row 2, col 29), `lava` = 94 (col 30), `fire` = 95 (col 31).
+  §7.2's UV shift is pure `+u` and cannot wrap rows, so naive allocation samples
+  garbage from the next row. TILE_NAMES needs a row-aware allocator or a reorder.
+- **The spec's tile names don't exist**: it lists `water_still`/`lava_still`/
+  `portal`; the code has `water`/`lava`/`fire` and no portal.
+- **§7.2 omits a 4th animated tile that already exists** — `furnace_front_lit`.
+  `anim` is a 0/1 flag and cannot express its 2 frames, so deleting the repaint
+  path would silently freeze it.
+- The "2 existing noise seeds" §7.2 refers to are `seed(name+':0')`/`':1'` — an
+  rng nudge, not two authored looks — and adopting §7.2's `'#'` convention
+  changes water/lava/fire pixels (cosmetic, but a visible diff).
+
+Everything else in §7 (shape, light 15, cutout bucket, item icons showing frame 0)
+already holds today.
+
+### Verified
+
+**33 browser assertions, 0 console errors** (24 core + 5 lava/infinite-source +
+4 review-fix regressions), plus the E1 suites re-run for regressions
+(35 audio + 7 in-game + 16 RMB, all green).
+
+Gate items, measured: a wool floor **catches** (peak 4 simultaneous fire cells)
+and **burns out** (13/25 consumed, 0 fire left); **rain extinguishes** an age-0
+fire with median 4 fire-ticks; fire on an `infiniteBurn` block survives **400
+rainy fire-ticks** and ages to 15; a submerged fence **shows water** (water-bucket
+verts 404 logged vs 384 dry) and **breaks to a source** (id 63, state 0).
+
+Also pinned: fire re-schedules every 30-39 t; `canSurvive` refuses mid-air but
+accepts a flammable wall; bare stone fire self-extinguishes (median 10 fire-ticks);
+a bit-7 cell survives its own fluid ticks and spreads water at S-1 = 7 without
+replicating itself; sky light drops 15→14 through a waterlogged cell and the
+heightmap terminates on it; a soaked fence reads enc/burn 0; it survives a
+point-blank creeper while a dry one does not; `setBlock` scrubs bit 7 from every
+non-waterloggable id; bit 7 round-trips through `serializeChunk` (state byte 0x80);
+every fire-removal path drops its origin entry; all three §11.3 lava rows
+(flowing→cobblestone, source→obsidian, on-top→no conversion) and §11.2's
+infinite-source promotion.
+
 ## UPDATE — theme-music drop zone made Vercel-ready (2026-07-17)
 
 The C418 placeholders were deleted from the working tree by the repo owner. This

@@ -1,6 +1,6 @@
 // AABB vs voxel grid: axis-separated move-and-slide (01 §12).
 // doorBox / FACING_DIR conventions are owned by the registry.
-import { BLOCKS, B, doorBox, FACING_DIR } from '../registry/blocks.js';
+import { BLOCKS, B, doorBox, FACING_DIR, WATERLOGGED } from '../registry/blocks.js';
 import { MAX_Y } from '../constants.js';
 
 const EPS = 1e-7;
@@ -94,10 +94,18 @@ export function forEachOverlappedCell(box, cb) {
 }
 
 // Water counts as full cells for physics (01 §12 approx)
+//
+// AMENDS 03 §10 / 15 §13.2 — this is the ONLY writer of `inWater` (via
+// Entity.updateMedium), for the player AND every mob, so the bit-7 rule belongs
+// here rather than in Player: swimming/drowning inside a waterlogged
+// fence/ladder column, fall damage cancelled on entry, and burning extinguished
+// all fall out of this one test. Gated on 'water' — lava must never absorb it.
 export function overlapsFluid(world, box, fluid) {
+  const water = fluid === 'water';
   return forEachOverlappedCell(box, (x, y, z) => {
     const blk = BLOCKS[world.getBlock(x, y, z)];
-    return blk && blk.fluid === fluid;
+    if (blk && blk.fluid === fluid) return true;
+    return water && (world.getState(x, y, z) & WATERLOGGED) !== 0;
   });
 }
 

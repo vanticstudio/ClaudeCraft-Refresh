@@ -5,6 +5,7 @@ import { sharedUniforms } from '../mesh/materials.js';
 import { Sky } from '../render/Sky.js';
 import { BLOCKS, B, isSolidSupport } from '../registry/blocks.js';
 import { emitSound, at } from '../audio/engine.js';
+import { lightningIgnite } from '../world/fire.js';
 import { BIOME_TEMPS } from '../world/gen/biomes.js';
 import { RENDER_RADIUS, chunkKey, SIM_RADIUS } from '../constants.js';
 import { ChunkState } from '../world/Chunk.js';
@@ -240,10 +241,12 @@ export class DayNight {
     this.lightningMeshes.push({ group, life: 6 });
 
     // gameplay: fire + 10 dmg within 3 m (04 §12.6, numbers per 05)
-    if (w.getBlock(Math.floor(x), y, Math.floor(z)) === B.AIR &&
-        isSolidSupport(w.getBlock(Math.floor(x), y - 1, Math.floor(z)))) {
-      w.setBlock(Math.floor(x), y, Math.floor(z), B.FIRE);
-    }
+    // AMENDS 04 §12.6 / 15 §4.3 — fire (age 0) at the strike cell if canSurvive,
+    // then 4 extra ±1-per-axis attempts, each only if air + canSurvive. Each
+    // registers a §6 ignition origin. The old test was isSolidSupport-only: a
+    // strict subset of §1.2's canSurvive (which also accepts a flammable
+    // neighbor), and it bypassed the origin map entirely.
+    lightningIgnite(w, Math.floor(x), y, Math.floor(z));
     const box = new AABB(x - 3, y - 3, z - 3, x + 3, y + 3, z + 3);
     for (const e of w.getEntitiesInBox(box, ent => ent instanceof LivingEntity)) {
       e.hurt(10, 'lightning');

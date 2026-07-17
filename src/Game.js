@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import {
   MS_PER_TICK, MAX_TICKS_PER_FRAME, STATE, AUTOSAVE_INTERVAL, chunkKey, SIM_RADIUS,
 } from './constants.js';
-import { BLOCKS, B, blockByName, FACING_DIR } from './registry/blocks.js';
+import { BLOCKS, B, blockByName, FACING_DIR, WATERLOGGED } from './registry/blocks.js';
 import { ITEMS, idOf, SMELTING, fuelValue } from './registry/items.js';
 import { World } from './world/World.js';
 import { ChunkManager } from './world/ChunkManager.js';
@@ -29,6 +29,7 @@ import { Particles } from './render/Particles.js';
 import { AABB } from './math/aabb.js';
 import { createMob, MobSpawner, HOSTILE_TYPES } from './entities/mobs/index.js';
 import { emitSound, startLoop, at } from './audio/engine.js';
+import { forgetFireInChunk } from './world/fire.js';
 
 const NEUTRAL_FRAME = {
   forward: 0, strafe: 0, jump: false, sneak: false, sprintKey: false,
@@ -563,14 +564,19 @@ export class Game {
             if (id === B.AIR) continue;
             const blk = BLOCKS[id];
             if (blk.hardness < 0 && !blk.fluid) continue;   // bedrock
+            const state = world.getState(bx, by, bz);
+            // AMENDS 05 §12 / 15 §13.6 — a waterlogged cell is explosion-proof
+            // like water: resistance = max(blast, 100). A creeper cannot crater
+            // a submerged fence line. Hoisted above the gate; the drops call
+            // below needs the same read.
+            const blast = (state & WATERLOGGED) ? Math.max(blk.blast, 100) : blk.blast;
             const strength = power * (0.7 + 0.6 * rng()) * (1 - r / (1.3 * power));
-            if (strength <= (blk.blast + 0.3) * 0.3) continue;
+            if (strength <= (blast + 0.3) * 0.3) continue;
             if (id === B.TNT) {
               world.setBlock(bx, by, bz, B.AIR);
               this.igniteTnt(bx, by, bz, 10 + Math.floor(rng() * 21));
               continue;
             }
-            const state = world.getState(bx, by, bz);
             world.setBlock(bx, by, bz, B.AIR);
             // drops with probability 1/power, as if mined by diamond tool
             if (rng() < 1 / power && blk.drops) {
@@ -727,6 +733,10 @@ export class Game {
 
   onChunkUnloading(chunk) {
     this.entities.onChunkUnloading(chunk, this.player);
+    // 15 §6.4 — "chunk unload deletes that chunk's entries". Fires in an
+    // unloaded chunk never tick again, so without this their origins sit in the
+    // map forever and slowly starve MAX_ACTIVE until nothing may spread.
+    forgetFireInChunk(chunk.cx, chunk.cz);
   }
 
   // ---------------------------------------------------------------- tree growth (sapling → 02 placer)

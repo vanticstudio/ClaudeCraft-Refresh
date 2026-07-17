@@ -1,7 +1,7 @@
 // Culled-face chunk mesher with per-vertex AO + smooth light (01 §8).
 // Runs on the main thread against a 3×3 LIT neighborhood (01 §8.6).
 import * as THREE from 'three';
-import { BLOCKS, B } from '../registry/blocks.js';
+import { BLOCKS, B, WATERLOGGED, STATE_NIBBLE } from '../registry/blocks.js';
 import {
   FACE_NORMALS, FACE_CORNERS, FACE_UVS, FACE_TANGENTS, FACE_SHADE, AO_CURVE,
 } from './faceTables.js';
@@ -118,6 +118,14 @@ export class ChunkMesher {
     if (wy < 0 || wy > MAX_Y) return 0;
     return this.chunkOf(wx, wz).blockLight[(wy << 8) | ((wz & 15) << 4) | (wx & 15)];
   }
+  // 15 §12.3 — the same-fluid test for WATER everywhere in the mesher. Lava is
+  // untouched. Mirrors the Y guards of its siblings: out of range is never water.
+  isWaterCell(wx, wy, wz) {
+    if (wy < 0 || wy > MAX_Y) return false;
+    const c = this.chunkOf(wx, wz);
+    const i = (wy << 8) | ((wz & 15) << 4) | (wx & 15);
+    return c.blocks[i] === B.WATER || (c.states[i] & WATERLOGGED) !== 0;
+  }
 
   tileFor(blk, state, face) {
     return blk.tileIndexFor ? blk.tileIndexFor(state, face) : blk.tileIndex[face];
@@ -151,6 +159,10 @@ export class ChunkMesher {
         case 'farmland': this.emitBox(x, y, z, blk, st, [0, 0, 0, 1, 15 / 16, 1], true); break;
         default: break;   // 'none'
       }
+      // 15 §12 — the SECOND contribution. The block mesh above is emitted
+      // exactly as dry; this adds the water into the water bucket. Done after
+      // the switch so every waterloggable shape gets it for free.
+      if (st & WATERLOGGED) this.emitWaterlogged(x, y, z, blk);
     }
 
     if (this.minY > this.maxY) { this.minY = 0; this.maxY = 0; }
@@ -185,6 +197,16 @@ export class ChunkMesher {
     if (b.opaque) return false;
     if (a.id === bId) return a.renderSameIdFaces;
     return true;
+  }
+
+  /**
+   * 15 §12.3 — the water-bucket variant of faceVisible. Water hides its face
+   * against any other water CELL, which now includes a waterlogged block: an
+   * ocean-floor chest must sit flush, not behind a pane of water.
+   */
+  waterFaceVisible(wx, wy, wz) {
+    if (this.isWaterCell(wx, wy, wz)) return false;
+    return !BLOCKS[this.blockAt(wx, wy, wz)].opaque;
   }
 
   emitCubeFace(builder, x, y, z, f, tile) {
@@ -245,18 +267,60 @@ export class ChunkMesher {
 
   emitLiquid(x, y, z, blk) {
     const builder = builders.water;
-    const above = this.blockAt(x, y + 1, z);
-    const h = BLOCKS[above].fluid === blk.fluid ? 1 : 0.875;
+    const water = blk.fluid === 'water';
+    // 15 §12.3 — for water, "same fluid" means isWaterCell: a plain water cell
+    // culls its face toward a waterlogged neighbor, so an ocean-floor fence line
+    // reads as continuous water with no phantom walls. Lava keeps the id test.
+    const sameFluid = (wx, wy, wz) => water
+      ? this.isWaterCell(wx, wy, wz)
+      : BLOCKS[this.blockAt(wx, wy, wz)].fluid === blk.fluid;
+    const h = sameFluid(x, y + 1, z) ? 1 : 0.875;
     for (let f = 0; f < 6; f++) {
       const n = FACE_NORMALS[f];
-      const nId = this.blockAt(x + n[0], y + n[1], z + n[2]);
-      const nb = BLOCKS[nId];
-      if (nb.fluid === blk.fluid) continue;   // same-fluid faces never render
-      if (nb.opaque) continue;
+      const nx = x + n[0], ny = y + n[1], nz = z + n[2];
+      if (sameFluid(nx, ny, nz)) continue;    // same-fluid faces never render
+      if (BLOCKS[this.blockAt(nx, ny, nz)].opaque) continue;
       this.emitFlatFace(builder, x, y, z, f, blk.tileIndex[f], h,
-        this.skyAt(x + n[0], y + n[1], z + n[2]),
-        this.blockLightAt(x + n[0], y + n[1], z + n[2]),
+        this.skyAt(nx, ny, nz), this.blockLightAt(nx, ny, nz),
         Math.round((blk.fluidAlpha ?? 1) * 255));
+    }
+  }
+
+  /**
+   * 15 §12 — a bit-7 cell emits TWO contributions in the same sweep: its normal
+   * block mesh (emitted by the shape switch, unchanged) AND this water geometry
+   * in the water bucket.
+   */
+  emitWaterlogged(x, y, z, blk) {
+    // §12.2 full-cube rule: a chest emits NO water of its own — the water is
+    // logically present but visually inside the cube, and neighbouring water
+    // culls toward it via isWaterCell, so it sits flush with no phantom sleeve.
+    if (blk.shape === 'cube') return;
+
+    const builder = builders.water;
+    const water = BLOCKS[B.WATER];
+    const alpha = Math.round((water.fluidAlpha ?? 1) * 255);
+    const aboveWater = this.isWaterCell(x, y + 1, z);
+    const sideTop = aboveWater ? 1.0 : 0.875;
+
+    // top face at the standard lowered source surface, only if nothing above
+    if (!aboveWater) {
+      this.emitFlatFace(builder, x, y, z, 2, water.tileIndex[2], 0.875,
+        this.skyAt(x, y + 1, z), this.blockLightAt(x, y + 1, z), alpha);
+    }
+    // sides at the exact cell-boundary plane
+    for (const f of [0, 1, 4, 5]) {
+      const n = FACE_NORMALS[f];
+      const nx = x + n[0], ny = y + n[1], nz = z + n[2];
+      if (this.isWaterCell(nx, ny, nz)) continue;
+      if (BLOCKS[this.blockAt(nx, ny, nz)].opaque) continue;
+      this.emitFlatFace(builder, x, y, z, f, water.tileIndex[f], sideTop,
+        this.skyAt(nx, ny, nz), this.blockLightAt(nx, ny, nz), alpha);
+    }
+    // bottom
+    if (!this.isWaterCell(x, y - 1, z) && !BLOCKS[this.blockAt(x, y - 1, z)].opaque) {
+      this.emitFlatFace(builder, x, y, z, 3, water.tileIndex[3], 1,
+        this.skyAt(x, y - 1, z), this.blockLightAt(x, y - 1, z), alpha);
     }
   }
 
@@ -339,10 +403,14 @@ export class ChunkMesher {
     this.emitBox(x, y, z, blk, st, b, false);
   }
 
-  emitLadder(x, y, z, blk, st) {
+  emitLadder(x, y, z, blk, st0) {
     const [sky, bl] = this.ownLight(x, y, z);
     const r = Math.round(sky * 17), g = Math.round(bl * 17);
-    const tile = this.tileFor(blk, st, 0);
+    const tile = this.tileFor(blk, st0, 0);
+    // 15 §8: MASK the nibble. A waterlogged ladder is 0x81..0x84 — every ===
+    // test below would miss and all four orientations would fall through to the
+    // state-4 branch, rendering the ladder on the wrong wall.
+    const st = st0 & STATE_NIBBLE;
     const e = 1 / 16;
     const bld = builders.cutout;
     if (st === 1) this.emitSpriteQuad(bld, tile, [x, y, z + e], [x + 1, y, z + e], [x + 1, y + 1, z + e], [x, y + 1, z + e], r, g);

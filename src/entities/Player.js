@@ -1,7 +1,7 @@
 // Survival player: movement state machine, health, hunger, XP, inventory
 // (03 full spec; hunger/XP per 06 §12–13; combat charge per 05 §13).
 import { LivingEntity } from './Entity.js';
-import { BLOCKS, B, matOf } from '../registry/blocks.js';
+import { BLOCKS, B, matOf, isWaterCellAt } from '../registry/blocks.js';
 import { ITEMS } from '../registry/items.js';
 import { collidesAny, overlapsBlockId } from '../physics/collision.js';
 import { AABB } from '../math/aabb.js';
@@ -295,7 +295,10 @@ export class Player extends LivingEntity {
     }
     const eye = { x: this.pos.x, y: this.pos.y + this.eyeHeight, z: this.pos.z };
     const eyeBlock = this.world.getBlock(Math.floor(eye.x), Math.floor(eye.y), Math.floor(eye.z));
-    this.eyeSubmerged = eyeBlock === B.WATER;
+    // AMENDS 03 §10 / 15 §13.2 — eyes inside a waterlogged cell submerge too
+    // (mining speed /5, the underwater overlay, the swim-branch's eye test).
+    this.eyeSubmerged = isWaterCellAt(eyeBlock,
+      this.world.getState(Math.floor(eye.x), Math.floor(eye.y), Math.floor(eye.z)));
 
     // 6. movement branch
     const velYBefore = this.vel.y;

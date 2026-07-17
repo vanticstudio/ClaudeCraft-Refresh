@@ -1,10 +1,11 @@
 // World facade: world-coords block/light API + block update fan-out (01 §4.6).
-import { BLOCKS, B } from '../registry/blocks.js';
+import { BLOCKS, B, WATERLOGGED, isWaterCellAt, isWaterSourceAt } from '../registry/blocks.js';
 import { chunkKey, blockIndex, MAX_Y, SIM_RADIUS } from '../constants.js';
 import { ChunkState } from './Chunk.js';
 import { LightEngine } from './LightEngine.js';
 import { ScheduledTicks } from './scheduledTicks.js';
 import { Fluids } from './fluids.js';
+import { fireTick, canSurvive, lavaFireAttempt, forgetFire, removeFire } from './fire.js';
 import { mulberry32, xmur3, hashString, mix32 } from '../math/rng.js';
 
 const DIRS6 = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
@@ -104,13 +105,29 @@ export class World {
     const i = (y << 8) | ((z & 15) << 4) | (x & 15);
     const old = chunk.blocks[i];
     const oldState = chunk.states[i];
+    // 15 §8 ENGINE INVARIANT: bit 7 is meaningful only on waterloggable blocks.
+    // Clear it for every other id, so a stale bit can never survive a block swap
+    // and make (say) a stone cell read as a water source to the fluid system.
+    if (!BLOCKS[id]?.waterloggable) state &= ~WATERLOGGED;
     if (old === id && oldState === state) return false;
     const oldBlock = BLOCKS[old];
     const newBlock = BLOCKS[id];
+    // A bit-7 flip changes the cell's effective opacity (15 §13.5), so it must
+    // relight exactly like an id change would (AMENDS 01 §4.6/§4.2).
+    const waterlogFlip = (oldState & WATERLOGGED) !== (state & WATERLOGGED);
 
     chunk.blocks[i] = id;
     chunk.states[i] = state;
     chunk.modified = true;
+
+    // 15 §6.4 — "any fire removal (any path) deletes its entry". Fire is removed
+    // by at least five routes that never touch the fire engine: water/lava
+    // flowing in (fire is canReplace), punching it out, an explosion, a block
+    // placed into the cell, and the engine's own removeFire. Hooking the single
+    // chokepoint every write funnels through is the only way the origin map
+    // cannot leak — and a leaked map silently starves MAX_ACTIVE until no fire
+    // may spread at all.
+    if (old === B.FIRE && id !== B.FIRE) forgetFire(x, y, z);
 
     // block-entity contents spill (chest/furnace)
     if (oldBlock.blockEntity && oldBlock.blockEntity !== newBlock.blockEntity) {
@@ -121,9 +138,11 @@ export class World {
       }
     }
 
-    // synchronous relight; returns every chunk key any write touched
-    const dirtied = old !== id
-      ? this.light.onBlockChanged(x, y, z, old, id)
+    // synchronous relight; returns every chunk key any write touched.
+    // `waterlogFlip` is why this is not just `old !== id`: waterlogging a fence
+    // leaves the id alone but changes how the column filters sky light.
+    const dirtied = (old !== id || waterlogFlip)
+      ? this.light.onBlockChanged(x, y, z, old, id, oldState, state)
       : null;
 
     // remesh dirtying: own chunk + border/diagonal neighbors + light-touched
@@ -140,24 +159,68 @@ export class World {
       }
       // placed fluids start flowing; placed gravity blocks may fall
       if (newBlock.fluid) this.fluids.schedule(x, y, z, newBlock.fluid);
+      // 15 §11.1: a waterlogged cell is a source and must tick like one, even
+      // though its id (fence/ladder/chest) has no `fluid`.
+      if (state & WATERLOGGED) this.fluids.schedule(x, y, z, 'water');
       if (newBlock.gravity) this.checkFall(x, y, z);
       this.neighborUpdates(x, y, z);
     }
     return true;
   }
 
-  setState(x, y, z, state) {
+  /**
+   * @param opts.noRemesh  skip remesh dirtying. Only for state writes that
+   *   provably cannot change the mesh — 15 §2.3's fire age is the case that
+   *   matters: the fire tile is ageless, and a burning floor bumps ~25 ages
+   *   several times a second, which would otherwise remesh its chunks
+   *   continuously for no visual change.
+   */
+  setState(x, y, z, state, opts) {
     if (y < 0 || y > MAX_Y) return false;
     const chunk = this.getChunkAt(x, z);
     if (!chunk) return false;
     const i = (y << 8) | ((z & 15) << 4) | (x & 15);
     if (chunk.states[i] === state) return false;
+    // AMENDS 01 §4.6: a bit-7 toggle must run step 4 (light) and step 7
+    // (neighbor updates / fluid wake) even when the id is unchanged. Route it
+    // through setWaterlogged rather than silently writing a half-applied state:
+    // a bare nibble write here (fire age, crop stage) legitimately skips both.
+    if (((chunk.states[i] ^ state) & WATERLOGGED) !== 0) {
+      const id = chunk.blocks[i];
+      return this.setBlock(x, y, z, id, { state, byPlayer: true });
+    }
     chunk.states[i] = state;
     chunk.modified = true;
-    if (this.chunkManager) {
+    if (this.chunkManager && !opts?.noRemesh) {
       for (const k of this.collectDirtyKeys(chunk, x, z, null)) this.chunkManager.markDirty(k);
     }
     return true;
+  }
+
+  // ---------------------------------------------------------------- 15 §8 bit-7 API
+
+  /** 15 §11.1 — the cell contains water (real water, or a waterlogged block). */
+  isWaterCell(x, y, z) {
+    return isWaterCellAt(this.getBlock(x, y, z), this.getState(x, y, z));
+  }
+
+  /** 15 §11.1 — the cell is a water SOURCE. */
+  isWaterSource(x, y, z) {
+    return isWaterSourceAt(this.getBlock(x, y, z), this.getState(x, y, z));
+  }
+
+  /**
+   * 15 §10.4/§10.5 — toggle bit 7. Runs the full 01 §4.6 pipeline (light edit +
+   * neighbor updates + fluid wake) because setBlock's `waterlogFlip` path fires
+   * even though the id is unchanged.
+   */
+  setWaterlogged(x, y, z, on) {
+    const id = this.getBlock(x, y, z);
+    if (!BLOCKS[id]?.waterloggable) return false;
+    const state = this.getState(x, y, z);
+    const next = on ? (state | WATERLOGGED) : (state & ~WATERLOGGED);
+    if (next === state) return false;
+    return this.setBlock(x, y, z, id, { state: next, byPlayer: true });
   }
 
   collectDirtyKeys(chunk, x, z, extra) {
@@ -184,7 +247,11 @@ export class World {
       if (nId === B.AIR) continue;
       const nBlk = BLOCKS[nId];
       nBlk.neighborUpdate?.(this, nx, ny, nz, this.getState(nx, ny, nz));
-      if (nBlk.fluid) this.fluids.schedule(nx, ny, nz, nBlk.fluid);
+      // 15 §11.1 — waterlogged cells "receive scheduled fluid ticks like water
+      // cells (scheduled on waterlog, on neighbor wake)". Fluids.wake handles
+      // both; the bare `nBlk.fluid` test misses a bit-7 fence entirely, so it
+      // could never re-spread once an adjacent block opened up.
+      if (nBlk.fluid || (this.getState(nx, ny, nz) & WATERLOGGED)) this.fluids.wake(nx, ny, nz);
       if (nBlk.gravity) this.checkFall(nx, ny, nz);
     }
   }
@@ -200,6 +267,18 @@ export class World {
     this.game?.spawnFallingBlock(id, x, y, z);
   }
 
+  /**
+   * 15 §10.6 — what a removed cell becomes. A waterlogged block leaves its water
+   * behind as a SOURCE (id 63, state 0), never air. Every erase path must use
+   * this or the bit-7 contract is only half-honored: breakBlock could do it
+   * right while a support-pop silently drank the lake.
+   */
+  clearedCell(x, y, z) {
+    return (this.getState(x, y, z) & WATERLOGGED)
+      ? { id: B.WATER, state: 0 }
+      : { id: B.AIR, state: 0 };
+  }
+
   // Break with drops (loot ctx optional)
   popBlock(x, y, z, { toolClass = null, toolTier = null } = {}) {
     const id = this.getBlock(x, y, z);
@@ -209,7 +288,8 @@ export class World {
     const drops = blk.drops
       ? blk.drops({ state, toolClass, toolTier, rng: this.rng })
       : [];
-    this.setBlock(x, y, z, B.AIR);
+    const cleared = this.clearedCell(x, y, z);
+    this.setBlock(x, y, z, cleared.id, { state: cleared.state });
     if (this.game) {
       for (const d of drops) this.game.spawnItemByName(d.name, d.count, x + 0.5, y + 0.5, z + 0.5);
     }
@@ -217,7 +297,8 @@ export class World {
   }
 
   removeBlock(x, y, z) {
-    return this.setBlock(x, y, z, B.AIR);
+    const cleared = this.clearedCell(x, y, z);
+    return this.setBlock(x, y, z, cleared.id, { state: cleared.state });
   }
 
   // ---------------------------------------------------------------- ticking
@@ -228,8 +309,14 @@ export class World {
     const id = this.getBlock(x, y, z);
     if (id === B.AIR) return;
     const blk = BLOCKS[id];
-    if (blk.fluid) this.fluids.step(x, y, z);
-    else blk.scheduledTick?.(this, x, y, z, this.getState(x, y, z));
+    const state = this.getState(x, y, z);
+    // 15 §11.1 — a waterlogged cell runs the fluid spread branch on its
+    // scheduled ticks. Its id has no `.fluid`, so without this gate the tick
+    // would go to the fence's own scheduledTick (null) and the water would
+    // never spread. A waterloggable block has no scheduledTick of its own, so
+    // nothing is shadowed.
+    if (blk.fluid || (state & WATERLOGGED)) this.fluids.step(x, y, z);
+    else blk.scheduledTick?.(this, x, y, z, state);
   }
 
   // 24 random cells per SIM_RADIUS chunk per tick (01 §6.2)
@@ -262,6 +349,23 @@ export class World {
   }
 
   igniteTnt(x, y, z, fuse) { this.game?.igniteTnt(x, y, z, fuse); }
+
+  // ---------------------------------------------------------------- 15 fire hooks
+  // The registry's fire block calls these; they live here so blocks.js (a pure,
+  // worker-safe module) never imports the engine.
+
+  fireTick(x, y, z, state) { fireTick(this, x, y, z, state); }
+
+  /**
+   * 15 §1.3 — any neighbor change re-checks canSurvive; failure removes the fire
+   * immediately (no drop, extinguish sound §15).
+   */
+  fireNeighborUpdate(x, y, z) {
+    if (!canSurvive(this, x, y, z)) removeFire(this, x, y, z, true);
+  }
+
+  /** 15 §4.2 — lava's random-tick fire-creation attempt. */
+  lavaFireAttempt(x, y, z) { lavaFireAttempt(this, x, y, z); }
 
   spawnItem(name, count, x, y, z) { this.game?.spawnItemByName(name, count, x, y, z); }
 

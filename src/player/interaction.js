@@ -1,5 +1,9 @@
 // Mining / placing / using / attacking (03 §14–17, 05 §13.3, 06 item uses).
-import { BLOCKS, B, harvestOK, isSolidSupport, FACING_DIR, WALL_DIR, matOf } from '../registry/blocks.js';
+import {
+  BLOCKS, B, harvestOK, isSolidSupport, FACING_DIR, WALL_DIR, matOf,
+  WATERLOGGED, STATE_NIBBLE,
+} from '../registry/blocks.js';
+import { igniteAt } from '../world/fire.js';
 import { ITEMS, idOf } from '../registry/items.js';
 import { raycastBlocks } from '../world/raycast.js';
 import { LivingEntity } from '../entities/Entity.js';
@@ -207,7 +211,10 @@ export class Interaction {
 
     if (p.gameMode === 'debugCreative') {
       if (block.hardness < 0) return;
-      this.world.setBlock(hit.x, hit.y, hit.z, B.AIR, { byPlayer: true });
+      // 15 §10.6 applies here too: this path bypasses breakBlock entirely, so
+      // without the same rule a creative-mode break would drink the lake.
+      const cleared = this.world.clearedCell(hit.x, hit.y, hit.z);
+      this.world.setBlock(hit.x, hit.y, hit.z, cleared.id, { state: cleared.state, byPlayer: true });
       this.game.particles?.blockBreak?.(hit.x, hit.y, hit.z, hit.id);
       this.swing();
       this.mineDelay = 4;
@@ -265,7 +272,11 @@ export class Interaction {
       ? block.drops({ state, toolClass, toolTier, rng: this.world.rng }) : [];
     const xp = block.xpForMine ? block.xpForMine({ state, toolClass, toolTier, rng: this.world.rng }) : 0;
 
-    this.world.setBlock(x, y, z, B.AIR, { byPlayer: true });
+    // 15 §10.6 — a waterlogged block breaks to a water SOURCE, not air; drops
+    // then run unchanged. `state` was read above, before the erase, so bit 7 is
+    // already in hand.
+    if (state & WATERLOGGED) this.world.setBlock(x, y, z, B.WATER, { state: 0, byPlayer: true });
+    else this.world.setBlock(x, y, z, B.AIR, { byPlayer: true });
     for (const d of drops) {
       if (d.count > 0) this.game.spawnItemByName(d.name, d.count, x + 0.5, y + 0.5, z + 0.5);
     }
@@ -530,6 +541,16 @@ export class Interaction {
 
     if (block.canPlaceAt && !block.canPlaceAt(w, x, y, z, state)) return false;
 
+    // AMENDS 03 §16.2 / 15 §10.1-10.2 — placing a waterloggable block into a
+    // water SOURCE sets bit 7 and preserves the water; into FLOWING water the
+    // block goes in dry and the water is simply overwritten (only sources
+    // waterlog, vanilla). OR into the same `state` the per-block chain built, so
+    // one setBlock does the whole job and the light/neighbor pipeline runs once.
+    if (block.waterloggable && targetId === B.WATER &&
+        (w.getState(x, y, z) & STATE_NIBBLE) === 0) {
+      state |= WATERLOGGED;
+    }
+
     w.setBlock(x, y, z, blockId, { state, byPlayer: true });
     // Reaching here IS the success path — six guards above return false first.
     this.emitPlace(blockId, x, y, z);
@@ -645,10 +666,13 @@ export class Interaction {
       this.swing();
       return;
     }
+    // 15 §4.1 — t = hit.pos + faceNormal; place if air && canSurvive(t). ANY
+    // face, not just the top: canSurvive is solidTopBelow OR anyFlammableNeighbor,
+    // so a wooden wall lights from the side (the old face[1]===1 +
+    // isSolidSupport pair forbade exactly that). igniteAt registers the §6
+    // ignition origin. On failure nothing is consumed and no sound plays.
     const x = hit.x + hit.face[0], y = hit.y + hit.face[1], z = hit.z + hit.face[2];
-    if (hit.face[1] === 1 && w.getBlock(x, y, z) === B.AIR &&
-        isSolidSupport(w.getBlock(x, y - 1, z))) {
-      w.setBlock(x, y, z, B.FIRE, { byPlayer: true });
+    if (igniteAt(w, x, y, z)) {
       emitSound('item.flintandsteel.use', at(x + 0.5, y + 0.5, z + 0.5));
       this.player.damageHeld(1);
       this.swing();
@@ -656,30 +680,67 @@ export class Interaction {
   }
 
   useBucketEmpty() {
+    // 15 §13.1 rule 2 — a waterlogged cell is scooped off the BLOCK hit, not the
+    // fluidMode ray (the contained water is never independently targetable).
+    // Rule 1 (interactable && !sneaking -> open UI) is already enforced upstream
+    // in use(), which is exactly why scooping a waterlogged chest needs sneak.
+    const bh = this.currentHit;
+    if (bh && (this.world.getState(bh.x, bh.y, bh.z) & WATERLOGGED)) {
+      this.world.setWaterlogged(bh.x, bh.y, bh.z, false);
+      emitSound('item.bucket.fill', at(bh.x + 0.5, bh.y + 0.5, bh.z + 0.5));
+      this.world.fluids.wakeNeighbors(bh.x, bh.y, bh.z);   // downstream drains re-derive
+      this.fillBucketStack(idOf('water_bucket'));
+      this.swing();
+      return;
+    }
+    // rule 3 — base fluidMode source scan (06 §6.4)
     const hit = this.rayHit(this.reach(), { fluidMode: true });
     if (!hit) return;
     const blk = BLOCKS[hit.id];
     if (blk.shape !== 'liquid') return;
-    const p = this.player;
     const filled = idOf(blk.fluid === 'water' ? 'water_bucket' : 'lava_bucket');
     this.world.setBlock(hit.x, hit.y, hit.z, B.AIR, { byPlayer: true });
     emitSound(blk.fluid === 'lava' ? 'item.bucket.fill.lava' : 'item.bucket.fill',
       at(hit.x + 0.5, hit.y + 0.5, hit.z + 0.5));
+    this.fillBucketStack(filled);
+    this.swing();
+  }
+
+  /** Bucket -> filled bucket, honoring the bucket's stack size (16). */
+  fillBucketStack(filledId) {
+    const p = this.player;
     if (p.heldStack.count === 1) {
-      p.heldStack = { id: filled, count: 1 };
+      p.heldStack = { id: filledId, count: 1 };
     } else {
       p.consumeHeld(1);
-      const leftover = p.give({ id: filled, count: 1 });
-      if (leftover > 0) this.game.dropStackAt({ id: filled, count: 1 }, p.pos.x, p.pos.y + 1, p.pos.z);
+      const leftover = p.give({ id: filledId, count: 1 });
+      if (leftover > 0) this.game.dropStackAt({ id: filledId, count: 1 }, p.pos.x, p.pos.y + 1, p.pos.z);
     }
-    this.swing();
   }
 
   useBucketFilled(held) {
     const hit = this.currentHit;
     if (!hit) return;
-    const pos = this.placePosFor(hit);
     const w = this.world;
+    // 15 §13.1 rule 2 / §10.4 — water bucket on a targeted DRY waterloggable
+    // block sets bit 7 instead of placing a source beside it.
+    // Gated on water_bucket: this same method serves lava_bucket, which must
+    // never waterlog.
+    if (held.name === 'water_bucket' && BLOCKS[hit.id].waterloggable &&
+        (w.getState(hit.x, hit.y, hit.z) & WATERLOGGED) === 0) {
+      w.setWaterlogged(hit.x, hit.y, hit.z, true);
+      emitSound('item.bucket.pour', at(hit.x + 0.5, hit.y + 0.5, hit.z + 0.5));
+      // §10.4: schedule cell + 6 neighbors, then run the §11.3 lava check
+      w.fluids.schedule(hit.x, hit.y, hit.z, 'water');
+      w.fluids.wakeNeighbors(hit.x, hit.y, hit.z);
+      for (const [dx, dy, dz] of [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]) {
+        w.fluids.checkInteractions(hit.x + dx, hit.y + dy, hit.z + dz);
+      }
+      this.player.heldStack = { id: idOf('bucket'), count: 1 };
+      this.swing();
+      return;
+    }
+    const pos = this.placePosFor(hit);
     const targetId = w.getBlock(pos.x, pos.y, pos.z);
     if (!BLOCKS[targetId].replaceable) return;
     const fluidId = held.name === 'water_bucket' ? B.WATER : B.LAVA;

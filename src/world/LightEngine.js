@@ -1,7 +1,7 @@
 // Sky + block light: BFS flood / two-queue removal (01 §10 structures,
 // 04 §8–9 algorithms). All positions are world coordinates; queues cross
 // chunk borders freely. Light writes only into chunks ≥ GENERATED.
-import { BLOCKS, B } from '../registry/blocks.js';
+import { BLOCKS, B, WATERLOGGED } from '../registry/blocks.js';
 import { MAX_Y, chunkKey, LIGHT_NODE_BUDGET } from '../constants.js';
 import { ChunkState } from './Chunk.js';
 
@@ -45,7 +45,15 @@ class Queue4 {
 // Sky-terminating opacity for the heightmap: light opacity > 0, plus the two
 // zero-opacity blocks the generator counts (snow layer, cactus) so gen and
 // runtime heightmaps agree.
-export function terminatesSky(id) {
+// AMENDS 01 §4.2/§4.6 + 15 §13.5: a waterlogged cell filters sky like water, so
+// the heightmap must terminate on it (rain streaks stop there, isRainingAt below
+// reads false). The spec names a `BLOCKS[id].skyOpacity` field — no such field
+// exists in this codebase; `terminatesSky` IS the heightmap predicate, so the
+// amendment lands here as a second arg. `state` is optional: worldgen never
+// emits bit 7, so features.js's gen-side heightmap stays id-only and the two
+// still agree.
+export function terminatesSky(id, state = 0) {
+  if ((state & WATERLOGGED) !== 0) return true;
   return BLOCKS[id].opacity > 0 || id === B.SNOW_LAYER || id === B.CACTUS;
 }
 
@@ -94,12 +102,18 @@ export class LightEngine {
     return true;
   }
 
+  // AMENDS 04 §8 + 15 §13.5: effective opacity = max(opacity(id), bit7 ? 1 : 0).
+  // A waterlogged cell filters exactly like water. Rule 3 (the straight-down
+  // sky-15 shortcut at `o === 0`) then fails for it automatically — no separate
+  // edit — which is precisely how plain water (opacity 1) already behaves.
   opacity(x, y, z) {
     if (y < 0) return 15;
     if (y > MAX_Y) return 0;
     const c = this.chunkAt(x, z);
     if (!c) return 15;                              // unloaded: wall for BFS
-    return BLOCKS[c.blocks[(y << 8) | ((z & 15) << 4) | (x & 15)]].opacity;
+    const i = (y << 8) | ((z & 15) << 4) | (x & 15);
+    const o = BLOCKS[c.blocks[i]].opacity;
+    return (c.states[i] & WATERLOGGED) ? Math.max(o, 1) : o;
   }
 
   markDirty(c, x, z) {
@@ -241,9 +255,19 @@ export class LightEngine {
 
   // ---- block edits (04 §9.4 wrapped per 01 §10.2) ----
 
-  onBlockChanged(x, y, z, oldId, newId) {
+  /**
+   * @param oldState/newState  AMENDS 01 §4.6 — REQUIRED for bit 7. This method
+   *   used to derive everything from BLOCKS[oldId]/BLOCKS[newId], so a
+   *   waterlog toggle (same id, state 0 -> 0x80) compared oldB === newB, every
+   *   opacity test read false, and it silently did no light work at all.
+   *   Effective opacity now folds bit 7 in, exactly as opacity() does.
+   */
+  onBlockChanged(x, y, z, oldId, newId, oldState = 0, newState = 0) {
     this.dirtied.clear();
     const oldB = BLOCKS[oldId], newB = BLOCKS[newId];
+    // effective opacity (15 §13.5) — what the BFS will actually see
+    const oldO = (oldState & WATERLOGGED) ? Math.max(oldB.opacity, 1) : oldB.opacity;
+    const newO = (newState & WATERLOGGED) ? Math.max(newB.opacity, 1) : newB.opacity;
     const chunk = this.chunkAt(x, z);
     if (!chunk) return this.dirtied;
     const col = ((z & 15) << 4) | (x & 15);
@@ -251,18 +275,19 @@ export class LightEngine {
 
     // heightmap maintenance (01 §4.6 step 3)
     let newH = oldH;
-    if (terminatesSky(newId)) {
+    if (terminatesSky(newId, newState)) {
       if (y + 1 > oldH) newH = y + 1;
     } else if (y + 1 === oldH) {
       newH = 0;
       for (let yy = y; yy >= 0; yy--) {
-        if (terminatesSky(chunk.blocks[(yy << 8) | col])) { newH = yy + 1; break; }
+        const ii = (yy << 8) | col;
+        if (terminatesSky(chunk.blocks[ii], chunk.states[ii])) { newH = yy + 1; break; }
       }
     }
     chunk.heightMap[col] = newH;
 
     // --- BLOCK channel ---
-    if (oldB.emission > 0 || (newB.opacity > 0 && this.light(BLOCK, x, y, z) > 0)) {
+    if (oldB.emission > 0 || (newO > 0 && this.light(BLOCK, x, y, z) > 0)) {
       this.removeLight(BLOCK, x, y, z);
     }
     if (newB.emission > 0) {
@@ -271,7 +296,7 @@ export class LightEngine {
         this.propQ[BLOCK].push(x, y, z, newB.emission);
       }
     }
-    if (newB.opacity < oldB.opacity) {
+    if (newO < oldO) {
       for (const [dx, dy, dz] of DIRS) {
         const l = this.light(BLOCK, x + dx, y + dy, z + dz);
         if (l > 1) this.propQ[BLOCK].push(x + dx, y + dy, z + dz, l);
@@ -280,9 +305,9 @@ export class LightEngine {
     this.propagate(BLOCK);
 
     // --- SKY channel ---
-    if (newB.opacity > oldB.opacity) {
+    if (newO > oldO) {
       this.removeLight(SKY, x, y, z);              // downward rule tears the shaft
-    } else if (newB.opacity < oldB.opacity) {
+    } else if (newO < oldO) {
       if (newH < oldH && y + 1 === oldH) {
         // column opened to the sky: direct 15 down to the new top
         for (let yy = newH; yy <= oldH - 1; yy++) {

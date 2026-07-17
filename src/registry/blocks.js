@@ -14,6 +14,40 @@
 //  - Crops: bits0–2 = stage 0–7. Farmland: bit3 = wet.
 //  - Leaves: bit0 = persistent (player-placed). Cactus/cane: nibble = age 0–15.
 //  - Fluids: bit3 = falling, bits0–2 = spread (source = state 0). (06 §6.1)
+//  - Fire: nibble = age 0–15 (15 §1.1).
+//
+// ============================================================================
+// THE BIT-7 CONTRACT — GLOBAL, FROZEN by 15-FIRE-WATERLOGGING §8. (AMENDS 06 §1)
+// ============================================================================
+//   bit 7 (0x80) of every voxel's `states` byte = WATERLOGGED. Owned by 15 for
+//   every block in the game; NO other file may assign it.
+//   Per-block nibble meanings occupy bits 0–3 ONLY. Bits 4–6 remain free.
+//
+//   Invariants every state consumer must honor:
+//     * `states & 0x80` is meaningful only where BLOCKS[id].waterloggable.
+//       setBlock CLEARS bit 7 whenever the new id is not waterloggable (§8).
+//     * A bit-7 cell IS a water source for EVERY system: fluid spread, buckets,
+//       swimming/drowning, light filtering, hydration, lava interaction,
+//       infinite-source formation. Use isWaterCell/isWaterSource — never a bare
+//       `id === B.WATER`.
+//     * Nibble reads must mask: `state & 0x0F`. A bare `state === 0` test for
+//       "fluid source" is WRONG on a waterlogged cell.
+//     * Toggling bit 7 must run the light edit AND neighbor updates even though
+//       the id is unchanged (AMENDS 01 §4.6/§4.2).
+// ============================================================================
+export const WATERLOGGED = 0x80;
+export const STATE_NIBBLE = 0x0F;
+
+/** 15 §11.1 — the cell contains water (real water, or a waterlogged block). */
+export const isWaterCellAt = (id, state) => id === B.WATER || (state & WATERLOGGED) !== 0;
+
+/** 15 §11.1 — the cell is a water SOURCE (nibble 0 water, or any bit-7 cell). */
+export const isWaterSourceAt = (id, state) =>
+  (id === B.WATER && (state & STATE_NIBBLE) === 0) || (state & WATERLOGGED) !== 0;
+
+/** 15 §13.3 — a soaked block is inert fuel: enc/burn read 0 regardless of table. */
+export const effFireEnc = (id, state) => ((state & WATERLOGGED) ? 0 : (BLOCKS[id]?.fireEnc ?? 0));
+export const effFireBurn = (id, state) => ((state & WATERLOGGED) ? 0 : (BLOCKS[id]?.fireBurn ?? 0));
 
 export const FACING_DIR = [[0, 0, 1], [-1, 0, 0], [0, 0, -1], [1, 0, 0]];
 export const WALL_DIR = { 1: [0, 0, 1], 2: [0, 0, -1], 3: [1, 0, 0], 4: [-1, 0, 0] };
@@ -114,8 +148,11 @@ function validCane(world, x, y, z) {
   const below = world.getBlock(x, y - 1, z);
   if (below === B.SUGAR_CANE_BLOCK) return true;
   if (below !== B.GRASS_BLOCK && below !== B.DIRT && below !== B.SAND) return false;
+  // AMENDS 06 §5.9 / 15 §13.4 — the same isWaterCell predicate as farmland: a
+  // waterlogged fence beside the support block sustains cane.
   for (const [dx, , dz] of FACING_DIR)                     // water beside the SUPPORT block
-    if (world.getBlock(x + dx, y - 1, z + dz) === B.WATER) return true;
+    if (isWaterCellAt(world.getBlock(x + dx, y - 1, z + dz),
+                      world.getState(x + dx, y - 1, z + dz))) return true;
   return false;
 }
 
@@ -135,11 +172,16 @@ function farmlandTick(world, x, y, z, state) {
   for (let dy = 0; dy <= 1 && !wet; dy++)
     for (let dx = -4; dx <= 4; dx++)
       for (let dz = -4; dz <= 4; dz++)
-        if (world.getBlock(x + dx, y + dy, z + dz) === B.WATER) { wet = true; break outer; }
+        // AMENDS 06 §5.11 / 15 §13.4 — the Chebyshev-4 moisture test uses
+        // isWaterCell: a waterlogged fence irrigates crops just like water.
+        if (isWaterCellAt(world.getBlock(x + dx, y + dy, z + dz),
+                          world.getState(x + dx, y + dy, z + dz))) { wet = true; break outer; }
   const above = world.getBlock(x, y + 1, z);
   const hasCrop = above >= B.WHEAT_CROP && above <= B.POTATO_CROP;
   if (!wet && !hasCrop) { world.setBlock(x, y, z, B.DIRT); return; }
-  const newState = (state & 7) | (wet ? 8 : 0);
+  // Preserve bit 7 (farmland is not waterloggable, so it is always clear here —
+  // but masking the nibble keeps the write honest if that ever changes).
+  const newState = (state & ~0x0F) | (state & 7) | (wet ? 8 : 0);
   if (newState !== state) world.setState(x, y, z, newState);
 }
 
@@ -165,14 +207,17 @@ const needsBelow = allowed => function (world, x, y, z) {
 function torchNeighbor(world, x, y, z, state) {
   let sx = x, sy = y - 1, sz = z;
   if (state >= 1 && state <= 4) {
-    const d = WALL_DIR[state];
+    const d = WALL_DIR[state & STATE_NIBBLE];
     sx = x - d[0]; sy = y; sz = z - d[2];
   }
   if (!isSolidSupport(world.getBlock(sx, sy, sz))) world.popBlock(x, y, z);
 }
 
 function ladderNeighbor(world, x, y, z, state) {
-  const d = WALL_DIR[state] ?? WALL_DIR[1];
+  // 15 §8: MASK the nibble. A waterlogged ladder is 0x81..0x84; WALL_DIR has
+  // keys 1-4 only, so a raw lookup returns undefined and the ?? fallback
+  // silently probes the WRONG wall — the ladder then pops itself.
+  const d = WALL_DIR[state & STATE_NIBBLE] ?? WALL_DIR[1];
   if (!isSolidSupport(world.getBlock(x - d[0], y, z - d[2]))) world.popBlock(x, y, z);
 }
 
@@ -239,6 +284,12 @@ function defBlock(id, name, opts = {}) {
     canPlaceAt: null,
     species: null,
     mat: 'none',                 // material class (16 §3.1); assigned below
+    // --- 15-FIRE-WATERLOGGING (AMENDS 01 §5) ---
+    fireEnc: 0,                  // encouragement / ignite odds (15 §3, feeds §2.6)
+    fireBurn: 0,                 // flammability / burn odds   (15 §3, feeds §2.5)
+    lavaIgnite: false,           // participates in lava's fire-creation check (15 §4.2)
+    waterloggable: false,        // may carry bit 7 (15 §9)
+    infiniteBurn: false,         // eternal fire below (declared by 10, consumed 15 §2)
     ...opts,
   };
   BLOCKS[id] = block;
@@ -391,7 +442,7 @@ defBlock(38, 'torch', {
   neighborUpdate: torchNeighbor,
   canPlaceAt: (world, x, y, z, state = 0) => {
     if (state >= 1 && state <= 4) {
-      const d = WALL_DIR[state];
+      const d = WALL_DIR[state & STATE_NIBBLE];
       return isSolidSupport(world.getBlock(x - d[0], y, z - d[2]));
     }
     return isSolidSupport(world.getBlock(x, y - 1, z));
@@ -403,7 +454,10 @@ defBlock(39, 'ladder', {
   climbable: true, needsSupport: 'attach',
   neighborUpdate: ladderNeighbor,
   canPlaceAt: (world, x, y, z, state = 1) => {
-    const d = WALL_DIR[state] ?? WALL_DIR[1];
+    // 15 §8: MASK the nibble. A waterlogged ladder is 0x81..0x84; WALL_DIR has
+  // keys 1-4 only, so a raw lookup returns undefined and the ?? fallback
+  // silently probes the WRONG wall — the ladder then pops itself.
+  const d = WALL_DIR[state & STATE_NIBBLE] ?? WALL_DIR[1];
     return isSolidSupport(world.getBlock(x - d[0], y, z - d[2]));
   },
 });
@@ -604,20 +658,28 @@ defBlock(64, 'lava', {
   collidable: false, targetable: false, hardness: -1, blast: 100,
   emission: 15, fluid: 'lava', fluidAlpha: 1.0, drops: noDrop,
   replaceable: true,            // 03 §16.2 replaceable set
+  // AMENDS 06 §17: lava gets a random tick — the fire-creation attempt (15 §4.2).
+  // Both source and flowing cells (01 §6.2 dispatches randomTick by id).
+  randomTick: (world, x, y, z) => world.lavaFireAttempt?.(x, y, z),
 });
 
+// Fire — superseded by 15 §1–§7. (AMENDS 06 §5.14: the whole "Fire (minimal)"
+// subsection and its "fire never spreads" adaptation are deleted.)
+// State nibble = age 0–15 (15 §1.1). Bit 7 is NEVER set on fire: water destroys
+// it, so it can never be waterlogged.
 defBlock(65, 'fire', {
   ...CROSS, emission: 15, replaceable: true, drops: noDrop,
+  // AMENDS 06 §5.6: fire no longer primes adjacent TNT on placement. TNT is
+  // primed only when fire's burn-out check CONSUMES it (15 §2.5, burn odds 100).
   onPlaced: (world, x, y, z) => {
-    world.scheduleTick(x, y, z, 100 + Math.floor(world.rng() * 101));
-    for (const [dx, dy, dz] of DIRS6)
-      if (world.getBlock(x + dx, y + dy, z + dz) === B.TNT)
-        world.igniteTnt?.(x + dx, y + dy, z + dz);
+    world.scheduleTick(x, y, z, 30 + Math.floor(Math.random() * 10));   // 15 §2
   },
-  scheduledTick: (world, x, y, z) => world.removeBlock(x, y, z),
-  neighborUpdate: (world, x, y, z) => {
-    if (!isSolidSupport(world.getBlock(x, y - 1, z))) world.removeBlock(x, y, z);
-  },
+  scheduledTick: (world, x, y, z, state) => world.fireTick?.(x, y, z, state),
+  // 15 §1.3 — any neighbor change re-checks canSurvive; failure removes the fire
+  // immediately (no drop). canSurvive is solidTopBelow OR anyFlammableNeighbor,
+  // so fire can legitimately float against a flammable wall — the old
+  // isSolidSupport-only test killed exactly that case.
+  neighborUpdate: (world, x, y, z) => world.fireNeighborUpdate?.(x, y, z),
 });
 
 defBlock(66, 'dead_bush', {
@@ -673,6 +735,55 @@ for (const b of BLOCKS) {
   if (b && b.mat === 'none' && b.name !== 'air' && b.name !== 'fire') {
     console.warn(`[registry] block '${b.name}' has no material class (16 §3.1)`);
   }
+}
+
+// =======================================================================
+// Flammability registry — 15 §3's core table, whole game. (AMENDS 01 §5)
+// Enc = encouragement/ignite odds (feeds 15 §2.6 + anyFlammableNeighbor)
+// Burn = flammability/burn odds (feeds 15 §2.5 tryBurn)
+// lava = lavaIgnite: participates in lava's fire-creation check (15 §4.2) even
+//        when Enc/Burn are 0. Anything not listed is 0 / 0 / no.
+// All values are exact Java 1.20. Transcribed verbatim rather than threaded
+// through each defBlock call so a reader can diff it against the spec table.
+const FIRE = {
+  //                              Enc  Burn  lavaIgnite
+  oak_planks:        [5, 20, true], birch_planks: [5, 20, true], spruce_planks: [5, 20, true],
+  oak_log:           [5, 5, true],  birch_log:    [5, 5, true],  spruce_log:    [5, 5, true],
+  // leaves burn away dropping nothing (vanilla) — handled by tryBurn setting AIR
+  oak_leaves:        [30, 60, true], birch_leaves: [30, 60, true], spruce_leaves: [30, 60, true],
+  coal_block:        [5, 5, true],
+  crafting_table:    [0, 0, true],   // vanilla: wooden but fireproof; lava still ignites beside it
+  chest:             [0, 0, true],   // fireproof (vanilla)
+  bookshelf:         [30, 20, true],
+  tnt:               [15, 100, true], // consumed by tryBurn -> primed TNT, fuse 80 (15 §2.5)
+  oak_fence:         [5, 20, true],
+  oak_door:          [0, 0, true],   // vanilla doors are non-flammable
+  bed_block:         [0, 0, true],   // vanilla JE: lava-ignitable, never burns away
+  wool_white:        [30, 60, true], wool_red: [30, 60, true],
+  wool_blue:         [30, 60, true], wool_black: [30, 60, true],
+  short_grass:       [60, 100, true],
+  dandelion:         [60, 100, false], poppy: [60, 100, false],  // 1-block flowers: JE lava-ignite No
+  dead_bush:         [60, 100, true],
+  // saplings, crops, farmland, sugar_cane, cactus, pumpkin, jack_o_lantern,
+  // torch, ladder, snow, ice, glass, stone/ores/minerals, fluids: all 0/0/no.
+};
+
+for (const name of Object.keys(FIRE)) {
+  const id = B[name.toUpperCase()];
+  if (id === undefined) { console.warn(`[registry] fire: unknown block '${name}'`); continue; }
+  const [enc, burn, lava] = FIRE[name];
+  BLOCKS[id].fireEnc = enc;
+  BLOCKS[id].fireBurn = burn;
+  BLOCKS[id].lavaIgnite = lava;
+}
+
+// 15 §9 — the complete waterloggable list. Verified against Java 1.20.
+// Everything else is a dam or pops (base 06 §6.1). Leaves are a documented
+// deviation (our leaves are full cubes carrying persistence bits) — see DEVIATIONS.
+for (const name of ['oak_fence', 'ladder', 'chest']) {
+  const id = B[name.toUpperCase()];
+  if (id === undefined) { console.warn(`[registry] waterloggable: unknown block '${name}'`); continue; }
+  BLOCKS[id].waterloggable = true;
 }
 
 // Material class of a block id — the lookup every 16 §3.2 emit site uses.

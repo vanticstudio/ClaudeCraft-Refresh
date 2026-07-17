@@ -98,7 +98,13 @@ export class ChunkManager {
     for (let z = 0; z < 16; z++) {
       for (let x = 0; x < 16; x++) {
         for (let y = MAX_Y; y >= 0; y--) {
-          if (terminatesSky(blocks[(y << 8) | (z << 4) | x])) {
+          const i = (y << 8) | (z << 4) | x;
+          // 15 §13.5 — the heightmap terminates at a waterlogged block, so the
+          // state MUST be passed: hydrate is the other heightmap producer
+          // besides onBlockChanged, and it loads player-authored bit-7 cells.
+          // Omitting it silently un-shades every waterlogged column on reload
+          // and flips isRainingAt below it from false to true.
+          if (terminatesSky(blocks[i], states[i])) {
             heightMap[(z << 4) | x] = y + 1;
             break;
           }

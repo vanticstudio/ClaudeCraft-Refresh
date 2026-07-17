@@ -75,6 +75,20 @@ autosaves to the browser's IndexedDB every 30 seconds — close the tab and
 
 *This section is updated as new features land.*
 
+- **2026-07-17** — **Fire spread & waterlogging (expansion phase E2, `15`)**: the
+  full Java 1.20 fire-spread engine replaces the old "fire never spreads" stub —
+  age-nibble state, the exact scheduled-tick algorithm, a flammability table for
+  the whole block set, ignition by flint & steel / lava random ticks / lightning,
+  eternal fire on `infiniteBurn` blocks, and a film-safe 24-block spread leash
+  (set `FIRE_SAFETY` to `Infinity` for unbounded vanilla behaviour). Wool floors
+  catch and burn out; rain douses; TNT primes when fire consumes it.
+  **Waterlogging** arrives via the globally reserved `states` bit 7: fences,
+  ladders and chests can hold a water source, which now behaves as water for
+  fluid spread, buckets, swimming, drowning, light filtering, crop hydration,
+  lava conversion and infinite-source formation — and is explosion-proof. This
+  phase **freezes the bit-7 layout**; the contract is documented at the head of
+  `src/registry/blocks.js`. *(§7's 4-frame animated tiles are deferred — see
+  DEVIATIONS.md.)*
 - **2026-07-17** — **Theme-music drop zone is Vercel-ready**: drop original or
   licensed tracks into `public/theme-music/`, run `npm run theme:clear --
   --license "…"` to record provenance, and they play locally *and* on the deploy.
