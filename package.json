@@ -9,7 +9,8 @@
     "prebuild": "node scripts/gen-theme-manifest.mjs --build",
     "build": "vite build",
     "prepreview": "node scripts/gen-theme-manifest.mjs --build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "theme:clear": "node scripts/clear-theme-tracks.mjs"
   },
   "dependencies": {
     "three": "0.185.1",

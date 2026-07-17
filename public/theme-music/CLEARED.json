@@ -1,0 +1,4 @@
+{
+  "_comment": "Licence record for the ship gate. Every audio file in this folder must be listed here with a non-empty license, or the build ships with the theme layer OFF. Generate with: npm run theme:clear -- --license \"...\"",
+  "tracks": []
+}

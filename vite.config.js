@@ -1,8 +1,8 @@
 import { rm, readdir, readFile } from 'node:fs/promises';
 import { existsSync, createReadStream, statSync } from 'node:fs';
-import { join, basename, resolve } from 'node:path';
+import { join, basename, resolve, extname } from 'node:path';
 import pkg from './package.json' with { type: 'json' };
-import { generateThemeManifest } from './scripts/gen-theme-manifest.mjs';
+import { generateThemeManifest, AUDIO_EXT } from './scripts/gen-theme-manifest.mjs';
 
 const MIME = {
   '.mp3': 'audio/mpeg', '.ogg': 'audio/ogg', '.oga': 'audio/ogg', '.m4a': 'audio/mp4',
@@ -98,14 +98,28 @@ function themeMusicShipGate() {
         for (const t of json?.tracks ?? []) if (t?.file && t?.license) cleared.add(t.file);
       } catch { /* absent or unreadable → nothing is cleared */ }
 
-      // Directories are never "cleared": a declared name must be a real file,
-      // or a folder named in CLEARED.json would ship its whole subtree unchecked.
-      const entries = (await readdir(shipped, { withFileTypes: true }))
-        .filter(e => e.name !== 'CLEARED.json');
-      const files = entries.map(e => e.name);
-      const uncleared = entries.filter(e => !e.isFile() || !cleared.has(e.name)).map(e => e.name);
-      if (files.length && !uncleared.length) {
-        this.warn(`[ship-gate] ${files.length} theme track(s) shipped — all declared cleared.`);
+      const entries = await readdir(shipped, { withFileTypes: true });
+
+      // Companions (README.md, CLEARED.json) are documentation and the licence
+      // record — not tracks, and not wanted on a public URL. Strip them from the
+      // build rather than counting them as undeclared audio: doing the latter
+      // deleted the whole folder while the manifest still referenced the tracks,
+      // shipping a bundle whose every theme URL 404s.
+      const isAudio = n => AUDIO_EXT.has(extname(n).toLowerCase());
+      for (const e of entries) {
+        if (e.isFile() && !isAudio(e.name)) await rm(join(shipped, e.name), { force: true });
+      }
+
+      // Only AUDIO is policed against CLEARED.json. A directory is never
+      // "cleared" — a folder named in CLEARED.json would ship its whole subtree
+      // unchecked — and a non-audio file has already been removed above, so it
+      // cannot smuggle a renamed track onto the deploy either.
+      const audio = entries.filter(e => e.isFile() && isAudio(e.name)).map(e => e.name);
+      const dirs = entries.filter(e => !e.isFile()).map(e => e.name);
+      const uncleared = [...audio.filter(n => !cleared.has(n)), ...dirs];
+
+      if (audio.length && !uncleared.length) {
+        this.warn(`[ship-gate] ${audio.length} theme track(s) shipped — all declared cleared.`);
         return;
       }
       await rm(shipped, { recursive: true, force: true });

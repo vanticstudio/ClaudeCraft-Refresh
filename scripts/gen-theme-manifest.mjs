@@ -25,7 +25,10 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SHIP_DIR = join(ROOT, 'public', 'theme-music');
 const DEV_DIR = join(ROOT, 'CC-assets', 'CC-sounds');
 const OUT = join(ROOT, 'src', 'audio', 'themeManifest.js');
-const AUDIO_EXT = new Set(['.mp3', '.ogg', '.oga', '.m4a', '.aac', '.wav', '.opus', '.flac', '.webm']);
+// Exported: vite.config.js's ship gate polices exactly these, and the two must
+// not drift — an extension this list knows but the gate does not would ship
+// undeclared, and vice versa.
+export const AUDIO_EXT = new Set(['.mp3', '.ogg', '.oga', '.m4a', '.aac', '.wav', '.opus', '.flac', '.webm']);
 
 async function audioFiles(dir) {
   if (!existsSync(dir)) return [];

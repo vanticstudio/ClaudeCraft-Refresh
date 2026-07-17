@@ -4,6 +4,66 @@ Deviations and ambiguity rulings. (The base-spec `.md` files were removed from
 the working tree during repo cleanup; the pre-UPDATE deviation log for the
 initial build lives in git history — `git show 8441ac9:DEVIATIONS.md`.)
 
+## UPDATE — theme-music drop zone made Vercel-ready (2026-07-17)
+
+The C418 placeholders were deleted from the working tree by the repo owner. This
+readies `public/theme-music/` as the drop zone for original/licensed tracks, so
+files placed there play locally **and reach the Vercel deploy**.
+
+### Two real defects fixed (both would have shipped a broken deploy)
+
+1. **`public/theme-music/` was gitignored — tracks would never have reached
+   Vercel.** Vercel builds from the repo, so anything not committed is simply
+   absent from the deploy: tracks would play perfectly in `npm run dev`, then be
+   silently missing in production. The ignore rule dated from when the directory
+   was a symlink to the C418 placeholders; with those gone, the shipped set must
+   be committed. Now un-ignored, with the rule documented in `.gitignore` and
+   `public/theme-music/README.md`: only original/licensed audio goes here, and
+   every file must be declared in `CLEARED.json`.
+
+2. **The ship gate counted `README.md` as an undeclared track and deleted the
+   whole folder — while the manifest still referenced the tracks.** The build
+   reported "1 cleared track(s)", baked `theme-music/x.wav` into the bundle, and
+   then `closeBundle` removed `dist/theme-music` entirely: **every theme URL in
+   the shipped bundle would have 404'd.** The gate now polices only AUDIO files
+   against `CLEARED.json`, and strips non-audio companions (`README.md`,
+   `CLEARED.json`) from `dist/` rather than counting them — they are
+   documentation and a licence record, not tracks, and do not belong on a public
+   URL. `AUDIO_EXT` is now exported from `gen-theme-manifest.mjs` and shared with
+   the gate so the two lists cannot drift. A non-audio file is still deleted from
+   `dist/`, so a renamed track (`song.mp3.txt`) cannot smuggle itself onto the
+   deploy either.
+
+### Added
+
+- **`npm run theme:clear -- --license "…"`** (`scripts/clear-theme-tracks.mjs`):
+  declares every audio file in `public/theme-music/` in one command, preserving
+  any existing per-file licence text. The `--license` argument is mandatory and
+  has no default — it is a human assertion of provenance, the one part of the
+  gate a machine cannot verify. Tooling can check that a file is *declared*; it
+  cannot check that the declaration is *true*.
+- **`public/theme-music/README.md`** — the drop-in workflow, and why the
+  declaration step stays manual.
+- **`public/theme-music/CLEARED.json`** — empty `tracks: []` template.
+
+### Verified end-to-end with a generated 2 s tone standing in for a delivered track
+
+| Step | Result |
+|---|---|
+| drop a file in, `npm run dev` | appears in the manifest, plays |
+| `npm run build` **undeclared** | gate withholds it — 0 audio in `dist/` |
+| `npm run theme:clear -- --license …` | `CLEARED.json` written |
+| `npm run build` **declared** | 1 track in `dist/theme-music/`, README/CLEARED.json **not** shipped |
+| `vite preview` (the deploy path) | track fetched and **audible**, 0 × 404, 0 console errors |
+
+Fixture removed afterwards; the drop zone ships empty. 80 assertions green
+across every suite (35 audio + 8 regression + 7 in-game + 4 unlock + 16 RMB +
+3 music + 3 prod + 4 prod-music).
+
+**Unchanged:** the C418 audio remains in the pushed history (`b74a1b5`,
+`6a16a13`, `v1.0.4`). Deleting the working-tree files does not remove it —
+`git rm -r --cached CC-assets/CC-sounds` plus a history rewrite is still required.
+
 ## UPDATE — right-click fix (2026-07-17)
 
 Work order: `UPDATE-rightclick-fix.md`. Reproduced both reported bugs with

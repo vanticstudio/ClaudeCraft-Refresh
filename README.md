@@ -75,6 +75,14 @@ autosaves to the browser's IndexedDB every 30 seconds — close the tab and
 
 *This section is updated as new features land.*
 
+- **2026-07-17** — **Theme-music drop zone is Vercel-ready**: drop original or
+  licensed tracks into `public/theme-music/`, run `npm run theme:clear --
+  --license "…"` to record provenance, and they play locally *and* on the deploy.
+  Fixed two defects that would each have shipped a broken build: the folder was
+  gitignored (tracks would play in dev then be absent from Vercel), and the ship
+  gate counted `README.md` as an undeclared track and deleted the folder while
+  the bundle still referenced the tracks — every theme URL would have 404'd. See
+  [`public/theme-music/README.md`](public/theme-music/README.md).
 - **2026-07-17** — **Right-click placement fix** (`UPDATE-rightclick-fix`): `air`
   was never marked `replaceable` (nor were `water`/`lava`), so `tryPlace` rejected
   every placement into empty space — you could only ever place a block *over a
