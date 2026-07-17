@@ -26,6 +26,14 @@ export class PrimedTnt extends Entity {
     }
   }
 
+  // Detonation is only ONE of this entity's death paths — chunk unload removes it
+  // too. Stopping the tracked fuse loop here (EntityManager.remove calls it on
+  // every path) is what keeps an ambient hiss from outliving the TNT forever.
+  onRemoved() {
+    this.fuseVoice?.stop(0);
+    this.fuseVoice = null;
+  }
+
   buildMesh() {
     const group = new THREE.Group();
     const mesh = new THREE.Mesh(blockCubeGeometry(B.TNT, 1), makeAtlasMaterial());

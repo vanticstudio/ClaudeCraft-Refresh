@@ -1,7 +1,10 @@
-// Entry point: build atlas, construct Game + UI, title-screen wiring (01 §2).
+// Entry point: build atlas, boot audio (create suspended context, bake buffers),
+// construct Game + UI, title-screen wiring (01 §2, AMENDS 16 §1.1).
 import './ui/style.css';
 import './ui/title.css';
 import { createThemeMusic } from './audio/themeMusic.js';
+import { audio } from './audio/engine.js';
+import { loadOptions } from './ui/options.js';
 import { buildAtlas } from './assets/atlas.js';
 import { finalizeBlockTiles } from './registry/blocks.js';
 import { Game } from './Game.js';
@@ -24,9 +27,17 @@ async function boot() {
   finalizeBlockTiles(atlas.TILE);
   document.documentElement.style.setProperty('--atlas-url', `url(${atlas.atlasDataURL})`);
 
+  // Audio boot (16 §1.1): suspended context + buffer bake, before Game so the
+  // engine can be constructor-injected. One options object is loaded here and
+  // shared with Menus — two copies would diverge on every slider drag.
+  const options = loadOptions();
+  audio.boot();
+  audio.setOptions(options);
+
   const input = new Input(canvas);
   const { renderer, camera, viewmodelCamera } = createRenderer(canvas);
-  const game = new Game({ canvas, input, renderer, camera, viewmodelCamera, atlas });
+  const game = new Game({ canvas, input, renderer, camera, viewmodelCamera, atlas, audio, options });
+  audio.game = game;
 
   const save = new SaveManager();
   await save.open();
@@ -48,6 +59,7 @@ async function boot() {
   };
 
   const menus = new Menus(game, screensEl, {
+    onOptions: opts => audio.setOptions(opts),
     onNewWorld: async seedInput => {
       await save.deleteWorld();
       await save.open();
@@ -64,6 +76,7 @@ async function boot() {
       menus.setHasSave(false);
     },
     onResume: async () => {
+      audio.unlock();                 // must land inside the gesture, before the await
       const ok = await input.requestLock();
       if (ok !== false) game.setState(STATE.PLAYING);
       else menus.el.pause.querySelector('#btn-resume').textContent = 'Click to resume';
@@ -77,9 +90,10 @@ async function boot() {
     onRespawn: () => game.respawnPlayer(),
   });
 
-  // Theme music (16-AUDIO §4A / 19-MAIN-MENU §4). Standalone context + gain
-  // chain until 16-AUDIO E1 lands — then pass E1's { context, musicBus } here.
-  const themeMusic = createThemeMusic();
+  // Theme music (16-AUDIO §4A / 19-MAIN-MENU §4). E1 now owns the context and
+  // the music bus, so the standalone fallback graph retires here.
+  const themeMusic = createThemeMusic({ context: audio.ctx, musicBus: audio.buses.music });
+  audio.themeMusic = themeMusic;
   menus.attachMusic(themeMusic);
   menus.setHasSave(save.hasWorld());
 
@@ -88,12 +102,20 @@ async function boot() {
     toast: msg => hud.toast(msg),
     setSleepFade: on => hud.setSleepFade(on),
     setLoadingProgress: (m, n) => menus.setLoadingProgress(m, n),
-    onStateChange: next => {
+    onStateChange: (next, prev) => {
       if (next === STATE.TITLE) menus.show('title');
       else if (next === STATE.LOADING) menus.show('loading');
       else if (next === STATE.PAUSED) menus.show('pause');
       else if (next === STATE.DEAD) menus.show('death');
       else menus.show(null);
+      // AMENDS 01 §15.2. The single funnel for every transition — covers the
+      // Resume button, LOADING→PLAYING, respawn, and container close alike.
+      // PLAYING_UI must NOT pause: opening a chest is not leaving the world.
+      // Resume on ANY exit from PAUSED, not just PAUSED→PLAYING: Save & Quit
+      // goes PAUSED→TITLE, which would otherwise leave masterGain ramped to 0
+      // and the context suspended — silence for the rest of the session.
+      if (next === STATE.PAUSED) audio.onPause();
+      else if (prev === STATE.PAUSED) audio.onResume();
       if (next !== STATE.PLAYING_UI && containers.isOpen()) containers.close(true);
       menus.setPaletteVisible(next === STATE.PLAYING_UI &&
         game.player?.gameMode === 'debugCreative');
@@ -150,6 +172,7 @@ async function boot() {
 
   // click on canvas resumes lock when playing without lock (e.g. after UI close race)
   canvas.addEventListener('click', () => {
+    audio.unlock();                 // AMENDS 01 §15.2: unconditional, above the guard
     if (game.state === STATE.PLAYING && !input.locked) input.requestLock();
   });
 

@@ -32,6 +32,10 @@ export class DebugOverlay {
     const heap = performance.memory
       ? ` heap ${(performance.memory.usedJSHeapSize / 1048576).toFixed(0)}MB` : '';
     const biome = BIOME_NAMES[g.world.biomeAt(x, z)] ?? '?';
+    // 16 §6: read-only — this is render code and must never emitSound (§5.1).
+    const a = g.audio?.debug ?? { voices: 0, drops: 0, state: 'off', budgetMs: 0 };
+    const mus = g.audio?.music;
+    const music = mus?.piece ? `${mus.piece.mood}#${mus.pieceIndex - 1}` : 'silent';
     this.el.textContent =
 `ClaudeCraft F3 | ${g.debug.fps} fps ${g.debug.frameMs.toFixed(1)} ms
 XYZ ${p.pos.x.toFixed(2)} / ${p.pos.y.toFixed(2)} / ${p.pos.z.toFixed(2)}
@@ -40,6 +44,7 @@ light sky ${g.world.getSkyLight(x, y, z)} block ${g.world.getBlockLight(x, y, z)
 chunks R${counts.requested} G${counts.generated} L${counts.lit} M${counts.meshed} F${counts.failed} | remeshQ ${g.chunkManager.remeshQueue.size}
 draws ${info.render.calls} tris ${(info.render.triangles / 1000).toFixed(0)}k geoms ${info.memory.geometries}
 entities ${g.entities.count()} time ${g.world.time} (day ${Math.floor(g.world.time / 24000)} ${(Math.floor((g.world.time % 24000) / 1000) + 6) % 24}:00)${heap}
-weather ${g.dayNight.raining ? 'rain' : 'clear'}${g.dayNight.thundering ? '+thunder' : ''} seed ${g.world.seedString}`;
+weather ${g.dayNight.raining ? 'rain' : 'clear'}${g.dayNight.thundering ? '+thunder' : ''} seed ${g.world.seedString}
+audio ${a.voices}/${g.audio?.poolSize?.() ?? 0} voices drops ${a.drops}/s ${a.state} ${a.budgetMs.toFixed(2)} ms music ${music}`;
   }
 }

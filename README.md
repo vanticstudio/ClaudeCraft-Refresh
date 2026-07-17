@@ -75,6 +75,20 @@ autosaves to the browser's IndexedDB every 30 seconds — close the tab and
 
 *This section is updated as new features land.*
 
+- **2026-07-17** — **Audio (expansion phase E1, `16-AUDIO`)**: a full Web Audio
+  layer, **100 % synthesized at runtime — zero sample files, zero audio
+  downloads**. Every sound is built from oscillators, noise and math: a boot-time
+  buffer bakery (pink/brown/impulse beds, baked Karplus–Strong plucks, seamless
+  ambience loops — 3.6 MB, seeded so it sounds identical every run), 11 synth
+  primitives, and a master event registry covering block step/dig/break/place for
+  12 material classes, player hurt/fall/eat/XP, nine mob voices with idle
+  cadence, explosions that muffle with distance, weather, and fluid-cluster
+  ambience. Positional audio via a 32-voice pool with priority stealing and
+  per-event caps; an all-original generative composer (seeded random walks over
+  scale tables — the same world always replays the same piece); and an Options
+  screen reachable from the title *and* pause with five bus sliders, theme-music
+  mode, mouse sensitivity and view bobbing (the last two were previously stored
+  but unread). Audio costs ~0.015 ms/frame typical against a 1.5 ms budget.
 - **2026-07-17** — Main menu + menu music: desert/badlands-sunset title screen
   (animated CSS scene, ClaudeCraft wordmark, version badge, PRESS START →
   New Game / Continue / Settings / Quit on the supplied art, self-hosted OFL

@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import { sharedUniforms } from '../mesh/materials.js';
 import { Sky } from '../render/Sky.js';
 import { BLOCKS, B, isSolidSupport } from '../registry/blocks.js';
+import { emitSound, at } from '../audio/engine.js';
 import { BIOME_TEMPS } from '../world/gen/biomes.js';
 import { RENDER_RADIUS, chunkKey, SIM_RADIUS } from '../constants.js';
 import { ChunkState } from '../world/Chunk.js';
@@ -214,6 +215,10 @@ export class DayNight {
   strikeLightning(x, y, z) {
     const w = this.world;
     this.flash(3);
+    // AMENDS 04 §12.6 — 04 deleted the sound, not the strike, so this is purely
+    // additive. The recipe derives both the <24-block crack and the
+    // t0 + d x 0.06 s rumble from the distance to this position (16 §3.5).
+    emitSound('weather.thunder', at(x, y, z));
     // visual: white column with jogs
     const group = new THREE.Group();
     const mat = new THREE.MeshBasicMaterial({

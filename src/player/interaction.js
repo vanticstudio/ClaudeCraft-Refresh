@@ -1,8 +1,9 @@
 // Mining / placing / using / attacking (03 §14–17, 05 §13.3, 06 item uses).
-import { BLOCKS, B, harvestOK, isSolidSupport, FACING_DIR, WALL_DIR } from '../registry/blocks.js';
+import { BLOCKS, B, harvestOK, isSolidSupport, FACING_DIR, WALL_DIR, matOf } from '../registry/blocks.js';
 import { ITEMS, idOf } from '../registry/items.js';
 import { raycastBlocks } from '../world/raycast.js';
 import { LivingEntity } from '../entities/Entity.js';
+import { emitSound, startLoop, at } from '../audio/engine.js';
 import { AABB } from '../math/aabb.js';
 
 const REPLACEABLE_TARGET = id => BLOCKS[id]?.replaceable;
@@ -26,6 +27,12 @@ export class Interaction {
     this.crackStage = -1;
     this.prevMouseRight = false;
     this.pearlCooldown = 0;
+    this.bowLoop = null;        // §3.3 item.bow.draw handle
+  }
+
+  stopBowLoop() {
+    this.bowLoop?.stop(0.05);
+    this.bowLoop = null;
   }
 
   get player() { return this.game.player; }
@@ -57,15 +64,21 @@ export class Interaction {
     if (this.useDelay > 0) this.useDelay--;
     if (this.pearlCooldown > 0) this.pearlCooldown--;
     if (this.swingTicks < 99) this.swingTicks++;
-    if (p.dead) { this.resetMining(); return; }
+    // Dying returns before updateUseChannel ever runs, and usingItem is not
+    // cleared until respawn() — without this the draw loop drones until then.
+    if (p.dead) { this.resetMining(); this.stopBowLoop(); p.usingItem = null; return; }
 
     // hotbar selection
+    const prevSlot = p.selectedSlot;
     if (input.hotbar >= 0) p.selectedSlot = input.hotbar;
     if (input.wheel) {
       p.selectedSlot = ((p.selectedSlot + input.wheel) % 9 + 9) % 9;
       this.game.hud?.onHotbarChange?.();
     }
     if (input.hotbar >= 0) this.game.hud?.onHotbarChange?.();
+    // §3.3 is a selection *change*: pressing '1' on slot 1 must stay silent, and
+    // a tick with both wheel and digit input must click once, not twice.
+    if (p.selectedSlot !== prevSlot) emitSound('ui.hotbar', null);
 
     this.currentHit = this.rayHit();
 
@@ -214,6 +227,14 @@ export class Interaction {
       return;
     }
     this.progress += d;
+    // §3.2: dig ticks every 6 ticks, aligned to the swing loop. Read the gate
+    // BEFORE swingLoop() — swing() resets swingTicks to 0, so testing after it
+    // would never fire. The d >= 1 instant path returned above, so instant
+    // breaks are excluded for free.
+    if (this.swingTicks >= 6) {
+      const cls = matOf(hit.id);
+      if (cls) emitSound(`block.dig.${cls}`, at(hit.x + 0.5, hit.y + 0.5, hit.z + 0.5));
+    }
     this.swingLoop();
     if (this.progress >= 1) {
       this.breakBlock(hit.x, hit.y, hit.z);
@@ -253,6 +274,14 @@ export class Interaction {
       p.damageHeld(toolClass === 'sword' ? 2 : 1);
     }
     p.addExhaustion(0.005);
+    // Punching fire reaches here via the instant-break path (hardness 0), but
+    // fire's class is 'none' and has no break verb — it extinguishes (§3.3).
+    if (id === B.FIRE) {
+      emitSound('block.extinguish', at(x + 0.5, y + 0.5, z + 0.5));
+    } else {
+      const cls = matOf(id);
+      if (cls) emitSound(`block.break.${cls}`, at(x + 0.5, y + 0.5, z + 0.5));
+    }
     this.game.particles?.blockBreak?.(x, y, z, id);
   }
 
@@ -265,17 +294,30 @@ export class Interaction {
     if (!input.mouseRight) {
       // release
       if (chan.kind === 'bow') this.releaseBow(chan.ticks);
+      this.stopBowLoop();
       p.usingItem = null;
       return;
     }
     chan.ticks++;
+    // §3.3 / AMENDS 06 §12.4: chew at use-ticks 8/16/24, swallow at 32.
+    if (chan.kind === 'eat' && (chan.ticks === 8 || chan.ticks === 16 || chan.ticks === 24)) {
+      emitSound('player.eat.chew', null);
+    }
     if (chan.kind === 'eat' && chan.ticks >= 32) {
+      emitSound('player.eat.swallow', null);
+      p.burpTimer = 10;               // §3.3: burp 10 ticks later, always
       const item = p.heldItem();
       if (item?.kind === 'food') {
         p.eat(item);
         p.consumeHeld(1);
       }
       p.usingItem = null;
+    }
+    // §3.3: the draw ramp — density 0.6->1.8, BP 350->550 Hz over the 20-tick draw
+    if (chan.kind === 'bow' && this.bowLoop) {
+      const k = Math.min(1, chan.ticks / 20);
+      this.bowLoop.setParam('crackleRate', 0.6 + 1.2 * k, 0.05);
+      this.bowLoop.setParam('crackleFreq', 350 + 200 * k, 0.05);
     }
   }
 
@@ -294,6 +336,9 @@ export class Interaction {
     const vy = d.y * speed + gaussian(rng) * inacc;
     const vz = d.z * speed + gaussian(rng) * inacc;
     this.game.spawnArrow(e.x, e.y - 0.1, e.z, vx, vy, vz, p, { crit: charge >= 1, fromPlayer: true });
+    // Self event -> flat pool (§3.3). NOT inside Game.spawnArrow: skeletons share
+    // that path and their shot must render positionally.
+    emitSound('item.bow.shoot', null, 1, charge);
     this.swing();
   }
 
@@ -360,7 +405,10 @@ export class Interaction {
       return;
     }
     if (held.name === 'bow') {
-      if (!p.usingItem && this.hasItem('arrow')) p.usingItem = { kind: 'bow', ticks: 0 };
+      if (!p.usingItem && this.hasItem('arrow')) {
+        p.usingItem = { kind: 'bow', ticks: 0 };
+        this.bowLoop = startLoop('item.bow.draw', null);
+      }
       return;
     }
     if (held.kind === 'throwable') {
@@ -373,6 +421,8 @@ export class Interaction {
       if (p.armor[slot] == null) {
         p.armor[slot] = p.heldStack;
         p.heldStack = null;
+        // §3.3: metal chimes, leather rustles
+        emitSound(held.name.startsWith('leather') ? 'player.armor_equip.leather' : 'player.armor_equip', null);
         this.swing();
       }
       this.useDelay = 4;
@@ -400,6 +450,7 @@ export class Interaction {
         // blocked when an opaque block sits above (06 §5.3)
         if (!BLOCKS[this.world.getBlock(hit.x, hit.y + 1, hit.z)].opaque) {
           g.openContainer('chest', hit.x, hit.y, hit.z);
+          emitSound('block.chest.open', at(hit.x + 0.5, hit.y + 0.5, hit.z + 0.5));
         }
         break;
       }
@@ -414,10 +465,13 @@ export class Interaction {
     const lowerY = (state & 1) ? y - 1 : y;
     const ls = w.getState(x, lowerY, z);
     const us = w.getState(x, lowerY + 1, z);
+    const nowOpen = ((ls ^ 2) & 2) !== 0;      // read before ls goes stale
     w.setBlock(x, lowerY, z, B.OAK_DOOR, { state: ls ^ 2, byPlayer: true });
     if (w.getBlock(x, lowerY + 1, z) === B.OAK_DOOR) {
       w.setBlock(x, lowerY + 1, z, B.OAK_DOOR, { state: us ^ 2, byPlayer: true });
     }
+    emitSound(nowOpen ? 'block.door.open' : 'block.door.close',
+      at(x + 0.5, lowerY + 0.5, z + 0.5));
     this.swing();
   }
 
@@ -477,9 +531,17 @@ export class Interaction {
     if (block.canPlaceAt && !block.canPlaceAt(w, x, y, z, state)) return false;
 
     w.setBlock(x, y, z, blockId, { state, byPlayer: true });
+    // Reaching here IS the success path — six guards above return false first.
+    this.emitPlace(blockId, x, y, z);
     if (p.gameMode !== 'debugCreative') p.consumeHeld(1);
     this.swing();
     return true;
+  }
+
+  // §3.2 place verb; shared by tryPlace and tryPlaceSpecial (door/bed).
+  emitPlace(blockId, x, y, z) {
+    const cls = matOf(blockId);
+    if (cls) emitSound(`block.place.${cls}`, at(x + 0.5, y + 0.5, z + 0.5));
   }
 
   tryPlaceSpecial(held, hit) {
@@ -497,6 +559,7 @@ export class Interaction {
       const f = this.playerFacing();
       w.setBlock(x, y, z, B.OAK_DOOR, { state: f << 2, byPlayer: true });
       w.setBlock(x, y + 1, z, B.OAK_DOOR, { state: (f << 2) | 1, byPlayer: true });
+      this.emitPlace(B.OAK_DOOR, x, y, z);       // one door = two setBlocks, one sound
       p.consumeHeld(1);
       this.swing();
       return true;
@@ -508,6 +571,7 @@ export class Interaction {
       if (!isSolidSupport(w.getBlock(x, y - 1, z)) || !isSolidSupport(w.getBlock(hx, y - 1, hz))) return false;
       w.setBlock(x, y, z, B.BED_BLOCK, { state: f, byPlayer: true });
       w.setBlock(hx, y, hz, B.BED_BLOCK, { state: f | 4, byPlayer: true });
+      this.emitPlace(B.BED_BLOCK, x, y, z);
       p.consumeHeld(1);
       this.swing();
       return true;
@@ -522,6 +586,7 @@ export class Interaction {
     const y = hit.y + 1;
     if (w.getBlock(hit.x, y, hit.z) !== B.AIR) return;
     w.setBlock(hit.x, y, hit.z, held.plantsCrop, { state: 0, byPlayer: true });
+    this.emitPlace(held.plantsCrop, hit.x, y, hit.z);
     this.player.consumeHeld(1);
     this.swing();
   }
@@ -572,6 +637,9 @@ export class Interaction {
     const w = this.world;
     if (w.getBlock(hit.x, hit.y, hit.z) === B.TNT) {
       w.setBlock(hit.x, hit.y, hit.z, B.AIR, { byPlayer: true });
+      // Only the snick belongs here — world.tnt.fuse is started inside
+      // Game.igniteTnt, which every prime path funnels through.
+      emitSound('item.flintandsteel.use', at(hit.x + 0.5, hit.y + 0.5, hit.z + 0.5));
       w.igniteTnt(hit.x, hit.y, hit.z, 80);
       this.player.damageHeld(1);
       this.swing();
@@ -581,6 +649,7 @@ export class Interaction {
     if (hit.face[1] === 1 && w.getBlock(x, y, z) === B.AIR &&
         isSolidSupport(w.getBlock(x, y - 1, z))) {
       w.setBlock(x, y, z, B.FIRE, { byPlayer: true });
+      emitSound('item.flintandsteel.use', at(x + 0.5, y + 0.5, z + 0.5));
       this.player.damageHeld(1);
       this.swing();
     }
@@ -594,6 +663,8 @@ export class Interaction {
     const p = this.player;
     const filled = idOf(blk.fluid === 'water' ? 'water_bucket' : 'lava_bucket');
     this.world.setBlock(hit.x, hit.y, hit.z, B.AIR, { byPlayer: true });
+    emitSound(blk.fluid === 'lava' ? 'item.bucket.fill.lava' : 'item.bucket.fill',
+      at(hit.x + 0.5, hit.y + 0.5, hit.z + 0.5));
     if (p.heldStack.count === 1) {
       p.heldStack = { id: filled, count: 1 };
     } else {
@@ -613,6 +684,8 @@ export class Interaction {
     if (!BLOCKS[targetId].replaceable) return;
     const fluidId = held.name === 'water_bucket' ? B.WATER : B.LAVA;
     w.setBlock(pos.x, pos.y, pos.z, fluidId, { state: 0, byPlayer: true });
+    // before checkInteractions, which may itself fire block.extinguish (01 §6.3)
+    emitSound('item.bucket.pour', at(pos.x + 0.5, pos.y + 0.5, pos.z + 0.5));
     w.fluids.checkInteractions(pos.x, pos.y, pos.z);
     this.player.heldStack = { id: idOf('bucket'), count: 1 };
     this.swing();

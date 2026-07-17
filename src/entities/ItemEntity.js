@@ -4,6 +4,7 @@ import { Entity } from './Entity.js';
 import { BLOCKS } from '../registry/blocks.js';
 import { ITEMS } from '../registry/items.js';
 import { AABB } from '../math/aabb.js';
+import { emitSound } from '../audio/engine.js';
 
 // ---- shared visual helpers (initialised once from main with the atlas) ----
 
@@ -157,6 +158,9 @@ export class ItemEntity extends Entity {
     const leftover = player.give(this.stack);
     if (leftover <= 0) {
       this.dead = true;
+      // Fully absorbed only — MC plays no pop when the inventory is full and the
+      // item stays on the ground.
+      emitSound('player.item_pickup', null);
       game.hud?.flashPickup?.(this.stack);
     } else {
       this.stack.count = leftover;

@@ -238,6 +238,7 @@ function defBlock(id, name, opts = {}) {
     onBroken: null,
     canPlaceAt: null,
     species: null,
+    mat: 'none',                 // material class (16 §3.1); assigned below
     ...opts,
   };
   BLOCKS[id] = block;
@@ -622,6 +623,57 @@ defBlock(66, 'dead_bush', {
 });
 
 // =======================================================================
+// Material classes — the `Mat` column (16-AUDIO AMENDS 06 §2, table 16 §3.1).
+//
+// Transcribed verbatim from 16 §3.1 rather than threaded through each defBlock
+// call, because 24 of the 67 blocks are loop-generated and would otherwise get
+// the class in a place a reader can't check against the spec. `mat` selects the
+// step/dig/break/place voice family (16 §3.2). Later expansions default to
+// 'nether' (10) / 'end' (11) per §3.1; blocks with no verb ('none', 'fluid')
+// are skipped silently by the emit sites.
+//
+// Counter-intuitive but correct per §3.1 — do not "fix" these: tnt→grass,
+// cactus→wool, glowstone→glass, ice→glass, coal_block→stone (unlike the other
+// metal blocks), dirt/farmland→gravel, sandstone→stone, dead_bush→grass.
+const MAT = {
+  stone: ['stone', 'cobblestone', 'sandstone', 'bedrock', 'obsidian', 'furnace', 'furnace_lit', 'coal_block'],
+  ore: ['coal_ore', 'iron_ore', 'gold_ore', 'diamond_ore', 'redstone_ore', 'lapis_ore'],
+  metal: ['iron_block', 'gold_block', 'diamond_block'],
+  wood: ['oak_planks', 'birch_planks', 'spruce_planks', 'oak_log', 'birch_log', 'spruce_log',
+    'crafting_table', 'chest', 'bookshelf', 'ladder', 'oak_fence', 'oak_door', 'bed_block',
+    'torch', 'pumpkin', 'jack_o_lantern'],
+  gravel: ['gravel', 'dirt', 'farmland'],
+  sand: ['sand'],
+  grass: ['grass_block', 'oak_leaves', 'birch_leaves', 'spruce_leaves', 'oak_sapling',
+    'birch_sapling', 'spruce_sapling', 'wheat_crop', 'carrot_crop', 'potato_crop',
+    'sugar_cane_block', 'short_grass', 'dandelion', 'poppy', 'dead_bush', 'tnt'],
+  glass: ['glass', 'ice', 'glowstone'],
+  wool: ['wool_white', 'wool_red', 'wool_blue', 'wool_black', 'cactus'],
+  snow: ['snow_layer', 'snow_block'],
+  fluid: ['water', 'lava'],
+  none: ['air', 'fire'],
+};
+
+for (const cls of Object.keys(MAT)) {
+  for (const name of MAT[cls]) {
+    const id = B[name.toUpperCase()];
+    if (id === undefined) { console.warn(`[registry] mat: unknown block '${name}'`); continue; }
+    BLOCKS[id].mat = cls;
+  }
+}
+// Fail loud in dev if a block was added without a class (16 §3.2 needs one).
+for (const b of BLOCKS) {
+  if (b && b.mat === 'none' && b.name !== 'air' && b.name !== 'fire') {
+    console.warn(`[registry] block '${b.name}' has no material class (16 §3.1)`);
+  }
+}
+
+// Material class of a block id — the lookup every 16 §3.2 emit site uses.
+// Returns null for classes with no step/dig/break/place verb (§3.1).
+export function matOf(id) {
+  const m = BLOCKS[id]?.mat;
+  return m === 'none' || m === 'fluid' || !m ? null : m;
+}
 
 export function blockByName(name) {
   const id = B[name.toUpperCase()];

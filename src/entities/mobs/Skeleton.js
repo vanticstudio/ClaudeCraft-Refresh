@@ -3,6 +3,7 @@ import { Mob } from './Mob.js';
 import { Goal, SwimGoal, WanderGoal, LookAtPlayerGoal, IdleLookGoal, FleeSunGoal } from './ai.js';
 import { humanoidModel, skeletonBow } from './models.js';
 import { Arrow } from '../Arrow.js';
+import { emitSound, at } from '../../audio/engine.js';
 
 class BowAttackGoal extends Goal {
   constructor(mob) {
@@ -75,6 +76,7 @@ class BowAttackGoal extends Goal {
     const vy = (ay / len + gauss() * inacc) * speed;
     const vz = (az / len + gauss() * inacc) * speed;
     w.game?.entities.add(new Arrow(w, ex, ey, ez, vx, vy, vz, m, { fromPlayer: false }));
+    emitSound('item.bow.shoot', at(ex, ey, ez));   // §3.3: skeletons reuse, positional
     m.attackAnim = 0;
   }
   stop() { this.mob.clearPath(); this.mob.drawing = false; }

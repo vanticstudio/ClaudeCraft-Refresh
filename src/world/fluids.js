@@ -2,6 +2,13 @@
 // State nibble: bit3 = falling, bits0–2 = spread; source = state 0.
 // Effective strength S = 8 − spread (source/falling = 8).
 import { BLOCKS, B } from '../registry/blocks.js';
+import { emitSound, at } from '../audio/engine.js';
+
+// 01 §6.3 fluid mix: hiss + the stone-family place, per 16 §5.2.
+function emitQuench(x, y, z) {
+  emitSound('block.extinguish', at(x + 0.5, y + 0.5, z + 0.5));
+  emitSound('block.place.stone', at(x + 0.5, y + 0.5, z + 0.5));
+}
 
 export const FLUID_INTERVAL = { water: 5, lava: 30 };
 const FLUID_DROP = { water: 1, lava: 2 };
@@ -75,10 +82,12 @@ export class Fluids {
     const exState = world.getState(x, y, z);
     if (BLOCKS[existingId].fluid === 'lava' && BLOCKS[incomingId].fluid === 'water') {
       world.setBlock(x, y, z, isSource(exState) ? B.OBSIDIAN : B.COBBLESTONE);
+      emitQuench(x, y, z);
       return true;
     }
     if (BLOCKS[existingId].fluid === 'water' && BLOCKS[incomingId].fluid === 'lava') {
       world.setBlock(x, y, z, B.STONE);   // lava flowing onto water → stone
+      emitQuench(x, y, z);
       return true;
     }
     return false;
@@ -97,7 +106,10 @@ export class Fluids {
       const nBlk = BLOCKS[nId];
       if (!nBlk.fluid || nBlk.fluid === blk.fluid) continue;
       if (blk.fluid === 'lava' && nBlk.fluid === 'water') {
+        // The path that fires for the common player action (pouring water beside
+        // or above lava) — hooking interact() alone misses it silently.
         world.setBlock(x, y, z, isSource(state) ? B.OBSIDIAN : B.COBBLESTONE);
+        emitQuench(x, y, z);
         return;
       }
     }

@@ -3,9 +3,16 @@
 import { ITEMS } from '../registry/items.js';
 import { iconCss, tileForItemId } from './hud.js';
 import { loadOptions, saveOptions } from './options.js';
+import { emitSound, audio } from '../audio/engine.js';
 
+// The five audio buses (16 AMENDS 01 §15.3). Order is the display order.
 const OPT_ROWS = [
-  ['master', 'Master'], ['music', 'Music'], ['sfx', 'SFX'],
+  ['master', 'Master'], ['music', 'Music'], ['ambient', 'Ambient'],
+  ['sfx', 'SFX'], ['ui', 'UI'],
+];
+// §4A musicMode
+const THEME_MODES = [
+  ['off', 'Off'], ['menu', 'Menu only'], ['full', 'Menu + gameplay'],
 ];
 
 export class Menus {
@@ -15,7 +22,9 @@ export class Menus {
     this.started = false;      // PRESS START pressed? (drives the button row)
     this.hasSave = false;
     this.music = null;         // set via attachMusic() once the player exists
-    this.options = loadOptions();
+    // Share Game's object — a second loadOptions() here would diverge from the
+    // copy Game reads for sensitivity/bobbing on every slider drag.
+    this.options = game.options ?? loadOptions();
     screensEl.insertAdjacentHTML('beforeend', `
       <div id="screen-title" class="screen">
         <div class="cc-title">
@@ -53,25 +62,6 @@ export class Menus {
               <img src="menu/buttons/btn-quit.png" alt="Quit"></button>
           </div>
 
-          <div class="cc-settings" id="cc-settings" hidden>
-            <div class="cc-panel" role="dialog" aria-modal="true" aria-label="Settings">
-              <h2>Settings</h2>
-              ${OPT_ROWS.map(([k, label]) => `
-              <label class="cc-row">
-                <span>${label}</span>
-                <input type="range" min="0" max="100" step="1" id="opt-${k}">
-                <output id="out-${k}"></output>
-              </label>`).join('')}
-              <div class="cc-note">Menu music plays original/cleared tracks only.
-                In-game audio is fully synthesized.</div>
-              <!-- text buttons: the art pack has no Back/Delete plates, and
-                   reusing CONTINUE/QUIT art here would mislabel the action -->
-              <div class="cc-actions">
-                <button class="cc-textbtn" id="btn-settings-back">&#9664; Back</button>
-                <button class="cc-textbtn danger" id="btn-delete" hidden>Delete World</button>
-              </div>
-            </div>
-          </div>
         </div>
       </div>
       <div id="screen-loading" class="screen">
@@ -82,6 +72,7 @@ export class Menus {
       <div id="screen-pause" class="screen">
         <h1>Paused</h1>
         <button id="btn-resume">Resume</button>
+        <button id="btn-pause-settings">Options…</button>
         <button id="btn-quit">Save &amp; Quit to Title</button>
         <div style="opacity:0.6;font-size:14px">Sprint: double-tap W · Drop stack: Shift+Q · Debug: F3/F4</div>
       </div>
@@ -90,6 +81,45 @@ export class Menus {
         <div id="death-score" style="font-size:20px"></div>
         <button id="btn-respawn">Respawn</button>
         <button id="btn-death-title">Title Screen</button>
+      </div>
+      <!-- Options (16 AMENDS 01 §15.3): a TOP-LEVEL sheet, deliberately not
+           nested in #screen-title — .screen{display:none} would make it
+           unreachable from PAUSE, which the amendment requires. -->
+      <div class="cc-settings" id="cc-settings" hidden>
+        <div class="cc-panel" role="dialog" aria-modal="true" aria-label="Settings">
+          <h2>Options</h2>
+          ${OPT_ROWS.map(([k, label]) => `
+          <label class="cc-row">
+            <span>${label}</span>
+            <input type="range" min="0" max="100" step="1" id="opt-${k}">
+            <output id="out-${k}"></output>
+          </label>`).join('')}
+          <label class="cc-row">
+            <span>Theme music</span>
+            <select id="opt-musicMode">
+              ${THEME_MODES.map(([v, label]) => `<option value="${v}">${label}</option>`).join('')}
+            </select>
+            <output></output>
+          </label>
+          <label class="cc-row">
+            <span>Sensitivity</span>
+            <input type="range" min="0.1" max="3" step="0.05" id="opt-mouseSensitivity">
+            <output id="out-mouseSensitivity"></output>
+          </label>
+          <label class="cc-row">
+            <span>View bobbing</span>
+            <input type="checkbox" id="opt-viewBobbing">
+            <output></output>
+          </label>
+          <div class="cc-note">Menu music plays original/cleared tracks only.
+            In-game audio is fully synthesized.</div>
+          <!-- text buttons: the art pack has no Back/Delete plates, and
+               reusing CONTINUE/QUIT art here would mislabel the action -->
+          <div class="cc-actions">
+            <button class="cc-textbtn" id="btn-settings-back">&#9664; Back</button>
+            <button class="cc-textbtn danger" id="btn-delete" hidden>Delete World</button>
+          </div>
+        </div>
       </div>
       <div id="debug-palette" style="display:none; position:absolute; right:8px; top:8px; bottom:8px;
            width:390px; overflow-y:auto; background:rgba(20,20,28,0.92); border:2px solid #555;
@@ -118,22 +148,37 @@ export class Menus {
       this.el.wordmark.hidden = false;
     }, { once: true });
 
+    // Every button is a gesture: unlock the context and tick, then act (§1.1 —
+    // idempotent and cheap, so no first-click tracking). unlock() must run
+    // synchronously inside the handler; the async hooks await past the gesture.
+    const btn = (id, fn) => {
+      $(id).onclick = e => {
+        audio.unlock();
+        emitSound('ui.click', null);
+        fn(e);
+      };
+    };
+
     this.el.start.onclick = () => this.pressStart();
-    $('btn-new').onclick = () => hooks.onNewWorld(this.el.seed.value.trim());
-    this.el.btnContinue.onclick = () => hooks.onContinue();
-    this.el.btnDelete.onclick = () => hooks.onDelete();
-    $('btn-settings').onclick = () => this.showSettings(true);
-    $('btn-settings-back').onclick = () => this.showSettings(false);
+    btn('btn-new', () => hooks.onNewWorld(this.el.seed.value.trim()));
+    btn('btn-continue', () => hooks.onContinue());
+    btn('btn-delete', () => hooks.onDelete());
+    btn('btn-settings', () => this.showSettings(true));
+    btn('btn-pause-settings', () => this.showSettings(true));
+    btn('btn-settings-back', () => this.showSettings(false));
     // web build: no process exit — return to the PRESS START state (§3.2)
-    $('btn-quit-title').onclick = () => this.resetTitle();
-    $('btn-resume').onclick = () => hooks.onResume();
-    $('btn-quit').onclick = () => hooks.onQuit();
-    $('btn-respawn').onclick = () => hooks.onRespawn();
-    $('btn-death-title').onclick = () => hooks.onQuit();
+    btn('btn-quit-title', () => this.resetTitle());
+    btn('btn-resume', () => hooks.onResume());
+    btn('btn-quit', () => hooks.onQuit());
+    btn('btn-respawn', () => hooks.onRespawn());
+    btn('btn-death-title', () => hooks.onQuit());
     this.el.paletteFilter.addEventListener('input', () => this.fillPalette());
     this.paletteBuilt = false;
     // scoped to the title screen, so it cannot swallow keys during play
     this.el.title.addEventListener('keydown', e => this._onTitleKey(e));
+    // The panel is no longer inside #screen-title, so Escape and the focus trap
+    // need their own binding — otherwise both die the moment PAUSE hosts it.
+    this.el.settings.addEventListener('keydown', e => this._onSettingsKey(e));
 
     for (const [key] of OPT_ROWS) {
       const slider = $(`opt-${key}`), out = $(`out-${key}`);
@@ -142,11 +187,50 @@ export class Menus {
       slider.addEventListener('input', () => {
         this.options[key] = Number(slider.value);
         out.textContent = slider.value;
-        this.music?.setOptions(this.options);      // live (§3.2)
-        saveOptions(this.options);                 // persist on change (§15.3)
+        this.applyOptions();
       });
     }
+
+    const mode = $('opt-musicMode');
+    mode.value = this.options.musicMode;
+    mode.addEventListener('change', () => {
+      this.options.musicMode = mode.value;
+      this.applyOptions();
+      this.applyMusicMode();
+    });
+
+    const sens = $('opt-mouseSensitivity'), sensOut = $('out-mouseSensitivity');
+    sens.value = this.options.mouseSensitivity;
+    sensOut.textContent = Number(this.options.mouseSensitivity).toFixed(2);
+    sens.addEventListener('input', () => {
+      this.options.mouseSensitivity = Number(sens.value);
+      sensOut.textContent = Number(sens.value).toFixed(2);
+      this.applyOptions();
+    });
+
+    const bob = $('opt-viewBobbing');
+    bob.checked = this.options.viewBobbing !== false;
+    bob.addEventListener('change', () => {
+      this.options.viewBobbing = bob.checked;
+      this.applyOptions();
+    });
+
     this.applyTitleButtons();
+  }
+
+  /** One writer for the shared options object: buses live, then persist (§15.3). */
+  applyOptions() {
+    audio.setOptions(this.options);
+    this.music?.setOptions(this.options);
+    this.hooks.onOptions?.(this.options);
+    saveOptions(this.options);
+  }
+
+  /** §4A: 'off' silences the theme layer; 'menu'/'full' rearm it on the title. */
+  applyMusicMode() {
+    const m = this.options.musicMode;
+    if (m === 'off') this.music?.stop(0.8);
+    else if (this.game.state === 'TITLE' && this.started) this.music?.start({ context: 'title' });
   }
 
   /** The §4A theme player, handed in once main.js has built it. */
@@ -159,9 +243,12 @@ export class Menus {
   pressStart() {
     if (this.started) return;
     this.started = true;
+    audio.unlock();               // covers the button AND the keyboard path
+    emitSound('ui.click', null);
     this.applyTitleButtons();
     this.el.menu.querySelector('button:not([hidden])')?.focus();
-    this.music?.start({ context: 'title' });       // autoplay-safe: gesture-driven
+    // autoplay-safe: gesture-driven. 'off' means no theme layer at all (§4A).
+    if (this.options.musicMode !== 'off') this.music?.start({ context: 'title' });
     // the reference screen's public hook (§3.2) — kept so external wiring works
     document.dispatchEvent(new CustomEvent('claudecraft:start'));
   }
@@ -178,30 +265,48 @@ export class Menus {
   showSettings(on) {
     if (on) this.settingsOpener = document.activeElement;
     this.el.settings.hidden = !on;
+    // Over PAUSE the world is still rendered behind: use a scrim instead of the
+    // title's opaque desert sheet, which would black the game out.
+    this.el.settings.classList.toggle('over-pause', on && this.game.state === 'PAUSED');
     if (on) {
       this.el.settings.querySelector('input')?.focus();
-    } else if (this.started) {
-      // restore focus to whatever opened the panel, not to a destructive button
+    } else {
+      // restore focus to whatever opened the panel, not to a destructive button.
+      // The fallback follows the host screen — from PAUSE the title's button row
+      // is display:none and focusing it would drop focus on the floor.
+      const fallback = this.game.state === 'PAUSED'
+        ? this.el.pause.querySelector('button')
+        : (this.started ? this.el.menu.querySelector('button:not([hidden])') : this.el.start);
       const back = this.settingsOpener?.isConnected && !this.settingsOpener.hidden
         ? this.settingsOpener
-        : this.el.menu.querySelector('button:not([hidden])');
+        : fallback;
       back?.focus();
     }
   }
 
   /** Roving focus for the title row + settings panel (§3.2 "arrow/Tab + Enter"). */
   _onTitleKey(e) {
-    const settingsOpen = !this.el.settings.hidden;
-    if (e.key === 'Escape' && settingsOpen) {
+    if (!this.el.settings.hidden) return;      // the panel owns its own keys now
+    this._roveOrTrap(e, this.el.menu);
+  }
+
+  _onSettingsKey(e) {
+    if (e.key === 'Escape') {
       e.preventDefault();
       this.showSettings(false);
       return;
     }
-    const scope = settingsOpen ? this.el.settings : this.el.menu;
-    if (settingsOpen && e.key === 'Tab') {
-      // focus trap: the panel is opaque and modal — Tab must not reach the
-      // title buttons behind it (Enter there would start/delete a world)
-      const f = [...scope.querySelectorAll('button, input')].filter(el => !el.hidden);
+    this._roveOrTrap(e, this.el.settings);
+  }
+
+  _roveOrTrap(e, scope) {
+    const modal = scope === this.el.settings;
+    if (modal && e.key === 'Tab') {
+      // focus trap: the panel is modal and covers the screen — Tab must not
+      // reach the buttons behind it (Enter there would start/delete a world).
+      // 'select' belongs in this list: the theme-mode dropdown is neither a
+      // button nor an input, and without it Tab escapes the modal.
+      const f = [...scope.querySelectorAll('button, input, select')].filter(el => !el.hidden);
       if (!f.length) return;
       const first = f[0], last = f[f.length - 1];
       if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
@@ -209,8 +314,9 @@ export class Menus {
       return;
     }
     if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
-    // let arrows drive sliders/text fields normally
-    if (document.activeElement?.tagName === 'INPUT') return;
+    // let arrows drive sliders and the theme dropdown natively
+    const tag = document.activeElement?.tagName;
+    if (tag === 'INPUT' || tag === 'SELECT') return;
     const btns = [...scope.querySelectorAll('button')].filter(b => !b.hidden);
     if (!btns.length) return;
     e.preventDefault();
@@ -244,7 +350,14 @@ export class Menus {
       // PRESS START; music restarts from that gesture (§4.5)
       this.resetTitle();
     } else {
-      this.music?.stop();         // menu → world: fade out ~1 s + suspend
+      // §4A.3 menu → world: fade the menu track out ~1 s, then hand off — to the
+      // in-game theme layer on musicMode 'full', else to the §4 composer.
+      this.music?.stop();
+      if (name === null && this.options.musicMode === 'full' && this.music?.available) {
+        setTimeout(() => {
+          if (this.game.state !== 'TITLE') this.music?.start({ context: 'game' });
+        }, 1100);
+      }
     }
     if (name === 'death' && this.game.player) {
       this.el.score.textContent = `Score: ${this.game.player.xpTotal}`;

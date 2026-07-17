@@ -28,6 +28,7 @@ import { DayNight } from './env/DayNight.js';
 import { Particles } from './render/Particles.js';
 import { AABB } from './math/aabb.js';
 import { createMob, MobSpawner, HOSTILE_TYPES } from './entities/mobs/index.js';
+import { emitSound, startLoop, at } from './audio/engine.js';
 
 const NEUTRAL_FRAME = {
   forward: 0, strafe: 0, jump: false, sneak: false, sprintKey: false,
@@ -36,7 +37,7 @@ const NEUTRAL_FRAME = {
 };
 
 export class Game {
-  constructor({ canvas, input, renderer, camera, viewmodelCamera, atlas, ui }) {
+  constructor({ canvas, input, renderer, camera, viewmodelCamera, atlas, ui, audio, options }) {
     this.canvas = canvas;
     this.input = input;
     this.renderer = renderer;
@@ -44,6 +45,8 @@ export class Game {
     this.viewmodelCamera = viewmodelCamera;
     this.atlas = atlas;                 // { canvas, texture, TILE, tileUV, animate, atlasDataURL }
     this.ui = ui;                       // wired by main.js after UI construction
+    this.audio = audio;                 // 16 §1; null-safe everywhere (?.)
+    this.options = options;             // shared with Menus — one object, one source
 
     this.scene = new THREE.Scene();
     this.viewmodelScene = new THREE.Scene();
@@ -68,7 +71,7 @@ export class Game {
     this.save = null;                   // saveManager, wired by main.js
     this.particles = null;
     this.sleeping = null;               // { ticks }
-    this.debug = { fps: 0, frameMs: 0, remeshCount: 0, lastRemeshes: 0 };
+    this.debug = { fps: 0, frameMs: 0, remeshCount: 0, lastRemeshes: 0, audioMs: 0 };
     this._fpsWindow = [];
 
     this.buildOverlays();
@@ -136,6 +139,16 @@ export class Game {
     if (next === STATE.PLAYING) {
       this.lastTime = performance.now();
       this.accumulator = 0;
+      // §4.3: first piece 45-90 s after entering PLAYING. Idempotent — the
+      // PLAYING_UI and PAUSED round-trips must not restart the scarcity timer.
+      if (this.world) this.audio?.music?.arm(this.world.seedString);
+    }
+    if (next === STATE.TITLE) {
+      this.audio?.music?.disarm();
+      // Game.tick() early-returns once disposeWorld() nulls this.world, so
+      // audio.tick() — and with it ambience's own silence path — never runs
+      // again. Without this, rain/wind/fluid loops play on forever at the title.
+      this.audio?.ambience?.silence();
     }
     this.ui?.onStateChange?.(next, prev);
   }
@@ -193,6 +206,7 @@ export class Game {
       this.tickSleep();
     }
     this.save?.tick(this);
+    this.audio?.tick();                 // AMENDS 01 §3 tick step 10
     this.atlas.animate?.(this.world.time);
     this.ui?.containers?.tickOpen?.();
 
@@ -233,11 +247,19 @@ export class Game {
 
   render(alpha) {
     this.renderer.clear(true, true, true);
-    if (!this.world || this.state === STATE.TITLE) return;
+    if (!this.world || this.state === STATE.TITLE) {
+      // Still drive the audio frame with no listener: the music lookahead
+      // scheduler (16 §1.5) and the §4A theme layer must run on the title
+      // screen and in the disposeWorld→setState(TITLE) window.
+      this.audio?.updateFrame(null);
+      return;
+    }
 
     this.applyMouseLook();
     this.debug.lastRemeshes = this.chunkManager.drainRemesh(this.player.pos.x, this.player.pos.z);
     this.updateCamera(alpha);
+    this.audio?.updateFrame(this.camera);   // AMENDS 01 §3 render step 6
+    this.debug.audioMs = this.audio?.debug.budgetMs ?? 0;
     this.dayNight.updateRender(alpha, this.camera);
     this.entities.updateRender(alpha, this.player);
     this.particles.update(alpha);
@@ -263,7 +285,10 @@ export class Game {
     }
     const { dx, dy } = this.input.consumeMouseDelta();
     if (!dx && !dy) return;
-    const RATE = 0.15 * Math.PI / 180;
+    // 0.15°/count at sensitivity 1.0; the slider (01 §15.3) scales it. Clamped
+    // because loadOptions() spreads raw localStorage over the defaults.
+    const sens = Math.min(3, Math.max(0.1, this.options?.mouseSensitivity ?? 1));
+    const RATE = 0.15 * Math.PI / 180 * sens;
     p.yaw -= dx * RATE;
     p.pitch -= dy * RATE;
     const lim = Math.PI / 2;
@@ -282,11 +307,13 @@ export class Game {
     const py = lerp(p.prevPos.y + p.prevEyeHeight, p.pos.y + p.eyeHeight, alpha);
     const pz = lerp(p.prevPos.z, p.pos.z, alpha);
 
-    // view bobbing (03 §18.4)
+    // view bobbing (03 §18.4); the 01 §15.3 toggle zeroes the offset here rather
+    // than freezing bobPhase — that phase is tick state and must stay deterministic.
     const phase = lerp(p.prevBobPhase, p.bobPhase, alpha);
     const inten = lerp(p.prevBobIntensity, p.bobIntensity, alpha);
-    const bobY = Math.abs(Math.cos(phase)) * 0.05 * inten;
-    const bobR = Math.sin(phase) * 0.025 * inten;
+    const bob = this.options?.viewBobbing === false ? 0 : 1;
+    const bobY = Math.abs(Math.cos(phase)) * 0.05 * inten * bob;
+    const bobR = Math.sin(phase) * 0.025 * inten * bob;
     const rightX = Math.cos(p.yaw), rightZ = -Math.sin(p.yaw);
 
     this.camera.position.set(px + rightX * bobR, py + bobY, pz + rightZ * bobR);
@@ -587,6 +614,9 @@ export class Game {
       e.vel.z += (cz - z) / len * impact;
     }
     this.particles?.explosion?.(x, y, z, power);
+    // One emit covers both §5.2 triggers (creeper 05 §12 and TNT 06 §5.6); the
+    // §3.5 distance-muffle LP is per-voice from the listener, so power is unused.
+    emitSound('world.explosion', at(x, y, z));
     this.dayNight?.flash?.(2);
   }
 
@@ -647,7 +677,9 @@ export class Game {
 
   igniteTnt(x, y, z, fuse = 80) {
     if (this.world.getBlock(x, y, z) === B.TNT) this.world.setBlock(x, y, z, B.AIR);
-    return this.entities.add(new PrimedTnt(this.world, x + 0.5, y, z + 0.5, fuse));
+    const e = this.entities.add(new PrimedTnt(this.world, x + 0.5, y, z + 0.5, fuse));
+    e.fuseVoice = startLoop('world.tnt.fuse', e);   // §3.5: tracked to the entity
+    return e;
   }
 
   spawnMobAt(type, x, y, z, opts = {}) {
@@ -679,14 +711,18 @@ export class Game {
 
   restoreEntity(rec) {
     let e = null;
+    let restoredTnt = false;
     if (rec.type === 'item') e = ItemEntity.deserialize(this.world, rec);
-    else if (rec.type === 'primed_tnt') e = PrimedTnt.deserialize(this.world, rec);
+    else if (rec.type === 'primed_tnt') { e = PrimedTnt.deserialize(this.world, rec); restoredTnt = true; }
     else if (rec.type === 'xp_orb') { e = new XpOrb(this.world, rec.pos[0], rec.pos[1], rec.pos[2], rec.value); }
     else {
       e = createMob(this.world, rec.type, rec.pos[0], rec.pos[1], rec.pos[2], {});
       if (e) e.deserialize(rec);
     }
     if (e) this.entities.add(e);
+    // Mid-fuse TNT restored from a save never passes through igniteTnt, so it
+    // would tick down silently without this.
+    if (e && restoredTnt) e.fuseVoice = startLoop('world.tnt.fuse', e);
   }
 
   onChunkUnloading(chunk) {

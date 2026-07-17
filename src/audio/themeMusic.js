@@ -80,8 +80,13 @@ export class ThemeMusic {
     this.level = TITLE_GAIN;
     this.opts = { master: 100, music: 70 };
     this.inFlight = new Map();     // url → Promise, so concurrent _load()s dedupe
-    this._onVisibility = () => (document.hidden ? this.onPause() : this.onResume());
-    document.addEventListener('visibilitychange', this._onVisibility);
+    // Only self-manage visibility while we own the context. Once 16-AUDIO E1
+    // passes { context, musicBus }, the engine drives onPause/onResume — two
+    // listeners would race our themeGain fade against its masterGain ramp.
+    if (this.ownsContext) {
+      this._onVisibility = () => (document.hidden ? this.onPause() : this.onResume());
+      document.addEventListener('visibilitychange', this._onVisibility);
+    }
   }
 
   /** False when the manifest is empty — e.g. a shipped build with no cleared tracks. */

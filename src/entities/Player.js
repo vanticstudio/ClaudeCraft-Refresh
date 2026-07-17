@@ -1,10 +1,11 @@
 // Survival player: movement state machine, health, hunger, XP, inventory
 // (03 full spec; hunger/XP per 06 §12–13; combat charge per 05 §13).
 import { LivingEntity } from './Entity.js';
-import { BLOCKS, B } from '../registry/blocks.js';
+import { BLOCKS, B, matOf } from '../registry/blocks.js';
 import { ITEMS } from '../registry/items.js';
 import { collidesAny, overlapsBlockId } from '../physics/collision.js';
 import { AABB } from '../math/aabb.js';
+import { emitSound, audio } from '../audio/engine.js';
 
 const DEG = Math.PI / 180;
 
@@ -69,6 +70,13 @@ export class Player extends LivingEntity {
 
     // distances for exhaustion, updated in movement
     this._moveDist = 0;
+
+    // --- 16-AUDIO state (§3.2 / §3.3) ---
+    this.stepAccum = 0;                // horizontal distance since the last step
+    this.swimAccum = 0;                // ditto for swim-splashes
+    this.burpTimer = 0;                // set to 10 on swallow, counts down here
+    this.orbStreak = 0;                // rising XP run; resets after 40 quiet ticks
+    this.orbStreakTimer = 0;
   }
 
   // -------------------------------------------------- inventory helpers
@@ -127,6 +135,9 @@ export class Player extends LivingEntity {
     s.damage = (s.damage ?? 0) + n;
     if (s.damage >= item.durability) {
       this.heldStack = null;
+      // Most callers ignore this return value, so the emit lives here rather
+      // than at the six call sites.
+      emitSound('player.item_break', null);
       return true;
     }
     return false;
@@ -152,7 +163,10 @@ export class Player extends LivingEntity {
       if (!s) continue;
       const item = ITEMS.get(s.id);
       s.damage = (s.damage ?? 0) + loss;
-      if (s.damage >= (item?.durability ?? 1)) this.armor[i] = null;
+      if (s.damage >= (item?.durability ?? 1)) {
+        this.armor[i] = null;
+        emitSound('player.item_break', null);   // §3.3 covers armor, not just tools
+      }
     }
   }
 
@@ -165,12 +179,16 @@ export class Player extends LivingEntity {
   }
 
   addXp(n) {
+    const before = this.xpLevel;
     this.xpTotal += n;
     this.xpPoints += n;
     while (this.xpPoints >= this.xpToNext(this.xpLevel)) {
       this.xpPoints -= this.xpToNext(this.xpLevel);
       this.xpLevel++;
     }
+    // One chime per grant, not one per level: deserialize() replays the whole
+    // ladder through here on every world load, and a big orb can cross two levels.
+    if (this.xpLevel > before && !this._silentXp) emitSound('player.levelup', null);
   }
 
   // -------------------------------------------------- exhaustion / hunger (06 §12)
@@ -225,6 +243,15 @@ export class Player extends LivingEntity {
 
   // -------------------------------------------------- tick (03 §4 order)
 
+  // §3.2: the under-feet cell, skipped silently for the classes with no verb.
+  emitStep(gainMult) {
+    const id = this.world.getBlock(
+      Math.floor(this.pos.x), Math.floor(this.pos.y - 0.5), Math.floor(this.pos.z));
+    const cls = matOf(id);
+    if (!cls) return;
+    emitSound(`block.step.${cls}`, null, 1, gainMult);
+  }
+
   tick(input) {
     this.baseTick();
     this.prevEyeHeight = this.eyeHeight;
@@ -235,6 +262,10 @@ export class Player extends LivingEntity {
     this.tickTimers();
     if (this.jumpCooldown > 0) this.jumpCooldown--;
     if (this.xpPickupCooldown > 0) this.xpPickupCooldown--;
+    // §3.3: burp fires 10 ticks after the swallow, always.
+    if (this.burpTimer > 0 && --this.burpTimer === 0) emitSound('player.eat.burp', null);
+    // §3.3: orbStreak resets after 40 ticks without a pickup.
+    if (this.orbStreakTimer > 0 && --this.orbStreakTimer === 0) this.orbStreak = 0;
     if (this.hurtTilt > 0) this.hurtTilt = Math.max(0, this.hurtTilt - 0.8);
     this.ticksSinceForward++;
     this.ticksSinceSpace++;
@@ -252,7 +283,16 @@ export class Player extends LivingEntity {
     this.updateSprint(input);
 
     // 5. medium
+    // inWater still holds last tick's value until updateMedium() overwrites it —
+    // the only previous-medium state there is, and vel.y is still the pre-move
+    // velocity, which is exactly §3.3's `vy` for the entry test.
+    const wasInWater = this.inWater;
     this.updateMedium();
+    if (this.inWater && !wasInWater && this.vel.y < -0.3) {
+      // gain scales 0.3-0.8 with entry speed (§3.3)
+      const g = Math.min(0.8, 0.3 + Math.abs(this.vel.y) * 0.5);
+      emitSound('player.splash', null, 1, g);
+    }
     const eye = { x: this.pos.x, y: this.pos.y + this.eyeHeight, z: this.pos.z };
     const eyeBlock = this.world.getBlock(Math.floor(eye.x), Math.floor(eye.y), Math.floor(eye.z));
     this.eyeSubmerged = eyeBlock === B.WATER;
@@ -266,10 +306,28 @@ export class Player extends LivingEntity {
     else this.landMove(input);
 
     // 7. fall damage
+    // trackFall() zeroes fallDistance unconditionally on the landing tick, so the
+    // landing sound has to read it first.
+    const fdBefore = this.fallDistance;
     if (!this.flying) {
       this.trackFall(velYBefore, this.pos.y - y0);
     } else {
       this.fallDistance = 0;
+    }
+    // Landing (§3.3 / §3.2). The medium guards matter: trackFall also zeroes on
+    // ladder/water and halves in lava, any of which can leave onGround true with
+    // a stale fdBefore and fake a landing on a submerged floor.
+    if (!this.flying && this.onGround && fdBefore > 0 &&
+        !this.inWater && !this.inLava && !this.onLadder) {
+      const dmg = Math.ceil(fdBefore - 3);
+      if (dmg > 0) {
+        // player.hurt suppresses source 'fall' so this doesn't double up
+        emitSound('player.fall.big', null, 1, (0.6 + 0.1 * Math.min(dmg, 10)) / 0.6);
+      } else if (fdBefore >= 0.5) {
+        emitSound('player.fall.small', null);
+      }
+      // §3.2: landing from a fall > 0.5 also emits one step at gain x1.5
+      if (fdBefore > 0.5) this.emitStep(1.5);
     }
 
     // 8. environmental damage
@@ -286,6 +344,23 @@ export class Player extends LivingEntity {
       this.bobPhase += hSpeed * 1.5;
     } else {
       this.bobIntensity *= 0.8;
+    }
+
+    // Footsteps (16 §3.2). Cadence is emergent from 03 §5's speeds rather than a
+    // timer: walk 4.317 m/s -> 2.9 steps/s, sprint -> 3.7/s, sneak -> 0.86/s.
+    if (this.onGround && !this.inWater && !this.flying) {
+      this.stepAccum += hSpeed;
+      if (this.stepAccum >= 1.5) {
+        this.stepAccum -= 1.5;
+        this.emitStep(this.sneaking ? 0.5 : 1);     // sneaking: -6 dB
+      }
+    } else if (this.inWater) {
+      this.stepAccum = 0;
+      this.swimAccum += hSpeed;
+      if (this.swimAccum >= 1.8) {                  // §3.2 swim-step
+        this.swimAccum -= 1.8;
+        emitSound('player.splash', null, 1, 0.35);
+      }
     }
 
     // eye height lerp (03 §2.2)
@@ -548,11 +623,20 @@ export class Player extends LivingEntity {
     this.hurtTilt = 8;
     this.hurtTiltDir = this.world.rng() < 0.5 ? -1 : 1;
     if (LivingEntity.ARMOR_SOURCES.has(source)) this.addExhaustion(0.1);
+    // §3.3 — post-i-frame, post-armor. 'fall' is excluded: the landing already
+    // emits player.fall.big for exactly this hit.
+    if (dmg > 0 && source !== 'fall') {
+      if (source === 'fire' || source === 'burn' || source === 'lava') emitSound('player.hurt.fire', null);
+      else if (source === 'drown') emitSound('player.hurt.drown', null);
+      else emitSound('player.hurt', null);
+    }
+    audio.duck();                    // §4.3: music steps aside while you panic
     this.world.game?.onPlayerHurt?.(dmg, source);
   }
 
   onDeath() {
     const game = this.world.game;
+    emitSound('player.death', null);
     // drop everything (03 §20.5)
     for (let i = 0; i < 36; i++) {
       if (this.inventory[i]) { game?.dropStackAt(this.inventory[i], this.pos.x, this.pos.y + 0.6, this.pos.z); this.inventory[i] = null; }
@@ -630,7 +714,10 @@ export class Player extends LivingEntity {
     this.offhand = rec.offhand || null;
     if (rec.armor) rec.armor.forEach((s, i) => { this.armor[i] = s || null; });
     this.xpTotal = 0; this.xpLevel = 0; this.xpPoints = 0;
+    // Replays the whole level ladder — silence it, or every world load chimes.
+    this._silentXp = true;
     if (rec.xp) this.addXp(rec.xp);
+    this._silentXp = false;
     this.prevPos.x = this.pos.x; this.prevPos.y = this.pos.y; this.prevPos.z = this.pos.z;
   }
 }

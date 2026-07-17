@@ -5,6 +5,7 @@
 // coordinates), scaled uniformly by --gpx. Slot (x,y) = top-left INNER corner.
 import { ITEMS, RECIPES, SMELTING, fuelValue } from '../registry/items.js';
 import { iconCss, tileForItemId } from './hud.js';
+import { emitSound, at, audio } from '../audio/engine.js';
 
 const stackMax = id => ITEMS.get(id)?.stack ?? 64;
 const same = (a, b) => a && b && a.id === b.id && (a.damage ?? 0) === (b.damage ?? 0);
@@ -140,6 +141,7 @@ export class Containers {
     });
     this.root.addEventListener('mousedown', e => {
       if (e.target === this.root && this.cursor) {
+        emitSound('ui.click', null);   // inside the guard: slot clicks bubble here too
         if (e.button === 0) { this.game.throwStack(this.cursor); this.cursor = null; }
         else if (e.button === 2) {
           const one = { ...this.cursor, count: 1 };
@@ -176,6 +178,9 @@ export class Containers {
 
   close(silent = false) {
     if (!this.kind) return;
+    // Capture now: kind and pos are both nulled before the tail of this method.
+    const wasChest = this.kind === 'chest';
+    const chestPos = this.pos;
     const p = this.game.player;
     if (this.craftGrid) {                        // grid returns to inventory (06 §5.4)
       for (let i = 0; i < this.craftGrid.length; i++) {
@@ -197,6 +202,11 @@ export class Containers {
     this.root.classList.remove('visible');
     this.renderCursor();
     this.tooltipEl.style.display = 'none';
+    // `silent` marks the open()-time teardown of a previous screen, so a
+    // chest→chest hand-off correctly stays quiet.
+    if (wasChest && chestPos && !silent) {
+      emitSound('block.chest.close', at(chestPos.x + 0.5, chestPos.y + 0.5, chestPos.z + 0.5));
+    }
     if (!silent) this.game.onContainerClosed?.();
   }
 
@@ -266,7 +276,15 @@ export class Containers {
           x: 8, y: armorY[i], region: 'armor', armorIndex: slot,
           placeholder: ['helmet', 'chestplate', 'leggings', 'boots'][i],
           get: () => p.armor[slot],
-          set: v => { p.armor[slot] = v; },
+          // §3.3 / 06 §14.2: "armor slot content changes". This setter is the
+          // funnel for every drag, shift-click and number-swap into the slot.
+          set: v => {
+            if (v && !p.armor[slot]) {
+              const name = ITEMS.get(v.id)?.name ?? '';
+              emitSound(name.startsWith('leather') ? 'player.armor_equip.leather' : 'player.armor_equip', null);
+            }
+            p.armor[slot] = v;
+          },
           canPut: s => ITEMS.get(s.id)?.armorSlot === slot,
         });
       }
@@ -410,6 +428,10 @@ export class Containers {
     const slot = this.slots[index];
     const cur = this.cursor;
     const inSlot = slot.get();
+
+    // Every slot in every container funnels here (06 §14.2) — one emit covers
+    // them all. Above the takeOnly branch so result slots click too.
+    emitSound('ui.click', null);
 
     if (slot.takeOnly) {
       this.takeResult(slot, e.shiftKey);

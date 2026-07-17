@@ -4,6 +4,7 @@ import { Goal, SwimGoal, WanderGoal, LookAtPlayerGoal, IdleLookGoal, MeleeAttack
 import { endermanModel, mobTexture } from './models.js';
 import { hasLineOfSight } from '../../world/raycast.js';
 import { BLOCKS } from '../../registry/blocks.js';
+import { emitSound, at } from '../../audio/engine.js';
 
 class StareDownGoal extends Goal {
   get flags() { return 3; }   // MOVE + LOOK
@@ -79,6 +80,9 @@ export class Enderman extends Mob {
         this.aggro = true;
         this.screamTicks = 10;
         this.target = p;
+        // provocation 1 of 2 (05 §8.5 stare); the !aggro guard above already
+        // makes this fire exactly once per provocation
+        emitSound('mob.enderman.scream', at(this.pos.x, this.pos.y + this.height / 2, this.pos.z));
       }
     }
 
@@ -141,12 +145,15 @@ export class Enderman extends Mob {
   teleportTo(c) {
     const g = this.world.game;
     g?.particles?.teleport?.(this.pos.x, this.pos.y, this.pos.z, this.height);
+    // §3.4 dual emit — origin first, while pos is still the origin
+    emitSound('mob.enderman.teleport', at(this.pos.x, this.pos.y + this.height / 2, this.pos.z));
     this.setPos(c.x, c.y, c.z);
     this.prevPos.x = c.x; this.prevPos.y = c.y; this.prevPos.z = c.z;
     this.vel.x = this.vel.y = this.vel.z = 0;
     this.fallDistance = 0;
     this.clearPath();
     g?.particles?.teleport?.(c.x, c.y, c.z, this.height);
+    emitSound('mob.enderman.teleport', at(c.x, c.y + this.height / 2, c.z));   // destination
     return true;
   }
 
@@ -176,8 +183,15 @@ export class Enderman extends Mob {
 
   onHurt(dmg, source, opts) {
     super.onHurt(dmg, source, opts);
+    // provocation 2 of 2 (05 §8.5 damaged). Unlike the stare path this has no
+    // !aggro guard — aggro is set on EVERY hit — so without the edge check it
+    // would scream on every hit rather than on provocation.
+    const wasAggro = this.aggro;
     this.aggro = true;
     this.screamTicks = 10;
+    if (!wasAggro) {
+      emitSound('mob.enderman.scream', at(this.pos.x, this.pos.y + this.height / 2, this.pos.z));
+    }
     if (!this.dead) this.teleportRandom();
   }
 

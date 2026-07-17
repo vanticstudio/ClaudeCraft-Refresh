@@ -1,9 +1,10 @@
 // Mob base class: per-tick order, targeting, despawn, daylight burn,
 // locomotion contract, path following, animation driver (05 §1–§7, §16).
 import { LivingEntity, lerp, lerpAngle } from '../Entity.js';
-import { BLOCKS, B } from '../../registry/blocks.js';
+import { BLOCKS, B, matOf } from '../../registry/blocks.js';
 import { hasLineOfSight } from '../../world/raycast.js';
 import { findPath, astarBudgetOk, MOVE, LOOK } from './ai.js';
+import { emitSound, at } from '../../audio/engine.js';
 
 const TURN_RATE = 30 * Math.PI / 180;   // 30°/tick
 
@@ -24,7 +25,12 @@ export class Mob extends LivingEntity {
     this.goals = [];            // ascending priority
     this.target = null;
     this.losMemory = 0;
-    this.idleTime = 0;
+    this.idleTime = 0;          // hostile-despawn timer — NOT the idle-voice one
+    // 16 §3.4 idle cadence: 80 + randInt(80) ticks (4-8 s). world.rng, not
+    // Math.random: mobs are seeded-deterministic. 05 §61 permits sourceless
+    // timers to reset on load, so this needs no serialize() entry.
+    this.nextIdle = 80 + Math.floor(world.rng() * 80);
+    this.stepAccum = 0;         // 16 §3.2 mob footstep accumulator
     this.hurtTimer = 0;
     this.attackCooldown = 0;
     this.moveIntent = null;
@@ -129,6 +135,31 @@ export class Mob extends LivingEntity {
     const hSpeed = Math.hypot(this.pos.x - this.prevPos.x, this.pos.z - this.prevPos.z);
     this.walkCycle += hSpeed * 4;
     this.swingAmount = this.swingAmount * 0.9 + Math.min(1, hSpeed * 8) * 0.1;
+
+    // --- 16-AUDIO §3.4 idle cadence ---
+    if (--this.nextIdle <= 0) {
+      this.nextIdle = 80 + Math.floor(this.world.rng() * 80);
+      // Only within 16 blocks; creepers and spiders in stalk mode stay silent —
+      // MC's silent-creeper dread is a feature. `target` is the only stalk state
+      // this codebase has.
+      const silent = this.type === 'creeper' || (this.type === 'spider' && this.target);
+      if (pd <= 16 && !silent) {
+        emitSound(`mob.${this.type}.idle`, at(this.pos.x, this.pos.y + this.height / 2, this.pos.z));
+      }
+    }
+
+    // --- 16-AUDIO §3.2 mob footsteps: "zombie scraping toward you in the dark" ---
+    if (this.onGround && !this.inWater) {
+      this.stepAccum += hSpeed;
+      const thr = (this.type === 'chicken' || this.type === 'spider') ? 1.0 : 1.5;
+      if (this.stepAccum >= thr) {
+        this.stepAccum -= thr;
+        const id = this.world.getBlock(
+          Math.floor(this.pos.x), Math.floor(this.pos.y - 0.5), Math.floor(this.pos.z));
+        const cls = matOf(id);
+        if (cls) emitSound(`mob.step.${cls}`, at(this.pos.x, this.pos.y, this.pos.z));
+      }
+    }
   }
 
   growUp() {
@@ -213,6 +244,11 @@ export class Mob extends LivingEntity {
 
   onHurt(dmg, source, opts) {
     this.onHurtBy(source);
+    // §3.4: post-armor, damage > 0. Covers all 9 types — only Enderman overrides
+    // onHurt, and it calls super first.
+    if (dmg > 0) {
+      emitSound(`mob.${this.type}.hurt`, at(this.pos.x, this.pos.y + this.height / 2, this.pos.z));
+    }
     if (opts?.attacker && this.retaliates !== false) {
       this.target = opts.attacker;
       this.forcedAggro = true;
@@ -221,6 +257,9 @@ export class Mob extends LivingEntity {
   }
 
   onDeath() {
+    // 05 §15 step 1 — must precede the noDrops/game guards below, both of which
+    // short-circuit out and would silence the death of any no-drop mob.
+    emitSound(`mob.${this.type}.death`, at(this.pos.x, this.pos.y + this.height / 2, this.pos.z));
     if (this.noDrops) return;
     const game = this.world.game;
     if (!game) return;

@@ -4,6 +4,8 @@ import { Entity, LivingEntity } from './Entity.js';
 import { raycastBlocks } from '../world/raycast.js';
 import { tileSpriteGeometry, makeAtlasMaterial, entityAtlas } from './ItemEntity.js';
 import { idOf } from '../registry/items.js';
+import { emitSound, at } from '../audio/engine.js';
+import { matOf } from '../registry/blocks.js';
 
 export class Arrow extends Entity {
   constructor(world, x, y, z, vx, vy, vz, owner, { crit = false, fromPlayer = false } = {}) {
@@ -73,6 +75,8 @@ export class Arrow extends Entity {
         target.hurt(dmg, 'arrow', {
           dirX: v.x / h, dirZ: v.z / h, knockback: 0.4, attacker: this.owner,
         });
+        emitSound('entity.arrow.hit_mob',                     // §3.3 (05 §11)
+          at(target.pos.x, target.pos.y + target.height / 2, target.pos.z));
         this.dead = true;
         return;
       }
@@ -82,6 +86,10 @@ export class Arrow extends Entity {
       this.pos.x = blockHit.px; this.pos.y = blockHit.py - 0.25; this.pos.z = blockHit.pz;
       this.stuck = true;
       this.vel.x = this.vel.y = this.vel.z = 0;
+      // §3.3: the thud + the struck block's own step voice at 0.5
+      emitSound('entity.arrow.hit_block', at(blockHit.px, blockHit.py, blockHit.pz));
+      const cls = matOf(blockHit.id);
+      if (cls) emitSound(`block.step.${cls}`, at(blockHit.px, blockHit.py, blockHit.pz), 1, 0.5);
       return;
     }
 

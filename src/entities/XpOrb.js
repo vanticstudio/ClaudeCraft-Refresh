@@ -1,6 +1,7 @@
 // XP orb entity (05 §15): magnet, pickup, lifetime.
 import * as THREE from 'three';
 import { Entity } from './Entity.js';
+import { emitSound } from '../audio/engine.js';
 
 let orbTexture = null;
 function getOrbTexture() {
@@ -47,6 +48,11 @@ export class XpOrb extends Entity {
         this.vel.z += (dz / d) * f;
       }
       if (player.xpPickupCooldown === 0 && player.getAABB().intersects(this.getAABB())) {
+        // §3.3: collecting a spray plays a rising run. xpPickupCooldown is a
+        // 2-tick anti-double-pickup latch, NOT this timer — different period.
+        player.orbStreak = Math.min(24, player.orbStreak + 1);
+        player.orbStreakTimer = 40;
+        emitSound('player.xp_pickup', null, Math.pow(2, player.orbStreak / 12));
         player.addXp(this.value);
         player.xpPickupCooldown = 2;
         this.dead = true;

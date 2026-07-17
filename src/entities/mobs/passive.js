@@ -6,6 +6,7 @@ import {
 } from './ai.js';
 import { cowModel, pigModel, sheepModel, chickenModel } from './models.js';
 import { idOf } from '../../registry/items.js';
+import { emitSound, at } from '../../audio/engine.js';
 
 class Passive extends Mob {
   constructor(world, x, y, z, opts = {}) {
@@ -186,6 +187,7 @@ export class Chicken extends Passive {
     // egg laying
     if (!this.isBaby && --this.eggTimer <= 0) {
       this.world.game?.spawnItemByName('egg', 1, this.pos.x, this.pos.y, this.pos.z);
+      emitSound('mob.chicken.egg', at(this.pos.x, this.pos.y + this.height / 2, this.pos.z));
       this.eggTimer = 6000 + Math.floor(this.world.rng() * 6001);
     }
   }

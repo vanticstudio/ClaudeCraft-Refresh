@@ -4,6 +4,189 @@ Deviations and ambiguity rulings. (The base-spec `.md` files were removed from
 the working tree during repo cleanup; the pre-UPDATE deviation log for the
 initial build lives in git history — `git show 8441ac9:DEVIATIONS.md`.)
 
+## E1 — 16-AUDIO: synthesized SFX, positional sound, generative music (2026-07-17)
+
+Built to `16-AUDIO.md`. New modules `src/audio/{engine,primitives,events,music,
+ambience}.js` (the sixth, `themeMusic.js`, pre-existed from side-prompt 19).
+**Everything is synthesized at runtime — zero sample files, zero audio fetches.**
+The §4A theme layer stays OFF/empty (side-prompt 19 owns it).
+
+### Amendments applied to the codebase (base specs stay frozen)
+
+| AMENDS | Applied as |
+|---|---|
+| CLAUDE.md §6 / §7 | Already satisfied — §6 reads "and now audio (16's rule)"; audio is absent from §7. No edit. |
+| 01 §2 | `src/audio/` with the six named files; `main.js`'s header now reads "build atlas, boot audio…". |
+| 01 §3 | `audio.updateFrame()` in `Game.render()` (render step 6); `audio.tick()` in `Game.tick()` immediately after `save?.tick(this)` (tick step 10). |
+| 01 §15.2 | `audio.unlock()` on every title/pause/death button + the canvas pointer-lock click + the keyboard PRESS START; `onPause`/`onResume` off `Game.setState`'s single funnel. |
+| 01 §15.3 | Options screen: five sliders, Theme-music selector, mouse sensitivity, view bobbing — reachable from TITLE **and** PAUSE. |
+| 01 §17.1 | `Game.debug.audioMs` + the F3 line (§6). |
+| 04 §12.6 | `weather.thunder` emitted from the existing `DayNight.strikeLightning(x,y,z)`. |
+| 06 §2 | `Mat` column: `BLOCKS[id].mat` + `matOf(id)` in `src/registry/blocks.js`. |
+| 06 §12.4 | chew at use-ticks 8/16/24, swallow at 32, burp 10 ticks later. |
+
+### Deviations
+
+1. **`block.door` split into `block.door.open` / `block.door.close`.** §3.3 gives
+   one id with two recipe variants ("380→640 Hz (open) / 640→380 (close)"), but
+   §5.1's signature `emitSound(eventId, pos, pitchMult, gainMult)` has no param
+   channel to carry open/close. Splitting matches what §3.6 already does for the
+   `block.button.*.on/.off` family. Same reasoning for `block.lever.click.on/.off`
+   (§3.6 says "param on/off") and `item.bucket.fill.lava`.
+2. **`block.note` split into `block.note.<instrument>` (10 ids).** §3.5 says 16
+   "supplies exactly one voice per instrument name that 07 emits in `block.note`'s
+   `instrument` param" — again, no param channel exists. 07 calls
+   `emitSound('block.note.' + instrument, pos, 2 ** ((n - 12) / 12))`; the pitch
+   multiplier carries the note value exactly. `block.note` aliases the harp default.
+3. **The event id is `weather.thunder`, not `weather.lightning`.** 16 contradicts
+   itself: the AMENDS to 04 §12.6 says emit `weather.lightning`, while §3.5's
+   table defines `weather.thunder`. The file's own intro says "**This file's
+   registry (§3) is the master list**", so §3 wins.
+4. **`weather.thunder` needs distance but is non-positional.** §3.5 marks it
+   "ambient, non-positional" yet its recipe needs `d` for the <24-block crack gate
+   and the `t0 + d × 0.06 s` rumble delay. Added a `distanceOnly` flag: the engine
+   measures the distance to `pos` but allocates a FLAT (unpanned, unculled) voice.
+   The alternative — smuggling distance through `pitchMult` — would have been a lie
+   in the signature.
+5. **Mob footsteps get their own `mob.step.<class>` family.** §3.2 gives them a
+   distinct `capKey: 'mobStep'`, cap 4 and gain 0.3 against the player's cap 2 /
+   gain 0.35. Reusing `block.step.*` with a gain multiplier would have let a crowd
+   of mobs starve the player's own steps out of the shared cap.
+6. **Creeper and Wither hurt/death derive from an invented timbre.** §3.4 gives
+   both "*no idle*", but the generic rule derives hurt/death **from** the idle, and
+   a creeper killed by a sword still calls `die()`. Creeper hurt/death derive from
+   its fuse hiss; the Wither's from its klaxon sweep. No `.idle` id is registered
+   for either, so the silent-creeper dread of §3.4 is structural.
+7. **`voice.envGain` is a fade handle, not a volume stage.** §1.4's voice is
+   `{envGain, panner, …}` and §2 says primitives build "into `voice.envGain`".
+   Applying `gainMult` there *and* passing it to the recipe squares it — a
+   10-damage fall peaked at 3.47 instead of 1.44 and slammed the limiter. Gain is
+   now applied exactly once, inside each primitive's own gain node; `envGain` sits
+   at 1.0 and exists for steals, loop releases and `handle.stop()`.
+8. **`swellDir` materialised on the Creeper.** 05 §8.3 defines the field and 16
+   §3.4 keys the fuse release off "its flip to −1", but the shipped code inlined it
+   as `(pressure ? 1 : -1)` and stored nothing. Added `m.swellDir` (code was ground
+   truth per CLAUDE.md §1; this restores the base spec's own field).
+9. **Music lookahead schedules a bar at a time, not 100 ms.** §1.5 says "schedule
+   every pending note with `noteTime < ctx.currentTime + 0.1`". The composer is
+   bar-structured (chord walk + 1/8 grid), so it schedules whole bars — up to
+   ~3.3 s ahead at 72 BPM. The two-clock property §1.5 actually cares about
+   (JS picks *what*, the audio clock decides *when*) holds either way, and a
+   partial bar cannot be scheduled without splitting the chord walk.
+10. **Ambience adds a fire/furnace proximity scan.** §3.5's `ambient.fire.loop`
+    names no sampling rule (unlike the fluid clusters' explicit 48-cell pass), so
+    it reuses the same once-per-second pattern with a 24-cell scan at radius 8.
+11. **`ambient.wind.loop`/`weather.rain.loop` recipes start at gain 0** and are
+    driven by `ambience.js` from `rainLevel`/altitude on the same tick. The §3.5
+    gains are formulas, not constants, so a recipe-side fade-in to full would blast
+    one loud half-second at every rain onset.
+12. **F3 audio line** (§6) reads `voices/pool · drops/s · ctx state · ms · mood#piece`.
+    §6 also asks for "ctx.currentTime drift vs worldTime `(approx)`" — omitted: the
+    context suspends with the game (§1.1), so the two clocks are decoupled by
+    design and a drift number would be noise, not a diagnostic.
+13. **Options: `musicMode` and the two 03 settings are now wired, not just stored.**
+    Side-prompt 19 shipped the full §15.3 *schema* with only 3 of 5 sliders in the
+    UI and no consumer for `mouseSensitivity`/`viewBobbing`/`musicMode`. E1 adds the
+    Ambient/UI sliders, the Theme-music selector, and wires sensitivity into
+    `Game.applyMouseLook` (clamped 0.1–3.0 — `loadOptions()` does not validate) and
+    bobbing into `Game.updateCamera` (zeroing the offset, never `bobPhase`, which is
+    deterministic tick state).
+14. **The Options panel is a top-level sheet, not a child of `#screen-title`.**
+    `.screen { display: none }` made the 19-era panel structurally unreachable from
+    PAUSE, which this amendment requires. It moved to `screensEl`, the `--cc-*`
+    palette moved from `#screen-title` to `:root`, and it gains an `.over-pause`
+    scrim variant so it does not black out the live world behind it.
+15. **`game.hud` is dead in three places** (`interaction.js:66/68`
+    `hud?.onHotbarChange?.()`, `ItemEntity.js` `hud?.flashPickup?.()`). The HUD is
+    at `game.ui.hud`, so all three are silent no-ops today. Logged per CLAUDE.md §1
+    (code is ground truth); the `ui.hotbar` and `player.item_pickup` emits are
+    placed as their own statements, never chained onto them. **Not fixed here** —
+    out of E1's scope.
+16. **`entity.arrow.hit_block` is the thud layer only.** §3.3's recipe is "thud +
+    the *struck block's* `step` recipe at 0.5", which needs the block class —
+    again no param channel. The hook emits `block.step.<class>` alongside it at
+    gain 0.5, from the block actually hit.
+
+### Defects found and fixed before landing
+
+Found by hand while re-reading the gain path:
+
+- **`gainMult` was squared** (deviation 7) — a 10-damage landing peaked at 3.47
+  against the spec's 1.44, slamming the limiter.
+- **Ambience loops played forever on the title screen.** `Game.tick()` early-returns
+  once `disposeWorld()` nulls `world`, so `audio.tick()` — and ambience's own
+  silence path — never ran again. Now stopped from `setState(TITLE)`.
+- **A stolen loop's handle reported `alive === true`.** Voices are recycled, so
+  handles now capture a generation counter.
+- **Loop leaks on paths that never reach the owner:** TNT fuse (chunk unload) and
+  creeper fuse (detonation sets `dead` directly, bypassing the goal) now stop from
+  `onRemoved()`, the one hook every removal path calls. The bow draw loop stops on
+  death, which returns before `updateUseChannel` and leaves `usingItem` set.
+- **The level-up chime machine-gunned on every world load** — `deserialize()`
+  replays the whole XP ladder through `addXp()`.
+- **Enderman screamed on every hit** — the damage path sets `aggro = true`
+  unconditionally, unlike the stare path's `!aggro` guard. Now edge-detected.
+- **The dig gate would never have fired** — `swingLoop()` calls `swing()`, which
+  resets `swingTicks` to 0, so the 6-tick test has to be read before it.
+- **`ui.hotbar` double-fired** on a tick with both wheel and digit input, and fired
+  when pressing the already-selected slot.
+- **Rain/wind onset blasted** at full gain for ~0.5 s (deviation 11).
+
+A multi-agent adversarial review (5 dimensions → per-finding refutation) raised 20
+candidates; **7 confirmed, 12 refuted**, 1 inconclusive (its verifier errored) and
+checked by hand. All 8 fixed:
+
+- **Every looping voice self-released after ~1 s.** `crackle`/`hiss`/`noiseBurst`/
+  `sweep` returned a finite `stopTime` even for `loop: true`, so the engine
+  released the voice while the source played on — un-stoppable (its ref was
+  cleared) and audible into whatever sound recycled the voice next. Loops now
+  return `Infinity`. This silently broke the TNT fuse, the bow draw and the fire
+  loop.
+- **The title screen went permanently silent after 16 clicks.** §1.4's ≤16
+  starts/tick counter resets in `audio.tick()`, which `Game.tick()` never reaches
+  while `world` is null. `updateFrame` now mirrors that exact guard.
+- **Save & Quit killed audio for the session.** `onResume` was keyed to
+  PAUSED→PLAYING, but Quit is PAUSED→TITLE — leaving `masterGain` ramped to 0 and
+  the context suspended. Now any exit from PAUSED resumes.
+- **The per-family cap stole across sub-pools.** `item.bow.shoot` is flat for the
+  player and positional for skeletons under one `capKey`, so the player's own shot
+  could seize a skeleton's positional voice and render at its stale coordinates.
+  The family is still counted across both pools; only the requested pool is
+  returned.
+- **The 5 ms declick was dead code** — `emitSound` cancelled the victim's fade from
+  `now`. Both writes now land at `t0`, after the fade completes.
+- **`ambient.fire.loop`'s brown bed went silent after 1 s** — `noiseBurst` applied
+  its one-shot decay envelope even when looping, leaving a source running behind a
+  gain pinned to 0. §3.5's second layer was effectively unimplemented.
+- **No chime had its inharmonic partial.** §2.10's pack defaults `partial2 = 0.3`,
+  but a truthiness check made it opt-in and no caller passed it — so every bell,
+  glint and level-up chime lost the ×2.76 partial that makes struck metal read as
+  struck.
+- **The creeper fuse never restarted after winding down.** The re-arm was keyed to
+  the swell leaving 0, but a creeper that winds down to swell 3 and re-approaches
+  never returns to 0 — it detonated in silence, losing exactly the cue the event
+  exists to give. Now keyed to "rising with no live voice".
+- **Three registered events were never emitted:** `entity.arrow.hit_block` /
+  `.hit_mob` (arrow impacts were silent), `mob.chicken.egg`, and
+  `player.armor_equip` (both the use-path and the inventory-slot path). A registry
+  sweep confirms the only remaining unemitted E1 event is `player.drink.gulp`,
+  whose trigger §3.3 explicitly assigns to 09.
+
+Verified 2026-07-17 (headless Chromium, dev + production build): **35 acceptance
++ 8 regression + 3 production + 3 music assertions**, zero console errors. Highlights: SFX
+audible off a real analyser tap; stone vs sand and wool vs stone measured by
+zero-crossing rate from isolated `OfflineAudioContext` renders (stone ZCR 3.5k vs
+sand 9.7k; wool 155 vs stone 3.6k); explosion LP muffle 6000/985/200 Hz at
+5/40/120 blocks; 100 simultaneous sounds never exceed the 32-voice pool and never
+drop a UI click; starts throttle at 16/tick; note-block n0→n24 ratio exactly
+4.0000; SFX slider 50 → 0.25 on `sfxBus` only; thunder at 150 blocks rumbles 12.6 s
+out; piece 0 identical across two runs of one seed and different across seeds;
+pause suspends the context with masterGain 0.0004. Perf: `updateFrame` worst
+0.600 ms / avg 0.015 ms with 24 mobs + thunderstorm + music (budget ≤ 1.5 ms);
+baked buffers 3.61 MB (budget ≤ 4 MB). **Production build: 0 audio files in
+`dist/`, 0 audio requests in the network tab, 0 `/theme-music/` requests**;
+`grep` for `fetch`/`decodeAudioData` outside `themeMusic.js` returns nothing.
+
 ## UPDATE — main menu (desert theme) + menu music (2026-07-17)
 
 Built to `19-MAIN-MENU`, conforming to `16-AUDIO §4A` (the shared theme-music
