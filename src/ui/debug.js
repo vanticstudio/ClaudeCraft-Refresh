@@ -33,7 +33,7 @@ export class DebugOverlay {
       ? ` heap ${(performance.memory.usedJSHeapSize / 1048576).toFixed(0)}MB` : '';
     const biome = BIOME_NAMES[g.world.biomeAt(x, z)] ?? '?';
     this.el.textContent =
-`VoxelCraft F3 | ${g.debug.fps} fps ${g.debug.frameMs.toFixed(1)} ms
+`ClaudeCraft F3 | ${g.debug.fps} fps ${g.debug.frameMs.toFixed(1)} ms
 XYZ ${p.pos.x.toFixed(2)} / ${p.pos.y.toFixed(2)} / ${p.pos.z.toFixed(2)}
 chunk ${x >> 4},${z >> 4} facing ${facing} biome ${biome}
 light sky ${g.world.getSkyLight(x, y, z)} block ${g.world.getBlockLight(x, y, z)} darken ${g.world.skyDarken}

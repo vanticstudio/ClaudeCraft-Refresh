@@ -1,0 +1,319 @@
+/* ClaudeCraft title screen — desert/badlands sunset (19-MAIN-MENU §3).
+   Ported from CC-assets/CC-menu-logo/claudecraft-title.html; all rules are
+   scoped under #screen-title / .cc-* so nothing leaks into the game UI.
+   Fonts are self-hosted (OFL) — no runtime CDN dependency (§3.1). */
+
+@font-face {
+  font-family: 'Bungee';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/menu/fonts/bungee-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215;
+}
+@font-face {
+  font-family: 'VT323';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/menu/fonts/vt323-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215;
+}
+
+#screen-title {
+  /* the .cc-title stage owns layout + backdrop; override .screen's flex centering */
+  isolation: isolate;   /* sandbox the scene's z-index 0–9 from #debug-palette etc. */
+  --cc-ink: #17100a;
+  --cc-terra: #b9662f;
+  --cc-terra-d: #a24d27;
+  --cc-clay: #cf9152;
+  --cc-clay-l: #b98c66;
+  --cc-cobble: #9296a0;
+  --cc-cobble-d: #8a8a90;
+  --cc-rust: #c07235;
+  background: #1a1330;
+  padding: 0;
+  gap: 0;
+  font-family: 'VT323', 'Courier New', monospace;
+}
+#screen-title.visible { display: block; }
+
+.cc-title {
+  position: absolute; inset: 0;
+  min-height: 560px;
+  overflow: hidden;
+  /* static fallback: shows through only if the CSS scene fails to paint */
+  background: #1a1330 url('/menu/bg-sunset.png') center / cover no-repeat;
+}
+
+.cc-sky {
+  position: absolute; inset: 0; z-index: 0;
+  background: linear-gradient(180deg, #2d1b4e 0%, #7a3b6e 33%, #c96a4f 58%, #f2a65a 82%, #f8ca70 100%);
+}
+
+.cc-sun {
+  position: absolute; bottom: 200px; left: 50%; transform: translateX(-50%);
+  width: 200px; height: 200px; z-index: 1;
+  background: radial-gradient(circle at 50% 45%, #ffe6a0 0 30%, #ffb14d 30% 62%, #ff8a3c 62% 100%);
+  box-shadow: 0 0 90px 34px rgba(255, 150, 70, .5);
+  clip-path: polygon(20% 0, 80% 0, 80% 8%, 92% 8%, 92% 20%, 100% 20%, 100% 80%, 92% 80%, 92% 92%, 80% 92%, 80% 100%, 20% 100%, 20% 92%, 8% 92%, 8% 80%, 0 80%, 0 20%, 8% 20%, 8% 8%, 20% 8%);
+  animation: cc-sun 6s ease-in-out infinite;
+}
+
+.cc-cloud {
+  position: absolute; z-index: 2; width: 52px; height: 24px;
+  background: #f7d9c6; opacity: .85;
+  box-shadow: 52px 6px 0 #f7d9c6, 104px 0 0 #f7d9c6, 156px 8px 0 #f7d9c6, 52px -18px 0 #fbe7da;
+}
+.cc-cloud.one { top: 12%; left: 12%; animation: cc-drift 15s ease-in-out infinite alternate; }
+.cc-cloud.two {
+  top: 20%; left: 66%; width: 36px; height: 16px; opacity: .7; background: #f3cbb6;
+  box-shadow: 36px 6px 0 #f3cbb6, 72px 0 0 #f3cbb6;
+  animation: cc-drift2 18s ease-in-out infinite alternate;
+}
+
+.cc-range-far {
+  position: absolute; left: -2%; right: -2%; bottom: 135px; height: 240px; z-index: 2; opacity: .9;
+  background: linear-gradient(180deg, #8a3d24, #6f2f1c);
+  clip-path: polygon(0 100%, 0 66%, 12% 66%, 12% 52%, 30% 52%, 30% 66%, 44% 66%, 44% 44%, 60% 44%, 60% 60%, 74% 60%, 74% 34%, 92% 34%, 92% 62%, 100% 62%, 100% 100%);
+}
+.cc-range-near {
+  position: absolute; left: -2%; right: -2%; bottom: 125px; height: 190px; z-index: 3;
+  background: linear-gradient(180deg, #b25a2c, #93441f);
+  clip-path: polygon(0 100%, 0 72%, 16% 72%, 16% 58%, 30% 58%, 30% 74%, 50% 74%, 50% 50%, 68% 50%, 68% 68%, 84% 68%, 84% 56%, 100% 56%, 100% 100%);
+}
+.cc-range-near.tex {
+  background: repeating-linear-gradient(0deg, rgba(255, 220, 170, .12) 0 2px, transparent 2px 18px);
+  pointer-events: none;
+}
+
+.cc-ground {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 150px; z-index: 4;
+  background: linear-gradient(180deg, #cf9152 0 20px, #b3763e 20px 52px, #95602f 52px 96px, #7f4f27 96px 100%);
+}
+.cc-ground.seams {
+  pointer-events: none;
+  background: repeating-linear-gradient(90deg, rgba(0, 0, 0, .16) 0 2px, transparent 2px 68px),
+              repeating-linear-gradient(0deg, rgba(0, 0, 0, .1) 0 2px, transparent 2px 30px);
+}
+
+.cc-vignette {
+  position: absolute; inset: 0; z-index: 5; pointer-events: none;
+  box-shadow: inset 0 -80px 130px rgba(40, 10, 30, .35), inset 0 40px 90px rgba(255, 220, 160, .12);
+}
+
+.cc-badge {
+  position: absolute; top: 20px; left: 24px; z-index: 7;
+  font-size: clamp(13px, 1.6vw, 22px); letter-spacing: 2px;
+  color: rgba(255, 240, 225, .85); text-shadow: 1px 1px 0 rgba(0, 0, 0, .5);
+}
+
+.cc-center {
+  position: absolute; inset: 0; z-index: 6;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: clamp(18px, 3vh, 34px);
+  padding-bottom: 9vh;
+  pointer-events: none;
+  transition: padding-bottom .25s ease-out;
+}
+/* once the button row is up it needs the lower half of the stage — lift the
+   wordmark/tagline out of its way instead of letting them collide */
+.cc-title.cc-started .cc-center { padding-bottom: clamp(150px, 36vh, 340px); }
+@media (prefers-reduced-motion: reduce) { .cc-center { transition: none } }
+
+/* wordmark: logo image by default, CSS-text twin as the no-image fallback (§3.1).
+   logo-primary.png is 2360×760 but its ink is only 1747×255 — 34% of the canvas
+   height, the rest transparent padding. Sizing the box to §3.1's clamp() would
+   render a ~39px wordmark. So scale the box by 1/0.336 to put the *visible* art
+   at the spec's clamp(46px,9vw,120px), then pull the dead padding back out with
+   negative margins (top 289/760 = 38%, bottom 216/760 = 28.4%) so .cc-center's
+   gap lays out against the art rather than the empty canvas. */
+.cc-logo {
+  --cc-logo-h: clamp(120px, 26.5vw, 353px);
+  display: block;
+  height: var(--cc-logo-h);
+  width: auto;
+  margin-top: calc(var(--cc-logo-h) * -0.38);
+  margin-bottom: calc(var(--cc-logo-h) * -0.284);
+  object-fit: contain;
+  animation: cc-float 5s ease-in-out infinite;
+  filter: drop-shadow(4px 14px 16px rgba(0, 0, 0, .45));
+}
+.cc-wordmark {
+  /* beats `.screen h1` */
+  margin: 0; margin-bottom: 0;
+  font-family: 'Bungee', 'Courier New', sans-serif;
+  font-size: clamp(46px, 9vw, 120px);
+  line-height: 1; letter-spacing: 0;
+  text-align: center;
+  animation: cc-float 5s ease-in-out infinite;
+  text-shadow:
+    -1px -1px 0 rgba(255, 255, 255, .22),
+    3px 0 var(--cc-ink), -3px 0 var(--cc-ink), 0 3px var(--cc-ink), 0 -3px var(--cc-ink),
+    2px 2px var(--cc-ink), -2px 2px var(--cc-ink), 2px -2px var(--cc-ink), -2px -2px var(--cc-ink),
+    5px 5px #2a1c10, 6px 6px #281a0f, 8px 8px #26180d, 10px 10px #24160c, 12px 12px #21140b,
+    14px 14px #1f120a, 16px 16px #1d1009, 18px 18px #1a0e08, 20px 20px #170c06, 22px 22px #150b05,
+    4px 26px 28px rgba(0, 0, 0, .45);
+}
+/* only one of the two is ever in the DOM tree flow */
+.cc-logo[hidden] { display: none; }
+
+.cc-tagline {
+  font-size: clamp(18px, 2.4vw, 32px); letter-spacing: 8px; color: #fff;
+  background: rgba(28, 10, 6, .5);
+  padding: 6px 24px; border: 2px solid rgba(255, 255, 255, .35);
+  box-shadow: 0 4px 0 rgba(0, 0, 0, .3);
+}
+
+.cc-prompt {
+  position: absolute; bottom: 4%; left: 0; right: 0; z-index: 7;
+  text-align: center;
+  font-size: clamp(20px, 2.6vw, 34px); letter-spacing: 5px; color: #fff;
+  text-shadow: 2px 2px 0 #000, -1px -1px 0 #000;
+  animation: cc-blink 1.1s steps(1, end) infinite;
+  cursor: pointer;
+  /* it is a real <button> (§3.2 a11y) — strip the .screen button chrome */
+  display: block; margin: 0 auto; min-width: 0; padding: 8px 16px;
+  background: none; border: 0; font-family: inherit;
+}
+/* `display:block` above is an author rule and would otherwise beat the UA's
+   [hidden]{display:none} — without this, .hidden = true leaves it on screen. */
+.cc-prompt[hidden] { display: none; }
+.cc-prompt:focus-visible { outline: 3px solid #ffe6a0; outline-offset: 4px; }
+
+/* ---------- button row (revealed on PRESS START) ---------- */
+.cc-menu {
+  position: absolute; left: 0; right: 0; bottom: 6%; z-index: 8;
+  display: flex; flex-direction: column; align-items: center; gap: clamp(6px, 1.2vh, 14px);
+  pointer-events: auto;
+}
+.cc-menu[hidden] { display: none; }
+
+.cc-btn {
+  /* image button: beats `.screen button` */
+  min-width: 0; padding: 0; border: 0; background: none;
+  font-family: inherit; text-shadow: none;
+  cursor: pointer; line-height: 0;
+  transition: transform .08s ease-out, filter .08s ease-out;
+}
+/* Same padded-canvas story as the logo: the button PNGs are 880×292 with only
+   576×178 of ink (61% of the height; pad 48 top / 66 bottom). Scale for a
+   44–68px visible button, then negate the padding so the row's gap is real. */
+.cc-btn img {
+  --cc-btn-h: clamp(72px, 10.2vh, 111px);
+  display: block;
+  height: var(--cc-btn-h); width: auto;
+  margin-top: calc(var(--cc-btn-h) * -0.164);
+  margin-bottom: calc(var(--cc-btn-h) * -0.226);
+  filter: drop-shadow(0 3px 0 rgba(0, 0, 0, .35));
+}
+.cc-btn:hover, .cc-btn:focus-visible { transform: scale(1.04); filter: brightness(1.12); background: none; }
+.cc-btn:active { transform: scale(.98); filter: brightness(.94); }
+.cc-btn:focus-visible { outline: 3px solid #ffe6a0; outline-offset: 3px; }
+.cc-btn[hidden] { display: none; }
+
+.cc-seed {
+  /* beats `.screen input` */
+  font-family: 'VT323', 'Courier New', monospace;
+  font-size: clamp(16px, 1.9vw, 24px);
+  width: clamp(220px, 26vw, 340px); padding: 4px 12px;
+  text-align: center; letter-spacing: 2px;
+  color: #ffe9d6; background: rgba(28, 10, 6, .62);
+  border: 2px solid var(--cc-terra);
+  box-shadow: 0 3px 0 rgba(0, 0, 0, .3);
+}
+.cc-seed::placeholder { color: rgba(255, 233, 214, .5); }
+.cc-seed:focus { outline: none; border-color: #ffe6a0; }
+
+/* ---------- settings panel (over bg-dark.png) ---------- */
+.cc-settings {
+  position: absolute; inset: 0; z-index: 9;
+  display: flex; align-items: center; justify-content: center;
+  background: #14100f url('/menu/bg-dark.png') center / cover no-repeat;
+  pointer-events: auto;
+}
+.cc-settings[hidden] { display: none; }
+
+.cc-panel {
+  width: min(560px, 90vw);
+  padding: clamp(16px, 3vh, 28px) clamp(18px, 3vw, 34px);
+  background: rgba(24, 14, 10, .86);
+  border: 3px solid var(--cc-terra);
+  box-shadow: 0 8px 0 rgba(0, 0, 0, .4);
+  color: #ffe9d6;
+}
+.cc-panel h2 {
+  margin: 0 0 clamp(10px, 2vh, 18px);
+  font-family: 'Bungee', sans-serif;
+  font-size: clamp(20px, 2.6vw, 30px); letter-spacing: 2px;
+  color: var(--cc-clay); text-shadow: 2px 2px 0 var(--cc-ink);
+}
+.cc-row {
+  display: grid; grid-template-columns: 8.5em 1fr 3em; align-items: center;
+  gap: 10px; margin-bottom: clamp(8px, 1.6vh, 14px);
+  font-size: clamp(15px, 1.8vw, 22px); letter-spacing: 1px;
+}
+.cc-row output { text-align: right; color: var(--cc-clay); }
+
+.cc-row input[type="range"] {
+  -webkit-appearance: none; appearance: none;
+  width: 100%; height: 10px; padding: 0;
+  background: rgba(0, 0, 0, .5);
+  border: 2px solid var(--cc-cobble-d);
+  cursor: pointer;
+}
+.cc-row input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 14px; height: 22px;
+  background: var(--cc-terra); border: 2px solid var(--cc-ink);
+  cursor: pointer;
+}
+.cc-row input[type="range"]::-moz-range-thumb {
+  width: 14px; height: 22px; border-radius: 0;
+  background: var(--cc-terra); border: 2px solid var(--cc-ink);
+  cursor: pointer;
+}
+.cc-row input[type="range"]:focus-visible { outline: 3px solid #ffe6a0; outline-offset: 3px; }
+
+.cc-note {
+  margin-top: clamp(8px, 1.6vh, 14px);
+  font-size: clamp(12px, 1.4vw, 17px); line-height: 1.35;
+  color: rgba(255, 233, 214, .6);
+}
+
+/* panel actions — text buttons, because the art pack has no Back/Delete plates */
+.cc-actions {
+  display: flex; justify-content: space-between; align-items: center; gap: 12px;
+  margin-top: clamp(12px, 2.4vh, 22px);
+}
+.cc-textbtn {
+  font-family: 'VT323', 'Courier New', monospace;
+  font-size: clamp(16px, 1.9vw, 24px); letter-spacing: 2px;
+  min-width: 0; padding: 4px 18px;
+  color: #ffe9d6; background: rgba(0, 0, 0, .35);
+  border: 2px solid var(--cc-terra); box-shadow: 0 3px 0 rgba(0, 0, 0, .35);
+  cursor: pointer; text-shadow: none;
+  transition: transform .08s ease-out, filter .08s ease-out;
+}
+.cc-textbtn:hover, .cc-textbtn:focus-visible { transform: scale(1.04); filter: brightness(1.15); }
+.cc-textbtn:active { transform: translateY(2px); box-shadow: 0 1px 0 rgba(0, 0, 0, .35); }
+.cc-textbtn:focus-visible { outline: 3px solid #ffe6a0; outline-offset: 3px; }
+.cc-textbtn[hidden] { display: none; }
+.cc-textbtn.danger { border-color: #8a3d24; color: #ffb9a0; }
+.cc-textbtn.danger:hover { background: #8a3d24; color: #fff; }
+@media (prefers-reduced-motion: reduce) { .cc-textbtn { transition: none } }
+
+@keyframes cc-drift { from { transform: translateX(0) } to { transform: translateX(54px) } }
+@keyframes cc-drift2 { from { transform: translateX(0) } to { transform: translateX(-44px) } }
+@keyframes cc-float { 0%, 100% { transform: translateY(0) } 50% { transform: translateY(-8px) } }
+@keyframes cc-blink { 0%, 58% { opacity: 1 } 59%, 100% { opacity: .12 } }
+@keyframes cc-sun {
+  0%, 100% { transform: translateX(-50%) scale(1) }
+  50% { transform: translateX(-50%) scale(1.035) }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cc-sun, .cc-cloud, .cc-wordmark, .cc-logo, .cc-prompt { animation: none }
+  .cc-btn { transition: none }
+}

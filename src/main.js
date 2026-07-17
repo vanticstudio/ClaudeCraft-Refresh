@@ -1,5 +1,7 @@
 // Entry point: build atlas, construct Game + UI, title-screen wiring (01 §2).
 import './ui/style.css';
+import './ui/title.css';
+import { createThemeMusic } from './audio/themeMusic.js';
 import { buildAtlas } from './assets/atlas.js';
 import { finalizeBlockTiles } from './registry/blocks.js';
 import { Game } from './Game.js';
@@ -74,6 +76,11 @@ async function boot() {
     },
     onRespawn: () => game.respawnPlayer(),
   });
+
+  // Theme music (16-AUDIO §4A / 19-MAIN-MENU §4). Standalone context + gain
+  // chain until 16-AUDIO E1 lands — then pass E1's { context, musicBus } here.
+  const themeMusic = createThemeMusic();
+  menus.attachMusic(themeMusic);
   menus.setHasSave(save.hasWorld());
 
   game.ui = {
@@ -123,6 +130,16 @@ async function boot() {
       if (game.state === STATE.PLAYING_UI) containers.close();
     }
   };
+
+  // PRESS START via keyboard (19-MAIN-MENU §3.2). Guarded to TITLE: this is a
+  // document listener and would otherwise eat Space while playing.
+  document.addEventListener('keydown', e => {
+    if (game.state !== STATE.TITLE || e.repeat) return;
+    if (e.code !== 'Enter' && e.code !== 'NumpadEnter' && e.code !== 'Space') return;
+    if (menus.started) return;   // once started, keys belong to the buttons
+    e.preventDefault();
+    menus.pressStart();
+  });
 
   // pointer-lock loss while PLAYING ⇒ pause (01 §15.2)
   input.onLockChange = locked => {

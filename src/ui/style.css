@@ -168,17 +168,20 @@ html, body {
   color: #fff;
 }
 .screen.visible { display: flex; }
-#screen-title { background: #3b2d4f url('') center; background: linear-gradient(#2c2440, #171126); }
+/* #screen-title's backdrop + layout live in title.css (19-MAIN-MENU §3). */
 #screen-loading { background: #10131c; }
 #screen-pause { background: rgba(0,0,0,0.5); }
 #screen-death { background: rgba(120,0,0,0.4); }
 
-.screen h1 {
+/* Scoped to the three stock screens on purpose: as `.screen h1`/`.screen button`
+   these were element-qualified (0,0,1,1) and beat the title screen's own
+   single-class .cc-* rules. Titles keep their exact look. */
+#screen-loading h1, #screen-pause h1, #screen-death h1 {
   font-size: 44px; letter-spacing: 3px;
   text-shadow: 3px 3px 0 #1a1a1a;
   margin-bottom: 16px;
 }
-.screen button {
+#screen-loading button, #screen-pause button, #screen-death button {
   font-family: inherit;
   font-size: 18px;
   min-width: 320px;
@@ -188,8 +191,10 @@ html, body {
   cursor: pointer;
   text-shadow: 1px 1px 0 #333;
 }
-.screen button:hover { background: #7d84a8; }
-.screen input {
+#screen-loading button:hover, #screen-pause button:hover, #screen-death button:hover {
+  background: #7d84a8;
+}
+#screen-loading input, #screen-pause input, #screen-death input {
   font-family: inherit; font-size: 16px;
   padding: 8px; width: 320px;
   background: #111; color: #eee; border: 2px solid #555;

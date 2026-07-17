@@ -101,28 +101,28 @@ Rails & minecarts, raids/pillagers/patrols, fishing, ocean monuments & guardians
 
 ## 8. Model Routing & Orchestration
 
-Self-managed policy: route each phase to the right model at its boundary, without a human in the loop. **Convention for this build: Claude Fable 5 is the strongest / most careful model; Claude Opus 4.8 is the cheaper / faster model.** The map below uses that convention.
+**Current model reality (overrides the map's model column): Claude Fable 5 is unavailable for this build (usage exhausted). Every phase — 07–18, plus the 19-MAIN-MENU side-prompt and the UPDATE-* fix prompts — runs on Claude Opus 4.8 in the Ultra Code setting.** The orchestration policy is retained because it still earns its keep: with a single model, the blast-radius classification no longer *selects* a model — instead it sets the **review rigor** each phase receives and the **build order**. (If Fable 5 becomes available again, restore the per-phase model column below per the routing principle.)
 
-**Routing principle — route by blast radius, not raw difficulty.** A phase that *defines a contract other phases consume*, or *mutates global/shared state*, runs on Fable 5 even if it's mechanically simple — a subtle bug in a shared primitive silently corrupts every consumer. Isolated leaf phases (nothing depends on them) may run on Opus 4.8.
+**Routing principle — triage by blast radius, not raw difficulty.** A phase that *defines a contract other phases consume*, or *mutates global/shared state*, is highest-risk even if mechanically simple — a subtle bug in a shared primitive silently corrupts every consumer. Isolated leaf phases (nothing depends on them) are lowest-risk. On a single model this principle drives how much verification a phase gets, and what must be frozen before dependents start.
 
-### 8.1 Phase → model map
+### 8.1 Phase → risk-tier map (all phases run on Opus 4.8 / Ultra Code)
 
-| Phase | File | Model | Class | Why |
+| Phase | File | Model | Risk tier | Why (drives review rigor + order) |
 |---|---|---|---|---|
-| E5 | 07-REDSTONE | **Fable 5** | LOCKED | Hard tick-scheduled engine; its components (hoppers/pistons/observers) are consumed by downstream systems |
-| E3 + E4 | 08-ENCHANTING | **Fable 5** | LOCKED | Item-stack `tags` extension referenced by every file |
-| E9 | 09-POTIONS | **Fable 5** | LOCKED | Status-effect engine consumed by 08/10/11/13 |
-| E7 + E8 | 10-NETHER | **Fable 5** | LOCKED | Multi-dimension engine; 11 builds on it |
-| E2 | 15-FIRE-WATERLOGGING | **Fable 5** | LOCKED | Waterlogging via the globally reserved `states` bit7 |
-| E12 | 14-MULTIPLAYER | **Fable 5** | LOCKED | Host-authoritative sync touches all game state |
-| E13 | 17-SHIP | **Fable 5** | LOCKED | Final correction sweep; needs whole-system context; runs last |
-| E10 | 11-END | **Fable 5** | DEFAULT | Hard but self-contained; Opus-eligible only on explicit "parallelise" instruction |
-| E6 | 12-VILLAGES | **Fable 5** | DEFAULT | Hard but self-contained; Opus-eligible only on explicit "parallelise" instruction |
-| E11 | 13-BOSSES | **Fable 5** | DEFAULT | Hard but self-contained; Opus-eligible only on explicit "parallelise" instruction |
-| EC | 18-CREATIVE | **Fable 5** | DEFAULT | Assigned here (post-dates the original map). Touches the `gameMode` save field + break/drop path (shared state) → default Fable; but near-leaf (nothing consumes it), so Opus-eligible on explicit "parallelise" instruction |
-| E1 | 16-AUDIO | **Opus 4.8** | LEAF | True leaf; supersedes the prior no-audio rule; nothing consumes it |
+| E5 | 07-REDSTONE | Opus 4.8 | CRITICAL | Hard tick-scheduled engine; its components (hoppers/pistons/observers) are consumed by downstream systems |
+| E3 + E4 | 08-ENCHANTING | Opus 4.8 | CRITICAL | Item-stack `tags` extension referenced by every file |
+| E9 | 09-POTIONS | Opus 4.8 | CRITICAL | Status-effect engine consumed by 08/10/11/13 |
+| E7 + E8 | 10-NETHER | Opus 4.8 | CRITICAL | Multi-dimension engine; 11 builds on it |
+| E2 | 15-FIRE-WATERLOGGING | Opus 4.8 | CRITICAL | Waterlogging via the globally reserved `states` bit7 |
+| E12 | 14-MULTIPLAYER | Opus 4.8 | CRITICAL | Host-authoritative sync touches all game state |
+| E13 | 17-SHIP | Opus 4.8 | CRITICAL | Final correction sweep; needs whole-system context; runs last |
+| E10 | 11-END | Opus 4.8 | HIGH | Hard but self-contained |
+| E6 | 12-VILLAGES | Opus 4.8 | HIGH | Hard but self-contained |
+| E11 | 13-BOSSES | Opus 4.8 | HIGH | Hard but self-contained |
+| EC | 18-CREATIVE | Opus 4.8 | HIGH | Touches the `gameMode` save field + break/drop path (shared state); near-leaf otherwise |
+| E1 | 16-AUDIO | Opus 4.8 | LEAF | True leaf; supersedes the prior no-audio rule; nothing consumes it |
 
-**LOCKED = never downgrade to Opus, regardless of throughput.** DEFAULT = Fable 5 unless Jake explicitly says to parallelise that phase onto Opus.
+**CRITICAL** = highest blast radius → full review rigor: freeze its interface and run the §8.3 review pass **before** any dependent phase starts; add a dedicated verification/self-review pass (ideally a separate review subagent) before marking done. **HIGH** = hard but self-contained → a normal review pass, no upstream freeze obligation. **LEAF** = lightest touch; safe to build (and parallelise) freely.
 
 ### 8.2 Build-order gate — freeze foundational contracts first
 
@@ -133,22 +133,20 @@ Lock and freeze these interfaces **before any dependent phase starts**; no depen
 - **10's dimension registry** + portal/teleport API + per-dim gen/sky/save keys — 11 builds on it.
 - **15's global `states` bit7** (waterlogged) allocation — globally reserved; every block-state consumer must honor it.
 
-Practically: build these LOCKED contract phases early, run the §8.3 review pass on each until its interface is stable, then let consumers build against the frozen surface. E9(09) also depends on E7(10) ingredients, and E10/E11(11/13) depend on E7(10) — so 10's registry must freeze before them.
+Practically: build these CRITICAL contract phases early, run the §8.3 review pass on each until its interface is stable, then let consumers build against the frozen surface. E9(09) also depends on E7(10) ingredients, and E10/E11(11/13) depend on E7(10) — so 10's registry must freeze before them.
 
 ### 8.3 Self-management rules
 
-1. **Before starting a phase**, check its assignment in §8.1 and set/switch to the correct model at the phase boundary.
-2. **Escalate** an Opus-assigned phase to Fable 5 mid-build if it turns out to define something other phases consume, touch global-state encoding, or modify a frozen contract.
-3. **Never downgrade a LOCKED phase to Opus.**
+1. **Every phase runs on Opus 4.8 (Ultra Code).** There is no per-phase model switch while Fable 5 is unavailable; the phase boundary is a **review-rigor checkpoint**, not a model switch — set the rigor from the §8.1 risk tier.
+2. **Escalate rigor, not model:** if a phase assigned HIGH/LEAF turns out to define something other phases consume, touch global-state encoding, or modify a frozen contract, promote it to CRITICAL treatment on the spot (freeze + full review pass) before continuing.
+3. **CRITICAL-tier phases always get the full review pass and their interface frozen before dependents start** — never skip it under throughput pressure. This is the single-model substitute for the old "never downgrade" rule.
 4. **After each phase, run a review pass**; mark it done only once its interface is stable enough for downstream phases to build against.
 
 ### 8.4 Mechanism (wired for this environment)
 
-**Primary: model-pinned subagents via the Task tool.** The Task/Agent tool exposes a `model` parameter (`fable` | `opus` | `sonnet` | `haiku`) — verified available in this environment. Dispatch each phase to a subagent pinned to its assigned model; the orchestrator itself stays model-agnostic and each phase's work runs under the right model. Caveat: a `fork` subagent inherits the parent's model and cannot be pinned — use a general-purpose (or dedicated build) subagent, not a fork, whenever the phase's model differs from the orchestrator's.
+**Run the build in the Opus 4.8 Ultra Code session.** Since every phase is the same model, no model pinning is required. Subagents are still useful — for **independent/leaf phases run in parallel** and, importantly, for the **CRITICAL-tier review pass** (dispatch a separate review subagent so the check isn't done by the same context that wrote the code). The Task/Agent tool's `model` parameter still exists (`opus` | `sonnet` | `haiku`; `fable` currently unavailable), so pin review/build subagents to `opus` explicitly.
 
-**Fallback (interactive, human-driven Ultra Code session only):** `/model` switch at each phase boundary before the phase begins.
-
-At runtime, confirm the environment actually supports the `model` parameter (or `/model`). If neither is available, **halt and report** rather than silently building every phase on a single model.
+**If Fable 5 usage returns:** restore the §8.1 model column (CRITICAL/HIGH → Fable 5, LEAF → Opus) and re-enable per-phase model pinning at the boundary; the risk tiers already encode the mapping.
 
 ---
 

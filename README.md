@@ -75,6 +75,16 @@ autosaves to the browser's IndexedDB every 30 seconds — close the tab and
 
 *This section is updated as new features land.*
 
+- **2026-07-17** — Main menu + menu music: desert/badlands-sunset title screen
+  (animated CSS scene, ClaudeCraft wordmark, version badge, PRESS START →
+  New Game / Continue / Settings / Quit on the supplied art, self-hosted OFL
+  fonts, reduced-motion aware), a settings panel with live-persisted Master /
+  Music / SFX sliders, and the 16-AUDIO §4A theme-music player (shuffled, no
+  immediate repeats, RAM-guarded preload, 1.5 s/0.8 s fades, 10–20 s gaps,
+  gesture-started, fades out on world load). Renamed VoxelCraft → ClaudeCraft.
+  **Menu tracks are gated:** the C418 files in `CC-assets/CC-sounds/` are local
+  dev placeholders that can never reach a build — see DEVIATIONS.md "Audio
+  copyright ship-gate" before shipping music.
 - **2026-07-17** — Sky/sun render fix: sun, moon and sunset band now depth-test
   against terrain (leaves/hills occlude them; the "grey blob at spawn" was the
   moon drawing through the ground), horizon visibility gates at `dir.y > −0.3`,

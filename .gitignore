@@ -1,3 +1,17 @@
 node_modules/
 dist/
 .DS_Store
+
+# ---- Audio copyright ship-gate (16-AUDIO §4A, 17-SHIP §3.5, 19-MAIN-MENU §0) ----
+# The C418 Minecraft soundtrack is a LOCAL DEV PLACEHOLDER ONLY. It must never be
+# committed, bundled, or served. Shipped theme tracks must be original/cleared.
+# NOTE: CC-assets/CC-sounds/ was already committed in b74a1b5 — ignoring it here
+# does NOT untrack it. See DEVIATIONS.md "Menu music" for the removal command.
+CC-assets/CC-sounds/
+# The shipped track set. Cleared/original audio may be committed here (declare it
+# in public/theme-music/CLEARED.json); ignored by default so placeholders dropped
+# in by hand can never be committed. No trailing slash — also matches a symlink.
+public/theme-music
+
+# Generated from public/theme-music/ by scripts/gen-theme-manifest.mjs at pre{dev,build}.
+src/audio/themeManifest.js
