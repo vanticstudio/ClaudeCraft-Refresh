@@ -77,8 +77,14 @@ export class Music {
   }
 
   onOptions(opts) {
-    // §4A: the theme layer replaces the composer in-game when musicMode = 'full'
-    this.suspended = opts.musicMode === 'full';
+    // §4A: on musicMode 'full' the theme layer REPLACES the composer in-game, so
+    // §4 suspends — but only when that layer can actually play something. With no
+    // cleared tracks the manifest is empty (every public build today), and
+    // suspending unconditionally left 'full' with no theme AND no composer: total
+    // in-game silence. §16's intro makes the composer "the default and the
+    // fallback, so a fully-synthesized, zero-download ship is always possible".
+    const themeCanPlay = !!this.engine.themeMusic?.available;
+    this.suspended = opts.musicMode === 'full' && themeCanPlay;
     if (this.suspended) this.stop(2);
   }
 

@@ -4,6 +4,65 @@ Deviations and ambiguity rulings. (The base-spec `.md` files were removed from
 the working tree during repo cleanup; the pre-UPDATE deviation log for the
 initial build lives in git history — `git show 8441ac9:DEVIATIONS.md`.)
 
+## UPDATE — audio-not-playing fix: E1 integration audit (2026-07-17)
+
+Work order: `UPDATE-audio-not-playing-fix.md`. **Its two stated root causes were
+already fixed** by the E1 commit (`e918c83`), which landed after the prompt was
+written — verified rather than assumed:
+
+| Prompt's claim | Actual state |
+|---|---|
+| "imported nowhere (`main.js` only imports `themeMusic.js`)" | `engine.js` imported by **16** files |
+| "never constructed or booted" | `audio.boot()` at `main.js:34` |
+| "context never unlocked on a user gesture" | **4** `audio.unlock()` sites |
+| "no `audio.updateFrame()` / `audio.tick()` in the loop" | both wired (`Game.js:209`, `:254`, `:261`) |
+| "`emitSound` is never called by any gameplay code" | **57** emit sites across **15** gameplay files |
+| "`public/theme-music/` does not exist — every fetch 404s" | dev serves from `CC-assets/CC-sounds` via the `apply:'serve'` middleware; 0 × 404 |
+| "set `musicMode` so in-game uses the synth composer" | already the `'menu'` default |
+
+Re-verified against the **real browser autoplay policy** (no
+`--autoplay-policy` override, a genuine trusted click): context is `suspended`
+pre-gesture and `running` after press-start, with audio flowing immediately —
+the prompt's prime suspect ("the single most common engine-present-but-silent
+cause") is clean. Production build likewise: gesture unlocks, walking produces
+synthesized footsteps at peak 0.60, **0 audio requests**, no 404s, no console
+errors.
+
+### One real defect the audit did find, now fixed
+
+- **`musicMode: 'full'` with no cleared tracks was total in-game silence.**
+  `Music.onOptions` suspended the §4 composer whenever the mode was `'full'`,
+  but `menus.show()` only starts the theme layer `if (this.music?.available)`.
+  Every public build today has an empty manifest, so `'full'` gave neither
+  theme nor composer. §16's intro is explicit that the composer "remains the
+  default and **the fallback**, so a fully-synthesized, zero-download ship is
+  always possible" — so §4 now suspends only when the theme layer can actually
+  play something.
+
+### Deviation from the work order's Part B.1
+
+**The C418 placeholders were NOT copied into `public/theme-music/`.** Part B.1
+suggests copying them there for local audibility, gitignored. That reintroduces
+the exact hazard E1's gate was designed around: Vite's `copyDir` dereferences
+and copies `publicDir` into `dist/` at `renderStart`, so the placeholders would
+land in every build and the ship gate would be racing a delete. The existing
+dev-only middleware already achieves Part B.1's stated goal — 14 tracks audible
+locally, 0 × 404 — while keeping a leak structurally impossible. `public/theme-music/`
+stays reserved for genuinely cleared tracks + `CLEARED.json`.
+
+### Known papercut (not a defect)
+
+`npm run build` regenerates `src/audio/themeManifest.js` **empty** (`prebuild`,
+by design — a shipped build has no cleared tracks). If a dev server is running,
+it HMRs that empty manifest and the menu goes silent until `npm run dev` (whose
+`predev` hook regenerates the 14 dev tracks) restarts. Building in a second
+terminal while testing is therefore a plausible "the menu music stopped working"
+report. In-game SFX and the synth composer are unaffected.
+
+Verified 2026-07-17: **7 in-game + 4 real-autoplay-policy + 4 production
+assertions**, plus the full E1 suite still green (35 acceptance + 8 regression +
+3 music + 3 production). Menu: 14 tracks, running, themeGain 0.45.
+
 ## E1 — 16-AUDIO: synthesized SFX, positional sound, generative music (2026-07-17)
 
 Built to `16-AUDIO.md`. New modules `src/audio/{engine,primitives,events,music,

@@ -75,6 +75,14 @@ autosaves to the browser's IndexedDB every 30 seconds — close the tab and
 
 *This section is updated as new features land.*
 
+- **2026-07-17** — Audio integration audit (`UPDATE-audio-not-playing-fix`):
+  re-verified the whole E1 chain against the **real** browser autoplay policy
+  (suspended → running on a genuine gesture, audio flowing immediately) and
+  against the production build (walking produces synthesized footsteps, zero
+  audio requests). Fixed one real hole: `musicMode: "Menu + gameplay"` with no
+  cleared theme tracks suspended the synth composer without anything to replace
+  it — silence in every shipped build. The composer is now the fallback §16
+  mandates, so music always plays with zero assets.
 - **2026-07-17** — **Audio (expansion phase E1, `16-AUDIO`)**: a full Web Audio
   layer, **100 % synthesized at runtime — zero sample files, zero audio
   downloads**. Every sound is built from oscillators, noise and math: a boot-time
