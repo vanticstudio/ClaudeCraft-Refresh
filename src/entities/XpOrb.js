@@ -53,7 +53,9 @@ export class XpOrb extends Entity {
         player.orbStreak = Math.min(24, player.orbStreak + 1);
         player.orbStreakTimer = 40;
         emitSound('player.xp_pickup', null, Math.pow(2, player.orbStreak / 12));
-        player.addXp(this.value);
+        // 08 §5.8 / AMENDS 05 §15 — Mending intercepts the orb's value before it
+        // reaches the bar. onOrbPickup does the repair, then adds the leftover.
+        player.onOrbPickup(this.value);
         player.xpPickupCooldown = 2;
         this.dead = true;
         return;

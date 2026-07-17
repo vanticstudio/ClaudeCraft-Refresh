@@ -4,10 +4,34 @@
 // Geometry: absolute GUI-px on a 176×166 reference panel (Java 1.20 survival
 // coordinates), scaled uniformly by --gpx. Slot (x,y) = top-left INNER corner.
 import { ITEMS, RECIPES, SMELTING, fuelValue } from '../registry/items.js';
-import { iconCss, tileForItemId } from './hud.js';
+import { iconCss, tileForItemId, paintSlotIcon } from './hud.js';
 import { emitSound, at, audio } from '../audio/engine.js';
 import { TAB, buildPalette, searchPalette, visibleTabs } from './creativeTabs.js';
-import { tagsEqual, cloneStack } from '../items/tags.js';
+import { tagsEqual, cloneStack, NAME_MAX, customName, getEnchants } from '../items/tags.js';
+// --- 08-ENCHANTING §4 / §8 / §9 ---
+import { B } from '../registry/blocks.js';
+import { shelfPower, activeShelves, computeOffers, applyOffer } from '../items/enchanting.js';
+import { tableEligible, enchantLabel, LAPIS_ID } from '../items/enchants.js';
+import { anvilResult, displayName } from '../items/anvil.js';
+import { grindstoneResult, grindstoneAccepts } from '../items/grindstone.js';
+
+/** The three 08 screens with transient input slots (§4.2 / §8.5 / §9.1). */
+const ENCHANT_KINDS = new Set(['enchanting', 'anvil', 'grindstone']);
+
+// Forces refreshOffers() to recompute. It must NOT be null: `null` is a value the
+// offer key legitimately takes (no item, or an ineligible one), so using null as
+// the dirty flag collides with it and the early-out returns with STALE offers on
+// screen — exactly what §4.5 step 3 forbids after a purchase. A Symbol can never
+// equal a `string | null` key.
+const OFFERS_DIRTY = Symbol('offers-dirty');
+
+// AMENDS 06 §15.2's multi-line tooltip needs innerHTML (per-line colour), and
+// one of those lines is `tags.name` — free text the player types into the anvil
+// (§8.4) that then round-trips through the save file. Escaping is mandatory:
+// unescaped, a rename to `<img src=x onerror=...>` would execute on hover, and
+// it would persist in the world. Never interpolate a name without this.
+const escapeHtml = str => String(str).replace(/[&<>"']/g,
+  c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 // 18 §6.1 — creative screen geometry, GUI px on its own reference panel (the
 // survival panel is 176×166 and cannot hold a 9×5 palette + tab strip + the
@@ -25,6 +49,13 @@ const CV = {
 };
 
 const stackMax = id => ITEMS.get(id)?.stack ?? 64;
+// 08 §4.2 — "item slot (accepts ONE enchantable item)". The framework had no
+// per-slot cap: every path sized against the ITEM's max, and `book` is stack-64.
+// Since §4.5 step 2 rewrites a book stack to `count = 1` when it becomes an
+// enchanted_book, an uncapped slot silently DESTROYED the other 63 — on the
+// single most natural gesture there is (shift-clicking your book stack in).
+// A slot may now declare `maxStack`; it is honoured everywhere a count is sized.
+const slotMax = (slot, id) => Math.min(slot?.maxStack ?? Infinity, stackMax(id));
 // AMENDS 06 §14.2 (08 §1): stack-compatibility now requires deep-equal tags —
 // a renamed or enchanted stack never merges with a plain one.
 const same = (a, b) => a && b && a.id === b.id && (a.damage ?? 0) === (b.damage ?? 0)
@@ -200,6 +231,14 @@ export class Containers {
     } else {
       this.craftGrid = null;
     }
+    // 08 §4.2/§8.5/§9.1 — the enchanting table, anvil and grindstone all have
+    // transient input slots that return to the inventory on close (the craft-grid
+    // rule, 06 §14.1). Kept separate from craftGrid so findRecipe never sees them.
+    this.inputs = ENCHANT_KINDS.has(kind) ? [null, null] : null;
+    this.anvilName = null;          // §8.3's text field; null = "not renaming"
+    this.shelves = 0;               // §4.1 bookshelf power, recomputed on refresh
+    this.offers = null;             // §4.3 {req, offer}
+    this.offerKey = OFFERS_DIRTY;   // change-detector for (item, shelves, seed)
     if (kind === 'creative') { this.scroll = 0; this.search = ''; }
     this.build();
     this.root.classList.add('visible');
@@ -220,6 +259,17 @@ export class Containers {
         const leftover = p.give(s);
         if (leftover > 0) this.game.throwStack(withCount(s, leftover));
         this.craftGrid[i] = null;
+      }
+    }
+    // 08 §4.2/§8.5/§9.1 — same rule for the enchant/anvil/grindstone inputs.
+    // §8.1: this also runs when a degrading anvil destroys itself mid-edit.
+    if (this.inputs) {
+      for (let i = 0; i < this.inputs.length; i++) {
+        const s = this.inputs[i];
+        if (!s) continue;
+        const leftover = p.give(s);
+        if (leftover > 0) this.game.throwStack(withCount(s, leftover));
+        this.inputs[i] = null;
       }
     }
     if (this.cursor) {
@@ -270,6 +320,248 @@ export class Containers {
     return defs;
   }
 
+  // ============================================ 08-ENCHANTING §4 / §8 / §9 ===
+
+  /** §4.1 — shelf power for the open table. 0 when the screen has no position. */
+  computeShelves() {
+    if (!this.pos) return 0;
+    return shelfPower(this.game.world, this.pos.x, this.pos.y, this.pos.z);
+  }
+
+  /**
+   * §4.3 — recompute offers when (item, shelfPower, seed) changes.
+   *
+   * Offers are a pure function of those three, so re-inserting the same item at
+   * the same table shows identical offers across reopen AND across save/reload
+   * (§13's same-seed guarantee). The key is what makes that hold: it must NOT
+   * include anything else, or the offers would drift while the screen is open.
+   * Damage and tags are excluded deliberately — §4.3 keys on "item type+material"
+   * and §4.4 admits damaged items.
+   */
+  refreshOffers() {
+    const p = this.game.player;
+    const item = this.inputs?.[0] ?? null;
+    this.shelves = this.computeShelves();
+    const key = item && tableEligible(item)
+      ? `${item.id}|${this.shelves}|${p.enchantSeed}` : null;
+    if (key === this.offerKey) return;
+    this.offerKey = key;
+    this.offers = key ? computeOffers(item, this.shelves, p.enchantSeed) : null;
+  }
+
+  /** §4.2 — is offer button i clickable? */
+  offerEnabled(i) {
+    const p = this.game.player;
+    const item = this.inputs?.[0] ?? null;
+    if (!this.offers || !item || !tableEligible(item)) return false;
+    if (!this.offers.offer[i]?.length) return false;          // slot disabled (§4.3)
+    if (p.creative) return true;                              // F4: always enabled
+    const lapis = this.inputs?.[1]?.count ?? 0;
+    return p.xpLevel >= this.offers.req[i] && lapis >= i + 1;
+  }
+
+  /**
+   * §4.5 — buy offer i.
+   * The requirement req[i] is only a GATE: exactly i+1 levels and i+1 lapis are
+   * ever consumed (Java exact — requirement ≠ cost).
+   */
+  buyOffer(i) {
+    const p = this.game.player;
+    if (!this.offerEnabled(i)) return;
+    const list = this.offers.offer[i];
+    if (!p.creative) {
+      const lapis = this.inputs[1];
+      lapis.count -= i + 1;
+      if (lapis.count <= 0) this.inputs[1] = null;
+      p.subtractLevels(i + 1);
+    }
+    this.inputs[0] = applyOffer(this.inputs[0], list);
+    // §4.5 step 3 — reroll THEN recompute. The now-enchanted item is ineligible
+    // (§4.4 rejects existing enchants), so the slots go blank; the reroll still
+    // matters because the next item inserted must see fresh offers.
+    if (!p.creative) p.rerollEnchantSeed();
+    this.offerKey = OFFERS_DIRTY;
+    this.refreshOffers();
+    emitSound('enchant.apply', null);
+    this.game.particles?.enchantGlyphs?.(this.pos);
+    this.refresh();
+  }
+
+  buildOfferButtons(panel) {
+    this.offerEls = [];
+    for (let i = 0; i < 3; i++) {
+      const b = document.createElement('div');
+      b.className = 'offer-btn';
+      b.style.top = `${16 + i * 19}px`;
+      b.innerHTML = `<span class="offer-pips"></span><span class="offer-text"></span>` +
+        `<span class="offer-req"></span>`;
+      b.addEventListener('mousedown', e => { e.preventDefault(); this.buyOffer(i); });
+      panel.appendChild(b);
+      this.offerEls.push(b);
+    }
+  }
+
+  /** §4.2 — repaint the three offer buttons. Called from refresh(). */
+  refreshOfferButtons() {
+    this.refreshOffers();
+    for (let i = 0; i < 3; i++) {
+      const el = this.offerEls?.[i];
+      if (!el) continue;
+      const list = this.offers?.offer[i] ?? null;
+      const req = this.offers?.req[i] ?? 0;
+      const on = this.offerEnabled(i);
+      el.classList.toggle('disabled', !on);
+      // §4.2: i+1 lapis pips, the revealed enchant as plain text with a trailing
+      // "…?" (the buyer may receive more), and the requirement in green/gray.
+      el.querySelector('.offer-pips').textContent = list?.length ? '◆'.repeat(i + 1) : '';
+      el.querySelector('.offer-text').textContent = list?.length
+        ? `${enchantLabel(list[0].e.id, list[0].p)} …?` : '';
+      const r = el.querySelector('.offer-req');
+      r.textContent = list?.length ? String(req) : '';
+      r.style.color = on ? '#54fc54' : '#808080';
+    }
+  }
+
+  // ---- §8 anvil ----
+
+  onAnvilInputChanged() {
+    // §8.3: the text field is pre-filled with the current display name, so
+    // swapping the target resets it rather than carrying the old name over.
+    this.anvilName = null;
+    if (this.nameEl) this.nameEl.value = this.inputs[0] ? displayName(this.inputs[0]) : '';
+  }
+
+  anvilPreview() {
+    if (!this.inputs) return null;
+    return anvilResult(this.inputs[0], this.inputs[1], this.anvilName);
+  }
+
+  /**
+   * §8.3 — may the output be taken? "Too Expensive!" (cost > 39) blocks it, and
+   * survival additionally needs playerLevel ≥ cost. F4 debug-creative ignores the
+   * cost. takeResult consults this BEFORE handing the stack to the cursor —
+   * otherwise the player would receive the item and only then be refused.
+   */
+  anvilCanTake() {
+    const p = this.game.player;
+    const r = this.anvilPreview();
+    if (!r) return false;
+    if (p.creative) return true;
+    return !r.tooExpensive && p.xpLevel >= r.cost;
+  }
+
+  /**
+   * §8.3 — take the output: consume inputs, spend levels, roll the 12% degrade.
+   * F4 debug-creative ignores the cost, pays nothing, and still never degrades.
+   *
+   * The affordability guard is repeated here rather than trusting canTake: this
+   * is the method that spends levels and eats the inputs, and a future caller
+   * arriving by another path must not be able to skip the check.
+   */
+  takeAnvilOutput() {
+    const p = this.game.player;
+    const r = this.anvilPreview();
+    if (!r) return;
+    if (!p.creative) {
+      if (r.tooExpensive || p.xpLevel < r.cost) return;
+      p.subtractLevels(r.cost);
+    }
+    this.inputs[0] = null;
+    // §8.4: a unit repair consumes only `units` materials; the remainder stays.
+    const sac = this.inputs[1];
+    if (sac) {
+      sac.count -= r.consumed;
+      if (sac.count <= 0) this.inputs[1] = null;
+    }
+    this.anvilName = null;
+    if (this.nameEl) this.nameEl.value = '';
+    emitSound('anvil.use', this.pos ? at(this.pos.x + 0.5, this.pos.y + 0.5, this.pos.z + 0.5) : null);
+    if (!p.creative) this.rollAnvilDegrade();
+  }
+
+  /**
+   * §8.1 — each successful operation has a 12% chance to advance one damage
+   * stage; advancing past stage 2 destroys the block, which closes the UI and
+   * returns the slot contents (close() does the returning).
+   */
+  rollAnvilDegrade() {
+    if (!this.pos) return;
+    const w = this.game.world;
+    const { x, y, z } = this.pos;
+    if (w.getBlock(x, y, z) !== B.ANVIL) return;
+    if (w.rng() >= 0.12) return;
+    const stage = ((w.getState(x, y, z) >> 2) & 3) + 1;
+    if (stage > 2) {
+      emitSound('anvil.destroy', at(x + 0.5, y + 0.5, z + 0.5));
+      this.game.particles?.blockBreak?.(x, y, z, B.ANVIL);
+      w.setBlock(x, y, z, B.AIR, { byPlayer: true });
+      this.game.closeContainerScreen?.();       // tickOpen would also catch this
+      return;
+    }
+    const st = (w.getState(x, y, z) & ~0x0c) | (stage << 2);
+    w.setState(x, y, z, st);
+  }
+
+  buildAnvilNameField(panel) {
+    const wrap = document.createElement('div');
+    wrap.className = 'anvil-name-wrap';
+    const input = document.createElement('input');
+    input.className = 'anvil-name';
+    input.type = 'text';
+    input.maxLength = NAME_MAX;                 // §8.4 — ≤ 50 chars
+    input.value = this.inputs[0] ? displayName(this.inputs[0]) : '';
+    // Typing must not reach the game (WASD would walk you away mid-rename).
+    input.addEventListener('keydown', e => e.stopPropagation());
+    input.addEventListener('input', () => { this.anvilName = input.value; this.refresh(); });
+    wrap.appendChild(input);
+    panel.appendChild(wrap);
+    this.nameEl = input;
+
+    const cost = document.createElement('div');
+    cost.className = 'anvil-cost';
+    panel.appendChild(cost);
+    this.costEl = cost;
+  }
+
+  /** §8.3 — the green/red level-cost line. Called from refresh(). */
+  refreshAnvilCost() {
+    if (!this.costEl) return;
+    const p = this.game.player;
+    const r = this.anvilPreview();
+    if (!r) { this.costEl.textContent = ''; return; }
+    if (r.tooExpensive) {
+      this.costEl.textContent = 'Too Expensive!';
+      this.costEl.style.color = '#fc5454';
+      return;
+    }
+    this.costEl.textContent = `Enchantment Cost: ${r.cost}`;
+    this.costEl.style.color = (p.creative || p.xpLevel >= r.cost) ? '#54fc54' : '#fc5454';
+  }
+
+  // ---- §9 grindstone ----
+
+  grindPreview() {
+    if (!this.inputs) return null;
+    // The XP roll is random, so previewing with grindstoneResult would reroll it
+    // every refresh. Only `result` is read from the preview; takeGrindOutput()
+    // makes the one roll that counts.
+    return grindstoneResult(this.inputs[0], this.inputs[1], () => 0);
+  }
+
+  /** §9.1/§9.2 — consume inputs, spawn ONE refund orb at the block. */
+  takeGrindOutput() {
+    const r = grindstoneResult(this.inputs[0], this.inputs[1], this.game.world.rng);
+    if (!r) return;
+    this.inputs[0] = null;
+    this.inputs[1] = null;
+    emitSound('grindstone.use', this.pos ? at(this.pos.x + 0.5, this.pos.y + 0.5, this.pos.z + 0.5) : null);
+    // §9.2: spawned as an ORB, deliberately — so it feeds Mending on worn gear
+    // before the bar.
+    if (r.xp > 0 && this.pos) {
+      this.game.spawnXpOrb(this.pos.x + 0.5, this.pos.y + 1.0, this.pos.z + 0.5, r.xp);
+    }
+  }
+
   resultDef(x, y) {
     return {
       x, y, region: 'result', takeOnly: true,
@@ -297,7 +589,10 @@ export class Containers {
     const p = this.game.player;
     const panel = document.createElement('div');
     panel.className = 'panel-abs';
-    const title = { inventory: 'Inventory', crafting: 'Crafting', furnace: 'Furnace', chest: 'Chest' }[this.kind];
+    const title = {
+      inventory: 'Inventory', crafting: 'Crafting', furnace: 'Furnace', chest: 'Chest',
+      enchanting: 'Enchant', anvil: 'Repair & Name', grindstone: 'Repair & Disenchant',
+    }[this.kind];
     panel.innerHTML = `<div class="panel-title">${title}</div>`;
     this.panel = panel;
 
@@ -391,6 +686,61 @@ export class Containers {
       flame.className = 'gauge-flame-abs';
       flame.innerHTML = '<div id="g-flame"></div>';
       panel.appendChild(flame);
+      defs.push(...this.playerStorageDefs());
+    } else if (this.kind === 'enchanting') {
+      // 08 §4.2 — item slot, lapis slot, three offer buttons stacked vertically.
+      defs.push({
+        x: 15, y: 47, region: 'enchantIn', maxStack: 1,   // §4.2 — "accepts one"
+        get: () => this.inputs[0], set: v => { this.inputs[0] = v; },
+        canPut: s => tableEligible(s),
+      });
+      defs.push({
+        x: 35, y: 47, region: 'enchantLapis', placeholder: 'lapis',
+        get: () => this.inputs[1], set: v => { this.inputs[1] = v; },
+        canPut: s => s.id === LAPIS_ID,
+      });
+      this.buildOfferButtons(panel);
+      defs.push(...this.playerStorageDefs());
+    } else if (this.kind === 'anvil') {
+      // 08 §8.3 — target (left), sacrifice (right), take-only output, a text
+      // field pre-filled with the current display name, and the cost line.
+      defs.push({
+        x: 27, y: 47, region: 'anvilTarget',
+        get: () => this.inputs[0], set: v => { this.inputs[0] = v; this.onAnvilInputChanged(); },
+      });
+      defs.push({
+        x: 76, y: 47, region: 'anvilSac',
+        get: () => this.inputs[1], set: v => { this.inputs[1] = v; },
+      });
+      // region 'result' is the framework's computed-output shape (get() derives the
+      // stack, onCraft() consumes the inputs) — exactly what §8.3 needs, and its
+      // shift path refuses to consume when the inventory is full. A custom region
+      // would take takeResult's other branch, which calls set(null)/onTakeOut.
+      defs.push({
+        x: 134, y: 47, region: 'result', takeOnly: true,
+        get: () => this.anvilPreview()?.result ?? null,
+        canTake: () => this.anvilCanTake(),      // §8.3 — "Too Expensive!" blocks the take
+        onCraft: () => this.takeAnvilOutput(),
+      });
+      this.buildAnvilNameField(panel);
+      defs.push(...this.playerStorageDefs());
+    } else if (this.kind === 'grindstone') {
+      // 08 §9.1 — two inputs + take-only output. No level cost, ever.
+      defs.push({
+        x: 49, y: 19, region: 'grindIn0',
+        get: () => this.inputs[0], set: v => { this.inputs[0] = v; },
+        canPut: s => grindstoneAccepts(s),
+      });
+      defs.push({
+        x: 49, y: 40, region: 'grindIn1',
+        get: () => this.inputs[1], set: v => { this.inputs[1] = v; },
+        canPut: s => grindstoneAccepts(s),
+      });
+      defs.push({
+        x: 129, y: 34, region: 'result', takeOnly: true,
+        get: () => this.grindPreview()?.result ?? null,
+        onCraft: () => this.takeGrindOutput(),   // §9.1 — never costs XP, always takeable
+      });
       defs.push(...this.playerStorageDefs());
     }
 
@@ -770,14 +1120,22 @@ export class Containers {
         slot.set(null);
         this.cursor = inSlot;
       } else if (cur && inSlot && same(cur, inSlot)) {
-        const add = Math.min(stackMax(cur.id) - inSlot.count, cur.count);
+        const add = Math.min(slotMax(slot, cur.id) - inSlot.count, cur.count);
         inSlot.count += add;
         cur.count -= add;
         if (cur.count <= 0) this.cursor = null;
       } else if (cur) {
         if (!slot.canPut || slot.canPut(cur)) {
-          slot.set(cur);
-          this.cursor = inSlot;
+          const cap = slotMax(slot, cur.id);
+          if (cur.count > cap && !inSlot) {
+            // Capped slot, empty: it takes `cap` and the REST STAYS ON THE CURSOR.
+            // Never swap here — `this.cursor = inSlot` would drop the remainder.
+            slot.set(withCount(cur, cap));
+            cur.count -= cap;
+          } else if (cur.count <= cap) {
+            slot.set(cur);
+            this.cursor = inSlot;
+          }
         }
       }
       this.lastClick = { time: now, index };
@@ -803,6 +1161,10 @@ export class Containers {
   takeResult(slot, shift) {
     const out = slot.get();
     if (!out) return;
+    // 08 §8.3 — the anvil SHOWS its output but blocks the take when the cost is
+    // unaffordable or > 39 ("Too Expensive!"). Without this the cursor would be
+    // handed the item before takeAnvilOutput's own guard could refuse it.
+    if (slot.canTake && !slot.canTake()) return;
     if (slot.region === 'result') {
       if (shift) {
         // craft-max: until ingredients run out or inventory is full (§4.6)
@@ -843,7 +1205,7 @@ export class Containers {
     for (const t of targets) {
       const dst = t.get();
       if (dst && same(dst, s)) {
-        const add = Math.min(stackMax(s.id) - dst.count, s.count);
+        const add = Math.min(slotMax(t, s.id) - dst.count, s.count);
         dst.count += add;
         s.count -= add;
         if (s.count <= 0) { slot.set(null); return; }
@@ -851,6 +1213,11 @@ export class Containers {
     }
     for (const t of targets) {
       if (!t.get() && (!t.canPut || t.canPut(s))) {
+        // 08 §4.2 — shift-clicking a 64-stack of books at the table moves ONE and
+        // leaves 63 where they were, rather than feeding all 64 to a slot that
+        // will keep exactly one of them.
+        const cap = slotMax(t, s.id);
+        if (s.count > cap) { t.set(withCount(s, cap)); s.count -= cap; return; }
         t.set(s);
         slot.set(null);
         return;
@@ -861,12 +1228,25 @@ export class Containers {
   shiftTargets(slot, stack) {
     const bySel = regions => this.slots.filter(x => regions.includes(x.region) && !x.takeOnly);
     const item = ITEMS.get(stack.id);
-    if (['container', 'furnaceIn', 'furnaceFuel', 'furnaceOut', 'craft', 'armor', 'result', 'offhand']
-        .includes(slot.region)) {
+    if (['container', 'furnaceIn', 'furnaceFuel', 'furnaceOut', 'craft', 'armor', 'result', 'offhand',
+      // 08 §4.2/§8.5/§9.1 — shift-clicking OUT of any 08 input slot returns the
+      // stack to the player, exactly like the furnace/craft slots above.
+      'enchantIn', 'enchantLapis', 'anvilTarget', 'anvilSac', 'grindIn0', 'grindIn1']
+      .includes(slot.region)) {
       return bySel(['hotbar', 'main']);
     }
     // from player storage:
     if (this.kind === 'chest') return bySel(['container']);
+    // 08 §4.2 — lapis goes to the lapis slot, an enchantable item to the item slot.
+    if (this.kind === 'enchanting') {
+      if (stack.id === LAPIS_ID) return bySel(['enchantLapis']);
+      return tableEligible(stack) ? bySel(['enchantIn']) : [];
+    }
+    // 08 §8.5 — "Shift-click from player: first empty of target→sacrifice."
+    if (this.kind === 'anvil') return bySel(['anvilTarget', 'anvilSac']);
+    if (this.kind === 'grindstone') {
+      return grindstoneAccepts(stack) ? bySel(['grindIn0', 'grindIn1']) : [];
+    }
     if (this.kind === 'furnace') {
       if (SMELTING.has(stack.id)) return bySel(['furnaceIn']);
       if (fuelValue(stack.id) > 0) return bySel(['furnaceFuel']);
@@ -947,10 +1327,18 @@ export class Containers {
       this.tooltipEl.style.display = 'none';
       return;
     }
+    // AMENDS 06 §15.2 (08) — tooltips are multi-line: line 1 the name (italic if
+    // renamed via tags.name), then one line per enchant in light purple, and a
+    // damaged tool still appends dur/max.
     const item = ITEMS.get(s.id);
-    let text = item?.displayName ?? '?';
-    if (item?.durability && s.damage > 0) text += ` ${item.durability - s.damage}/${item.durability}`;
-    this.tooltipEl.textContent = text;
+    const custom = customName(s);
+    let line1 = custom ?? item?.displayName ?? '?';
+    if (item?.durability && s.damage > 0) line1 += ` ${item.durability - s.damage}/${item.durability}`;
+    const rows = [`<div class="tt-name${custom ? ' tt-renamed' : ''}">${escapeHtml(line1)}</div>`];
+    for (const e of getEnchants(s)) {
+      rows.push(`<div class="tt-ench">${escapeHtml(enchantLabel(e.id, e.lvl))}</div>`);
+    }
+    this.tooltipEl.innerHTML = rows.join('');
     this.tooltipEl.style.display = 'block';
     this.tooltipEl.style.left = (this.mouseX + 14) + 'px';
     this.tooltipEl.style.top = (this.mouseY - 22) + 'px';
@@ -961,7 +1349,10 @@ export class Containers {
   renderStackInto(el, stack, hideCount = false) {
     const icon = el.children[0], count = el.children[1];
     if (stack) {
-      iconCss(icon, tileForItemId(this.game, stack.id));
+      // 08 §11 — an enchanted stack paints through a per-slot <canvas> instead
+      // of the atlas-background div, so the shimmer can be clipped to the icon's
+      // silhouette (source-atop). Plain stacks keep the cheap div path.
+      paintSlotIcon(icon, this.game, stack);
       icon.style.display = 'block';
       // §6.3: a palette cell is a source, not a stack — a wall of "64"s across
       // 45 cells reads as inventory the player owns. Matches Java.
@@ -990,6 +1381,10 @@ export class Containers {
       slot.el.classList.toggle('empty-ph', !slot.get() && !!slot.placeholder);
     }
     this.renderCursor();
+    // 08 §4.2 / §8.3 — the offer buttons and the anvil cost line are part of the
+    // screen's state, not slot contents, so they repaint here with everything else.
+    if (this.kind === 'enchanting') this.refreshOfferButtons();
+    if (this.kind === 'anvil') this.refreshAnvilCost();
     if (this.kind === 'furnace' && this.be) {
       const f = this.be.data;
       const flame = document.getElementById('g-flame');
@@ -1005,8 +1400,27 @@ export class Containers {
       const p = this.game.player;
       const d = Math.hypot(this.pos.x + 0.5 - p.pos.x, this.pos.y + 0.5 - (p.pos.y + 1), this.pos.z + 0.5 - p.pos.z);
       const id = this.game.world.getBlock(this.pos.x, this.pos.y, this.pos.z);
-      const stillThere = this.kind === 'furnace' ? (id === 35 || id === 36) : this.kind === 'chest' ? id === 37 : true;
+      // 08 §8.1 — a degrading anvil that destroys itself must close its own
+      // UI; the same check covers all three blocks being mined out from under
+      // an open screen. close() returns the transient inputs.
+      const EXPECT = {
+        furnace: [35, 36], chest: [37],
+        enchanting: [B.ENCHANTING_TABLE], anvil: [B.ANVIL], grindstone: [B.GRINDSTONE],
+      }[this.kind];
+      const stillThere = EXPECT ? EXPECT.includes(id) : true;
       if (d > 8 || !stillThere) { this.game.closeContainerScreen?.(); return; }
+    }
+    // 08 §2.2 — while the table UI is open, 2 glyph particles/tick drift from
+    // random ACTIVE bookshelves toward the floating book. Cosmetic only; an
+    // unpowered table (no valid shelves) emits none.
+    if (this.kind === 'enchanting' && this.pos) {
+      const shelves = activeShelves(this.game.world, this.pos.x, this.pos.y, this.pos.z);
+      if (shelves.length) {
+        for (let i = 0; i < 2; i++) {
+          const from = shelves[(Math.random() * shelves.length) | 0];
+          this.game.particles?.enchantGlyphs?.(this.pos, from, 1);
+        }
+      }
     }
     if (this.game.world.time % 4 === 0) this.refresh();
   }

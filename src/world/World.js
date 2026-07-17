@@ -98,7 +98,11 @@ export class World {
   // ---------------------------------------------------------------- writes
 
   // 01 §4.6 pipeline
-  setBlock(x, y, z, id, { state = 0, byPlayer = false, noUpdates = false } = {}) {
+  // `skipOnBroken` suppresses ONLY the outgoing block's onBroken hook, leaving
+  // light, meshing and neighbor updates intact (which `noUpdates` would also
+  // kill). 08 §5.6.2 needs exactly this: a Silk Touch break of ice must leave
+  // air, and ice's onBroken is what reverts the cell to water.
+  setBlock(x, y, z, id, { state = 0, byPlayer = false, noUpdates = false, skipOnBroken = false } = {}) {
     if (y < 0 || y > MAX_Y) return false;
     const chunk = this.getChunkAt(x, z);
     if (!chunk) return false;
@@ -154,7 +158,7 @@ export class World {
 
     if (!noUpdates) {
       if (old !== id) {
-        oldBlock.onBroken?.(this, x, y, z, oldState);
+        if (!skipOnBroken) oldBlock.onBroken?.(this, x, y, z, oldState);
         newBlock.onPlaced?.(this, x, y, z, state);
       }
       // placed fluids start flowing; placed gravity blocks may fall
@@ -263,8 +267,11 @@ export class World {
     if (below.collidable) return;
     const id = this.getBlock(x, y, z);
     if (!BLOCKS[id].gravity) return;
+    // 08 §8.6/§13 — the falling entity carries the block's state so an anvil
+    // re-solidifies with its damage stage. Sand/gravel are state 0, unaffected.
+    const state = this.getState(x, y, z);
     this.setBlock(x, y, z, B.AIR);
-    this.game?.spawnFallingBlock(id, x, y, z);
+    this.game?.spawnFallingBlock(id, x, y, z, state);
   }
 
   /**

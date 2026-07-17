@@ -75,6 +75,22 @@ autosaves to the browser's IndexedDB every 30 seconds — close the tab and
 
 *This section is updated as new features land.*
 
+- **2026-07-17** — **Enchanting: table, anvil, grindstone (expansion phase E4, `08` part 2)**:
+  the whole enchanting stack is in. Ring an **enchanting table** with bookshelves
+  (keep the gaps clear — a torch in one blocks the shelves behind it) and spend
+  lapis + levels on one of three offers; a full 15-shelf ring puts the bottom slot
+  at level 30. The **24-enchantment catalog** now does what it says: **Fortune**
+  multiplies ore drops, **Silk Touch** lifts glass and ore blocks whole,
+  **Looting** widens mob drops, **Efficiency** and **Aqua Affinity** speed up
+  mining, **Unbreaking** stretches durability, **Mending** repairs gear straight
+  from XP orbs, **Protection / Thorns / Feather Falling** cut what you take, and
+  **Power / Punch / Flame / Infinity** rework the bow. The **anvil** combines,
+  repairs and renames — with the vanilla prior-work penalty, the 39-level wall,
+  and a 12% chance to chip on each use; it also falls, and it hurts. The
+  **grindstone** strips enchants and refunds XP. **Enchanted books** come off the
+  table, and every enchanted item shimmers in the inventory and in the world. Six
+  new synthesized sounds. Save format unchanged — old worlds load untouched.
+
 - **2026-07-17** — **Sweep attack + offhand slot (expansion phase E3, `08` part 1)**:
   a full-charge sword swing while standing now **sweeps** — every mob in the halo
   around the one you hit takes damage, gets shoved the way you're looking, and the

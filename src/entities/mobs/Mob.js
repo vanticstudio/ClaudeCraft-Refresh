@@ -13,6 +13,10 @@ export class Mob extends LivingEntity {
     super(world, x, y, z);
     this.hostile = false;
     this.undead = false;
+    // 08 §5.1 — the Smite / Bane of Arthropods target tags live on the mob
+    // stat block: undead = {zombie, skeleton}, arthropod = {spider}.
+    // 13-BOSSES may extend these sets.
+    this.arthropod = false;
     this.detectionRange = 16;
     this.attackDamage = 0;
     this.attackReach = 2.0;
@@ -263,15 +267,21 @@ export class Mob extends LivingEntity {
     }
   }
 
-  onDeath() {
+  onDeath(source, opts) {
     // 05 §15 step 1 — must precede the noDrops/game guards below, both of which
     // short-circuit out and would silence the death of any no-drop mob.
     emitSound(`mob.${this.type}.death`, at(this.pos.x, this.pos.y + this.height / 2, this.pos.z));
     if (this.noDrops) return;
     const game = this.world.game;
     if (!game) return;
+    // 08 §5.5 / AMENDS 05 §15 — Looting applies when the KILLING BLOW is a
+    // player melee hit (or sweep) with a Looting weapon. die() has always passed
+    // (source, opts) through; this override simply dropped them until now. The
+    // level is threaded into dropTable so each table can widen its own ranges —
+    // the §2 tables are the L=0 column and stay correct when it is 0.
+    const looting = lootingLevelOf(source, opts?.attacker);
     if (!this.isBaby || this.type === 'zombie') {
-      for (const d of this.dropTable?.() ?? []) {
+      for (const d of this.dropTable?.(looting) ?? []) {
         if (d.count > 0) game.spawnItemByName(d.name, d.count,
           this.pos.x, this.pos.y + this.height / 2, this.pos.z);
       }

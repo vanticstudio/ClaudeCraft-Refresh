@@ -157,6 +157,23 @@ export class ChunkMesher {
         case 'door': this.emitBox(x, y, z, blk, st, doorBox(st), false); break;
         case 'bed': this.emitBox(x, y, z, blk, st, [0, 0, 0, 1, 9 / 16, 1], true); break;
         case 'farmland': this.emitBox(x, y, z, blk, st, [0, 0, 0, 1, 15 / 16, 1], true); break;
+        // --- 08-ENCHANTING §2.2 ---
+        // The table is a 12/16-height box; its floating book is a separate
+        // cosmetic mesh (it animates per-frame, so it is not chunk geometry).
+        case 'enchanting_table':
+          this.emitBox(x, y, z, blk, st, [0, 0, 0, 1, 12 / 16, 1], true); break;
+        // §2.2's three stacked boxes: base 12×4×12 px, waist 6×5×8, top 16×5×10.
+        case 'anvil':
+          this.emitBox(x, y, z, blk, st, [2 / 16, 0, 2 / 16, 14 / 16, 4 / 16, 14 / 16], true);
+          this.emitBox(x, y, z, blk, st, [5 / 16, 4 / 16, 4 / 16, 11 / 16, 9 / 16, 12 / 16], true);
+          this.emitBox(x, y, z, blk, st, [0, 9 / 16, 3 / 16, 1, 14 / 16, 13 / 16], true);
+          break;
+        // §2.2's wheel 8×12×12 px + two 2×7×2 leg posts.
+        case 'grindstone':
+          this.emitBox(x, y, z, blk, st, [4 / 16, 4 / 16, 2 / 16, 12 / 16, 1, 14 / 16], true);
+          this.emitBox(x, y, z, blk, st, [2 / 16, 0, 6 / 16, 4 / 16, 7 / 16, 8 / 16], true);
+          this.emitBox(x, y, z, blk, st, [12 / 16, 0, 6 / 16, 14 / 16, 7 / 16, 8 / 16], true);
+          break;
         default: break;   // 'none'
       }
       // 15 §12 — the SECOND contribution. The block mesh above is emitted

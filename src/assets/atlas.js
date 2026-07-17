@@ -35,6 +35,10 @@ const BLOCK_TILES = [
   'potato_0', 'potato_1', 'potato_2', 'potato_3',
   'sugar_cane', 'short_grass', 'dandelion', 'poppy',
   'water', 'lava', 'fire', 'dead_bush',
+  // 08-ENCHANTING §2.4 (the table's bottom face reuses 'obsidian', already above)
+  'enchanting_table_top', 'enchanting_table_side',
+  'anvil_top_0', 'anvil_top_1', 'anvil_top_2', 'anvil_side',
+  'grindstone_side', 'grindstone_tread',
 ];
 const DESTROY_TILES = Array.from({ length: 10 }, (_, i) => 'destroy_' + i);
 const ITEM_TILES = Object.keys(PAINTERS).filter(n => n.startsWith('item_')).sort();

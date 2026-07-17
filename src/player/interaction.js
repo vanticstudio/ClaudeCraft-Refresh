@@ -10,7 +10,11 @@ import { LivingEntity } from '../entities/Entity.js';
 import { emitSound, startLoop, at } from '../audio/engine.js';
 import { AABB } from '../math/aabb.js';
 import { KEYBINDS } from '../constants.js';
-import { cloneStack, tagsEqual } from '../items/tags.js';
+import { cloneStack, tagsEqual, getEnchantLvl } from '../items/tags.js';
+import { ENCH } from '../items/enchants.js';
+import {
+  meleeEnchBonus, silkDrop, silkSuppressesXp, silkSuppressesOnBroken,
+} from '../items/effects.js';
 
 const REPLACEABLE_TARGET = id => BLOCKS[id]?.replaceable;
 
@@ -219,6 +223,11 @@ export class Interaction {
     const crit = p.vel.y < 0 && !p.onGround && charge >= 0.848 &&
                  !p.sprinting && !p.inWater && !p.onLadder;
     if (crit) dmg *= 1.5;
+    // 08 §5.4.1 — the enchBonus term. Added AFTER the crit multiply and scaled
+    // linearly by charge, so it is never ×1.5'd (Java exact). Checklist:
+    // Sharpness V diamond sword full charge = 7 + 3 = 10; falling crit =
+    // 7×1.5 + 3 = 13.5.
+    dmg += meleeEnchBonus(p.heldStack, target) * charge;
 
     // ---- 08 §6.1 sweep trigger. Evaluated BEFORE the sprint block below, which
     // clears p.sprinting and scales p.vel — conditions 4 and 5 read pre-attack
@@ -236,9 +245,10 @@ export class Interaction {
     // gathered before the primary's hurt() knocks it backwards.
     const victims = sweeps ? this.sweepVictims(target) : null;
 
-    let kb = 0.4;
+    // AMENDS 05 §14.3 / 08 §5.4.2 — knockback strength = 0.4 + 0.5 × (L + sprint).
+    // Knockback II sprint-hit = 1.9. At L=0 this is the base 0.4 / 0.9 exactly.
+    const kb = 0.4 + 0.5 * (getEnchantLvl(p.heldStack, ENCH.KNOCKBACK) + (wasSprinting ? 1 : 0));
     if (wasSprinting) {
-      kb += 0.5;
       p.stopSprint();
       p.vel.x *= 0.6; p.vel.z *= 0.6;
     }
@@ -246,6 +256,11 @@ export class Interaction {
     const dx = target.pos.x - p.pos.x, dz = target.pos.z - p.pos.z;
     const h = Math.hypot(dx, dz) || 1;
     target.hurt(dmg, 'melee', { dirX: dx / h, dirZ: dz / h, knockback: kb, attacker: p });
+
+    // 08 §5.4.3 — Fire Aspect ignites on ANY landed melee hit (any charge),
+    // 80 ticks/level. Applied after hurt() so a killing blow does not waste it.
+    const fireAspect = getEnchantLvl(p.heldStack, ENCH.FIRE_ASPECT);
+    if (fireAspect > 0 && !target.dead) target.setOnFire(80 * fireAspect);
 
     if (crit) this.game.particles?.crit?.(target);
     if (sweeps) this.doSweep(victims, base, charge);
@@ -274,14 +289,18 @@ export class Interaction {
   doSweep(victims, weaponBase, charge) {
     const p = this.player;
     // ratio = sweepingEdgeLvl/(sweepingEdgeLvl+1) → 0, 1/2, 2/3, 3/4 for L 0–III.
-    // Sweeping Edge's catalog id arrives with 08 §5.1 in E4; until then every
-    // sword is L0 → ratio 0 → sweepDmg exactly 1, the spec's "plain iron sword
-    // → 1 HP to victims". E4: sweepLvl = getEnchantLvl(p.heldStack, ENCH.SWEEPING_EDGE).
-    const sweepLvl = 0;
+    // A plain sword is L0 → ratio 0 → sweepDmg exactly 1 ("plain iron sword →
+    // 1 HP to victims"). Checklist: iron sword (base 6) + Sweeping Edge I at
+    // full charge → 1 + ½×(6×1) = 4 HP to secondaries.
+    const sweepLvl = getEnchantLvl(p.heldStack, ENCH.SWEEPING_EDGE);
     const ratio = sweepLvl / (sweepLvl + 1);
     // No Sharpness/Smite/Bane and no crit multiplier in the sweep at the 1.20
     // baseline — they entered the sweep only in 1.21, deliberately not adopted.
     const sweepDmg = 1 + ratio * (weaponBase * (0.2 + 0.8 * charge * charge));
+
+    // §5.4.3 — Fire Aspect applies to sweep secondaries too (Java 1.20, MC-93669
+    // fixed). §5.4.2's Knockback deliberately does NOT (§6.4).
+    const fireAspect = getEnchantLvl(p.heldStack, ENCH.FIRE_ASPECT);
 
     // Direction is the player's horizontal look, identical for every victim.
     const lx = -Math.sin(p.yaw), lz = -Math.cos(p.yaw);
@@ -290,6 +309,7 @@ export class Interaction {
       // 0.4 × 0.8 = 0.32 — 80% of base, replacing the normal knockback rather
       // than stacking with it. The Knockback enchant does not boost this.
       v.hurt(sweepDmg, 'melee', { dirX: lx, dirZ: lz, knockback: 0.32, attacker: p });
+      if (fireAspect > 0 && !v.dead) v.setOnFire(80 * fireAspect);
     }
     this.game.particles?.sweep?.(p.pos.x, p.pos.y, p.pos.z, p.yaw);
     emitSound('player.attack.sweep', null);
@@ -304,13 +324,22 @@ export class Interaction {
     const item = p.heldItem();
     const toolClass = item?.toolClass ?? null;
     let speed = 1.0;
-    if (toolClass && toolClass === block.tool) {
+    const isBestTool = toolClass && toolClass === block.tool;
+    if (isBestTool) {
       speed = item.speedMult ?? 1;
       if (toolClass === 'shears') {
         speed = block.name.startsWith('wool') ? 5 : 15;   // 06 §1 special
       }
     }
-    if (p.eyeSubmerged) speed /= 5;
+    // AMENDS 03 §15.2 / 08 §5.6.1 — Efficiency: when isBestTool && speed > 1,
+    // speed += L² + 1 (E I…V: +2/+5/+10/+17/+26). Shears on leaves/wool qualify:
+    // their 15/5 multipliers are > 1. Applied BEFORE the ÷5s (Java order).
+    const eff = getEnchantLvl(p.heldStack, ENCH.EFFICIENCY);
+    if (isBestTool && speed > 1 && eff > 0) speed += eff * eff + 1;
+    // AMENDS 03 §15.2 / 08 §5.3 — Aqua Affinity (helmet) cancels the submerged
+    // ÷5. The !onGround ÷5 is unaffected by any enchant, so floating underwater
+    // with Aqua Affinity is ÷5, not ÷25.
+    if (p.eyeSubmerged && getEnchantLvl(p.armor[0], ENCH.AQUA_AFFINITY) === 0) speed /= 5;
     if (!p.onGround) speed /= 5;
     let damage = speed / block.hardness;
     damage /= harvestOK(block, toolClass, item?.tier ?? null) ? 30 : 100;
@@ -392,16 +421,34 @@ export class Interaction {
     const toolClass = item?.toolClass ?? null;
     const toolTier = item?.tier ?? null;
 
-    const drops = wantDrops && block.drops
-      ? block.drops({ state, toolClass, toolTier, rng: this.world.rng }) : [];
-    const xp = wantXp && block.xpForMine
-      ? block.xpForMine({ state, toolClass, toolTier, rng: this.world.rng }) : 0;
+    // 08 §5.6.2/§5.6.3 — Silk Touch and Fortune. `fortune` rides in the drop ctx
+    // so each block's own closure can apply its rule (§5.6.3 is a per-block
+    // table, not one multiplier); the §2 columns are the L=0 case and are
+    // unchanged when it is 0. World.popBlock and Game's explosion path build
+    // their own ctx without these keys — neither has a player, and neither can
+    // be enchanted, so they keep the base behavior untouched.
+    const silk = getEnchantLvl(p.heldStack, ENCH.SILK_TOUCH) > 0;
+    const fortune = getEnchantLvl(p.heldStack, ENCH.FORTUNE);
+    const ctx = { state, toolClass, toolTier, rng: this.world.rng, fortune, silk };
+
+    // §5.6.2: Silk replaces the drop table for listed blocks, but the harvest-
+    // tier rule still applies — a silk stone pick on diamond ore drops nothing.
+    const silked = silk ? silkDrop(block) : null;
+    const drops = !wantDrops ? []
+      : silked ? (harvestOK(block, toolClass, toolTier) ? silked : [])
+        : (block.drops ? block.drops(ctx) : []);
+    // §5.6.2: mining XP for silk-touched ores is 0.
+    const xp = wantXp && block.xpForMine && !(silked && silkSuppressesXp(block))
+      ? block.xpForMine(ctx) : 0;
 
     // 15 §10.6 — a waterlogged block breaks to a water SOURCE, not air; drops
     // then run unchanged. `state` was read above, before the erase, so bit 7 is
     // already in hand.
     if (state & WATERLOGGED) this.world.setBlock(x, y, z, B.WATER, { state: 0, byPlayer: true });
-    else this.world.setBlock(x, y, z, B.AIR, { byPlayer: true });
+    // 08 §5.6.2 — a Silk Touch break of ice leaves AIR: suppress ice's onBroken,
+    // which would otherwise revert the cell to water (06 §5.10).
+    else this.world.setBlock(x, y, z, B.AIR,
+      { byPlayer: true, skipOnBroken: silk && silkSuppressesOnBroken(block) });
     for (const d of drops) {
       if (d.count > 0) this.game.spawnItemByName(d.name, d.count, x + 0.5, y + 0.5, z + 0.5);
     }
@@ -465,8 +512,18 @@ export class Interaction {
     const f0 = ticks / 20;
     const charge = Math.min(1, (f0 * f0 + 2 * f0) / 3);
     if (charge < 0.1) return;
-    if (!this.takeItem('arrow')) return;
+
+    // AMENDS 05 §11 / 08 §5.9 — bow enchants come from the DRAWN bow (which may
+    // be the offhand one, §7.4), not from whatever the main hand holds.
+    const bow = p.stackIn(hand);
+    const infinite = getEnchantLvl(bow, ENCH.INFINITY) > 0;
+
+    // §5.9 Infinity: fire without consuming, but still require ≥ 1 arrow (search
+    // order §7.4). "No arrow anywhere → cannot draw (unchanged)."
+    if (infinite ? !this.hasAmmo('arrow') : !this.takeItem('arrow')) return;
+
     // §7.4: a bow drawn in the offhand spends the OFFHAND bow's durability.
+    // §5.7 gates this per point inside damageIn; §5.8 Mending repairs it.
     p.damageIn(hand, 1);
     const e = this.eyePos(), d = this.lookDir();
     const speed = 3 * charge;
@@ -475,7 +532,16 @@ export class Interaction {
     const vx = d.x * speed + gaussian(rng) * inacc;
     const vy = d.y * speed + gaussian(rng) * inacc;
     const vz = d.z * speed + gaussian(rng) * inacc;
-    this.game.spawnArrow(e.x, e.y - 0.1, e.z, vx, vy, vz, p, { crit: charge >= 1, fromPlayer: true });
+    // §5.9 — the arrow entity carries {powerLvl, punchLvl, flame, noPickup}.
+    // Infinity arrows set noPickup and are never collectible (like skeleton arrows).
+    this.game.spawnArrow(e.x, e.y - 0.1, e.z, vx, vy, vz, p, {
+      crit: charge >= 1,
+      fromPlayer: true,
+      powerLvl: getEnchantLvl(bow, ENCH.POWER),
+      punchLvl: getEnchantLvl(bow, ENCH.PUNCH),
+      flame: getEnchantLvl(bow, ENCH.FLAME) > 0,
+      noPickup: infinite,
+    });
     // Self event -> flat pool (§3.3). NOT inside Game.spawnArrow: skeletons share
     // that path and their shot must render positionally.
     emitSound('item.bow.shoot', null, 1, charge);
@@ -679,6 +745,12 @@ export class Interaction {
     switch (block.interactable) {
       case 'crafting': g.openContainer('crafting'); break;
       case 'furnace': g.openContainer('furnace', hit.x, hit.y, hit.z); break;
+      // AMENDS 03 §16.1 — 08 §2 grows step 2's interactable set by these three.
+      // All need their position: the table reads shelf power around it (§4.1),
+      // and the anvil writes its degrade stage back to its own cell (§8.1).
+      case 'enchanting': g.openContainer('enchanting', hit.x, hit.y, hit.z); break;
+      case 'anvil': g.openContainer('anvil', hit.x, hit.y, hit.z); break;
+      case 'grindstone': g.openContainer('grindstone', hit.x, hit.y, hit.z); break;
       case 'chest': {
         // blocked when an opaque block sits above (06 §5.3)
         if (!BLOCKS[this.world.getBlock(hit.x, hit.y + 1, hit.z)].opaque) {
@@ -756,8 +828,10 @@ export class Interaction {
     } else if (blockId === B.LADDER) {
       if (hit.face[1] !== 0 || pos.replaced) return false;
       state = hit.face[2] === 1 ? 1 : hit.face[2] === -1 ? 2 : hit.face[0] === 1 ? 3 : 4;
-    } else if (blockId === B.FURNACE || blockId === B.CHEST) {
-      // front toward the player
+    } else if (blockId === B.FURNACE || blockId === B.CHEST || blockId === B.ANVIL) {
+      // front toward the player. 08 §2.2: the anvil's bits0–1 facing is visual
+      // only; its bits2–3 damage stage starts at 0 on a fresh place ("stage
+      // resets on re-place").
       state = (this.playerFacing() + 2) % 4;
     } else if (BLOCKS[blockId].tilesFor && (blockId === B.PUMPKIN || blockId === B.JACK_O_LANTERN)) {
       state = (this.playerFacing() + 2) % 4;

@@ -3,6 +3,7 @@ import { Mob } from './Mob.js';
 import { Goal, SwimGoal, WanderGoal, LookAtPlayerGoal, IdleLookGoal, MeleeAttackGoal } from './ai.js';
 import { creeperModel } from './models.js';
 import { startLoop } from '../../audio/engine.js';
+import { lootedRange } from '../../items/effects.js';
 
 class SwellGoal extends Goal {
   canStart() {
@@ -83,8 +84,9 @@ export class Creeper extends Mob {
     this.fuseVoice = null;
   }
 
-  dropTable() {
-    return [{ name: 'gunpowder', count: Math.floor(this.world.rng() * 3) }];
+  // 08 §5.5 — gunpowder 0–(2+L).
+  dropTable(looting = 0) {
+    return [{ name: 'gunpowder', count: lootedRange(this.world.rng, 0, 2, looting) }];
   }
 
   buildModel() { return creeperModel(); }

@@ -4,6 +4,249 @@ Deviations and ambiguity rulings. (The base-spec `.md` files were removed from
 the working tree during repo cleanup; the pre-UPDATE deviation log for the
 initial build lives in git history — `git show 8441ac9:DEVIATIONS.md`.)
 
+## E4 — 08-ENCHANTING part 2: table, catalog, anvil, grindstone (2026-07-17)
+
+Built in an isolated worktree per CLAUDE.md §8.5. E4 closes 08: §2–§5 and
+§8–§11 are implemented on top of E3's frozen `tags` contract, which was not
+modified. **08's id ranges are now populated**: blocks 105 (enchanting_table),
+106 (anvil), 107 (grindstone) — 108/109 stay reserved and unused; item 346
+(enchanted_book) — 347–369 stay reserved and unused.
+
+### The three E4 landmines E3 logged — all three resolved
+
+1. **The XP model contradicts §3.2.** §3.2 assumes a single scalar `player.xp`;
+   the code keeps `xpLevel` + `xpPoints` + `xpTotal`. **Mapped, not
+   transcribed** (`src/items/xp.js`'s header carries the derivation): the spec's
+   scalar is the identity `xp === totalXpAtLevel(xpLevel) + xpPoints`, so
+   `subtractLevels` operates on the pair directly and §3.2's
+   `xp − totalXpAtLevel(L)` term collapses to `xpPoints`. It is §3.2 exactly, not
+   an approximation. **No new `xpEarnedTotal` field was added**: `xpTotal`
+   already has precisely that definition (increment-only, never touched by
+   spending) and is already what `menus.js` renders as Score, so §3.2's counter
+   maps onto it.
+2. **The lifetime-vs-current XP save bug.** `serialize` wrote `xp: this.xpTotal`
+   (LIFETIME) and `deserialize` replayed it as CURRENT. Harmless while nothing
+   could spend XP; the table spends, so a reload would have refunded every spent
+   level. **Fixed**: `xp` now serializes `currentXp(this)` and `xpEarnedTotal`
+   carries the lifetime counter. Backward-compatible per §13 ("absent fields
+   default; no migration") — a pre-E4 save has no `xpEarnedTotal`, and its `xp`
+   *was* both lifetime and current (nothing could spend), so falling back to it is
+   exactly right. **SAVE_VERSION stays 1**, so E4 never touches the shared
+   singleton or CLAUDE.md §8.5's known-broken migration path. Asserted by
+   `x_saveNoRefund` / `x_saveKeepsScore` / `x_legacySave`.
+3. **`durability` vs `damage` are inverted.** §5.8/§8.3 write `durability`
+   meaning REMAINING; the code stores `damage` counting UP with the max on the
+   item def, so `item.durability` means the *opposite* of §8.3's
+   `result.durability`. **Mapped via four adapters** in `src/items/durability.js`
+   (`maxDur` / `damageOf` / `remaining` / `setRemaining`); no 08 code touches
+   `.damage` directly. A literal transcription would have repaired in the wrong
+   direction, silently.
+
+### Deviations
+
+1. **§3.1's L39 reference value is an arithmetic error.** §3.1 states test
+   targets "L15 → 315, L16 → 352, L30 → 1395, L31 → 1507, L39 → 3393". The first
+   four reproduce exactly. L39 does not: §3.1's own closed form gives
+   4.5(39²) − 162.5(39) + 2220 = **2727**, which is also Σ xpToNext over the
+   code's existing 06 §13 ladder, and also Java's value. The formula is normative
+   and self-consistent, so **2727 stands** and the stated 3393 is disregarded.
+   Nothing depends on it (§8.3's 39-level cap is a *level* cap, not an XP total).
+   `x_ladderAgrees` asserts the closed form against the ladder at every level 0–44.
+2. **§4.4's eligibility rule contradicts §5.1's Table columns.** §4.4 opens with
+   a derived rule ("iff it appears in §5.1's Table column for at least one
+   enchantment") and then gives an explicit enumeration. They disagree:
+   Unbreaking's Table column is "every durability item", which admits
+   `flint_and_steel` — but §4.4's list puts it under "Never". **The explicit
+   enumeration wins** (the more specific statement of intent): the 25 tools, bow,
+   shears, the 16 armor pieces, and `book`.
+3. **§4.4 requires shears to be table-enchantable; §5.1 does not allow it.**
+   §4.4's adaptation says "shears table-enchantable — we allow Efficiency/
+   Unbreaking rolls", but §5.1 lists shears in Efficiency's **Anvil+** column, so
+   `tableApplicable(efficiency, shears)` would be false and shears could only ever
+   roll Unbreaking. **Resolved** by moving the `shears` token from Efficiency's
+   anvil column to its table column: that satisfies §4.4 and leaves
+   `anvilApplicable` bit-identical, since it is the union of both columns.
+4. **§9.2's worked example is one off from its own formula.** §9.2 says
+   "Sharpness V (45) + Unbreaking III (21) → S = 66 → 33–66 XP", but its formula
+   `ceil(S/2) + randInt(0, ceil(S/2) − 1)` yields **33–65** — exactly Java's
+   `j + nextInt(j)`. The formula is implemented; §9.2 itself labels the band
+   "~[S/2, S]" (approximate), and every outcome still falls inside the quoted
+   33–66, so the checklist assertion passes either way.
+5. **§5.2.1's table has no row for the `generic` damage source.** It enumerates
+   our sources and marks only starvation/void "— none —". `generic` is the unused
+   default arg of `hurt()`. **Ruled** Protection-applicable, on the strength of
+   §5.1's "protection: vs nearly all damage" — starve/void are the only stated
+   exclusions. No live call site passes it.
+6. **§9.1 leaves two same-id NON-damageable inputs undefined.** It lists "two
+   items of the same id" as valid but defines an output only for combine-repair,
+   which it scopes to "two same-id **damageable** items". Two enchanted books have
+   no defined result. **Rejected** (`grindstoneResult` returns null) rather than
+   inventing one — any invented output destroys one of the two items.
+7. **`item.break` is still named `player.item_break`.** §12 names the hook
+   `item.break`; this codebase has had `player.item_break` since E1, and 06 §7.1
+   owns the break sound. The existing id is kept (E3 logged the same divergence);
+   all six genuinely-new §12 hooks were added under their spec names.
+8. **§11's UI glint canvas is 16×16, not 20×20.** §11 says "a per-slot 20×20
+   `<canvas>`". Icons are 16×16 atlas tiles and slots are 16 GUI-px, so a 16×16
+   canvas scaled by CSS (`image-rendering: pixelated`) is pixel-exact where 20×20
+   would resample. The visual outcome is §11's.
+9. **§5.6.3's per-level rates are implemented as exact fractions.** §5.6.3 quotes
+   e.g. "6.25% / 8.33% / 10%" for saplings; those are Java's unit fractions
+   (1/16, 1/12, 1/10) rendered to 3 s.f. The fractions are used, not the decimals.
+10. **A new leaf module `src/items/fortune.js` holds §5.6.3's math.** Its natural
+    home is `items/effects.js`, but `registry/blocks.js` consumes it from inside
+    its per-block `drops` closures, and blocks.js is a dependency-free leaf the
+    whole registry bootstraps from. Importing effects.js there would close the
+    cycle `blocks → effects → enchants → items → blocks` — and `registry/items.js`
+    builds every block-item by walking `BLOCKS` **at module-evaluation time**, so
+    under that cycle it would observe an empty array and silently generate zero
+    block-items. `fortune.js` therefore imports nothing, by design.
+11. **`World.setBlock` gains a `skipOnBroken` option.** §5.6.2 requires a Silk
+    Touch break of ice to leave **air**, but ice's own `onBroken` reverts the cell
+    to water (06 §5.10). The existing `noUpdates` flag would also kill light,
+    meshing and neighbor updates. The new flag suppresses only the outgoing
+    block's `onBroken`.
+12. **`FallingBlock` now carries the block's state nibble.** §8.6/§13 require a
+    falling anvil to re-solidify with its damage stage, but `checkFall` dropped
+    the state. Sand/gravel are state 0 and are unaffected.
+13. **`Mob.onDeath` now takes `(source, opts)`; `dropTable` takes `looting`.**
+    `Entity.die` has always passed `(source, opts)` through; `Mob.onDeath`
+    discarded them, so §5.5's "killing blow" attacker was unreachable. All nine
+    drop tables now take an optional looting level defaulting to 0 — the §2 tables
+    are the L=0 column and are unchanged when it is 0.
+14. **`arthropod` is a new per-mob flag.** §5.1 says the Smite/Bane target tags
+    "live here: undead = {zombie, skeleton}, arthropod = {spider} (per-mob boolean
+    in 05's stat blocks)". `undead` already existed; `arthropod` did not.
+15. **Tooltip text is HTML-escaped.** AMENDS 06 §15.2's multi-line tooltip needs
+    per-line colour, hence `innerHTML` — and one of those lines is `tags.name`,
+    free text the player types into the anvil (§8.4) that round-trips through the
+    save file. Unescaped, a rename to `<img src=x onerror=…>` would execute on
+    hover and persist in the world.
+
+### Rulings that look like bugs but are not — do not "fix" these
+
+- **Thorns damage IS armor-reduced here.** `'thorns'` sits in
+  `LivingEntity.ARMOR_SOURCES`, so it goes through `armorReduce`. This diverges
+  from vanilla, where Thorns bypasses armor — but §5.2.4 says the thorns damage
+  type is "**armor-applicable**", and §5.2.1's table marks thorns ✔ under
+  protection. The spec is explicit and wins over vanilla.
+- **§6 sweeps get no Sharpness/Smite/Bane.** `meleeEnchBonus` is deliberately not
+  applied to sweep secondaries: §6 is Java-1.20-exact and states that 1.21's
+  Sharpness-boosts-sweep change is "**not** adopted". Fire Aspect *does* apply to
+  secondaries (§5.4.3, MC-93669).
+- **Furnace XP bypasses Mending.** §5.8 states this consequence of 06 §11.1's
+  direct-award furnace and says to keep it.
+- **The grindstone refund spawns an orb, not points.** §9.2 is explicit that this
+  is deliberate: it lets worn Mending gear intercept the refund.
+- **Respiration gates only the breath decrement, not drowning damage.** The `air`
+  counter drives both; §5.3 says the post-empty drowning cadence is unchanged, so
+  the gate is scoped to `air > 0`.
+
+### The CRITICAL-tier review pass (CLAUDE.md §8.3) — 4 defects, all fixed
+
+A separate Opus subagent audited the enchant math and the anvil/grindstone against
+the spec. It independently reproduced the two bugs the gate suite had just caught
+(below), and found **two more that 172 module assertions and the gate suite both
+missed**:
+
+1. **HIGH — the table's item slot had no stack cap; buying destroyed up to 63
+   books.** §4.2: "item slot (**accepts one** enchantable item)". The container
+   framework had no per-slot cap — every path sized against the ITEM's max, and
+   `book` is stack-64. §4.5 step 2 rewrites a book to `count = 1` when it becomes
+   an `enchanted_book`, so shift-clicking a 64-stack in and buying **silently
+   destroyed the other 63**, with no warning and no undo. `book` is the only
+   table-eligible item that stacks — and it is the one you enchant most, for §10's
+   librarian books. **Fixed** by adding an optional `maxStack` to the slot def,
+   honoured in the click-merge, click-place and shift-move paths, and declared on
+   `enchantIn`. Both gestures now take one and leave 63 where they were.
+2. **LOW — a plain `book` (341) was a valid anvil target**, so the anvil could
+   write `tags.enchants` onto a **stack-64** item. §1 forbids exactly that
+   ("Enchanted items are all max-stack 1 except `enchanted_book`"); the result
+   glinted and merged with copies of itself up to 64. §10's "book+book combining"
+   means *enchanted*_book + enchanted_book, which §8.3 branch (b) already handled.
+   **Fixed**: only 346 is a universal anvil target now. A plain book becomes
+   enchanted only at the table, via §4.5's 341 → 346 rewrite.
+
+Both are pinned by regressions in `e4-gate.cjs`. The reviewer also confirmed as
+correct, by independent transcription: all 24 catalog rows and every §5.2 cost
+band, the §4.4 enchantability splits, §4.3's `selectEnchants` (pool/halving/
+book-removal/`weightedTake`) and its two RNG conventions, all of §8.3's worked
+examples plus input-purity, the §5.8/§8.3/§9.1 durability direction at every site,
+§9.2's refund, the conflict groups, EPF, and that bow enchants correctly read the
+**drawn** hand's bow rather than the main hand.
+
+### Not implemented — stated plainly
+
+- **§2.2's floating book on the enchanting table is NOT built.** §2.2 specs it in
+  detail: "two 6×8 px canvas-textured quads hinged along a shared spine edge,
+  hovering `y = 12/16 + 0.15 + 0.05·sin(worldTime/16)` above the block base,
+  yaw-lerping (0.1/tick) to face the nearest player within 4 blocks". The block's
+  12/16 body, its collision box and its textures are all in; the book is not. It
+  is purely cosmetic, needs a per-block animated render hook this codebase has no
+  precedent for (chunk geometry is static; the book animates per frame), and no
+  acceptance-checklist item or gate clause covers it. §2.4's "book floating on
+  table" texture row is likewise unused. **The table is fully functional without
+  it** — the §2.2 glyph particles that drift from the bookshelves while the UI is
+  open ARE implemented, and they aim at where the book would hover.
+
+### Carried forward (found here, not fixed here)
+
+- **`Arrow.serialize` does not carry the bow enchants.** §13 says "stuck arrows
+  already aren't persisted (base); no change from flame/punch flags" — so this is
+  spec-sanctioned, not a defect. Noted only because a future reader of
+  `serialize()` will notice `powerLvl`/`flame` missing.
+- **E2's wool-catches gate remains seed-flaky** (E3 logged it). Re-confirmed here
+  as pre-existing, not an E4 regression: four consecutive runs against identical
+  code gave 24/24, 23/1, 24/24, 24/24, and `src/world/fire.js` is byte-identical
+  to `07d9919`. E4's only World.js changes are `setBlock`'s `skipOnBroken` (default
+  false → inert unless passed) and `checkFall` forwarding the state nibble (0 for
+  sand/gravel → inert). Untouched.
+
+### Verified
+
+**172 browser assertions, 0 console errors** (`scratchpad/e4.cjs`): §2 registry +
+id ranges + recipes, §3 XP math incl. the save-refund landmine and a legacy save,
+§4 shelf power / offer ranges / purity / enchantability / eligibility, §10
+enchanted book incl. Mending-only-via-treasure, §5.1/§5.2 catalog incl. every
+cost band and anvil multiplier, §5.4 melee bonuses, §5.5 looting, §5.6 fortune +
+silk, §5.7 unbreaking rates, §5.2.1 EPF, §8 anvil incl. all four worked examples,
+§9 grindstone, §11 glint, §12 hooks, plus 28 live in-world checks.
+
+Gate items measured — a level-30 offer on a 15-shelf ring (the bottom slot is
+exactly 30 across all 3000 seeds); Fortune III on diamond ore over 600 real
+breaks averages 2.20 with max 4; Silk Touch lifts glass→glass, stone→stone,
+diamond_ore→ore at 0 XP, ice→ice leaving air; Looting III gives flesh 0–5 and
+pearls 0–4; Mending repairs 14 durability from a 7-XP orb and banks 0 XP.
+A second suite (`scratchpad/e4-gate.cjs`, **25/25**) drives the assigned gate
+through the real container screens and the real click path rather than the
+modules. **It earned its keep — it caught two bugs 172 module assertions could
+not see, both in the seam between the 08 logic and the container framework:**
+
+- **Stale offers after a purchase.** `buyOffer` forced a recompute by setting
+  `offerKey = null` — but `null` is *also* the legitimate key of an ineligible
+  item, so `refreshOffers`'s `if (key === this.offerKey) return` early-out fired
+  and left the purchased item's offers on screen, which §4.5 step 3 forbids.
+  (The buttons did correctly disable, so it was cosmetic, not exploitable.)
+  Fixed with a `Symbol` sentinel that no key can equal.
+- **The anvil/grindstone output slots were never takeable — and would have
+  thrown.** They used custom regions (`anvilOut` / `grindOut`), so
+  `takeResult` took its *other* branch: `slot.set(null)` (my defs have no `set`
+  → TypeError) then `slot.onTakeOut?.()` (I had wired `onCraft`) → the inputs
+  would never be consumed. **My own gate test hid this by calling
+  `takeAnvilOutput()` directly instead of clicking.** Fixed by using the
+  framework's `result` region — the computed-output shape these slots always
+  were — whose shift path also correctly refuses to consume when the inventory
+  is full. The test now goes through `onSlotClick`.
+  A follow-on that surfaced with it: `takeResult` hands the stack to the cursor
+  **before** the take handler runs, so an unaffordable/"Too Expensive!" anvil
+  result would have been a **free item**. `takeResult` now consults an optional
+  `canTake()` first (asserted: cost > 39 yields nothing, keeps both inputs, and
+  spends no levels).
+
+Regression: E3 59/59, E2 24/24, E1 audio 35/35, RMB 16/16, in-game 7/7 —
+**338 assertions total, all passing**; `npx vite build` clean. (E2 is 24/24 or
+23/24 depending on the world seed — see the flake note above.)
+
 ## E3 — 08-ENCHANTING part 1: the `tags` contract, sweep attack, offhand (2026-07-17)
 
 Built to `08-ENCHANTING.md` §1, §6, §7, §12 (the sweep hook), §13. **§2–§5 and

@@ -853,6 +853,75 @@ for (const inst of Object.keys(NOTE)) {
 }
 EVENTS['block.note'] = EVENTS['block.note.harp'];      // default instrument
 
+// ------------------------------------------------- 08-ENCHANTING §12 hooks
+//
+// 08 §12 names eight hooks. Two already existed and are unchanged:
+// `player.attack.sweep` (defined above, E3) and the durability-break voice,
+// which this codebase calls `player.item_break` — 08 §12 names that one
+// `item.break`. The existing id is kept rather than renamed: it predates 08,
+// 06 §7.1 owns the break sound, and E3 already logged the naming divergence.
+// The six below are new. All are 100% synthesized (16's absolute rule).
+
+// Vanilla block.enchantment_table.use: the shimmer of the deal closing. Self
+// event — the table is always right in front of you.
+def('enchant.apply', {
+  ...UI, cap: 2, capKey: 'enchant', jitter: 0,
+  recipe: (v, t, p, g) => {
+    chime(v, t, { freq: 880, ratio: 3.53, index: 4, dur: 0.6, gain: 0.4 * g, pitch: p });
+    chime(v, t + 0.06, { freq: 1320, ratio: 3.53, index: 4, dur: 0.5, gain: 0.3 * g, pitch: p });
+    return whoosh(v, t, { f0: 600, f1: 3000, dur: 0.45, gain: 0.2 * g, pitch: p });
+  },
+});
+
+// block.anvil.use — a worked clang: iron core + a short ring-out.
+def('anvil.use', {
+  bus: 'sfx', maxDist: 16, capKey: 'anvil', priority: P.NEAR, replicate: true,
+  recipe: (v, t, p, g) => {
+    thud(v, t, { f0: 260, f1: 110, dur: 0.09, gain: 0.5 * g, pitch: p });
+    return BREAK_LAYERS.metal(v, t, p, 0.5 * g);
+  },
+});
+
+// block.anvil.land — heavier and lower than .use: mass hitting ground.
+// `pitchMult` carries fall severity from the call site (the ui.gamemode.switch
+// trick), so a longer drop lands duller.
+def('anvil.land', {
+  bus: 'sfx', maxDist: 32, capKey: 'anvilLand', priority: P.NEAR, replicate: true,
+  recipe: (v, t, p, g) => {
+    thud(v, t, { f0: 180, f1: 60, dur: 0.22, gain: 0.7 * g, pitch: p });
+    return BREAK_LAYERS.metal(v, t + 0.01, p * 0.6, 0.35 * g);
+  },
+});
+
+// block.anvil.destroy — the clang collapsing into debris.
+def('anvil.destroy', {
+  bus: 'sfx', maxDist: 32, capKey: 'anvilDestroy', priority: P.NEAR, replicate: true,
+  recipe: (v, t, p, g) => {
+    BREAK_LAYERS.metal(v, t, p, 0.6 * g);
+    crackle(v, t + 0.03, { density: 2.0, freq: 800, dur: 0.3, gain: 0.45 * g, pitch: p });
+    return whoosh(v, t, { f0: 900, f1: 180, dur: 0.3, gain: 0.35 * g, pitch: p });
+  },
+});
+
+// block.grindstone.use — stone-on-metal rasp, no clang.
+def('grindstone.use', {
+  bus: 'sfx', maxDist: 16, capKey: 'grindstone', priority: P.NEAR, replicate: true,
+  recipe: (v, t, p, g) => {
+    noiseBurst(v, t, { src: 'white', filter: 'bp', freq: 2600, Q: 0.8, dur: 0.28, gain: 0.4 * g, pitch: p });
+    return sweep(v, t, { src: 'osc', wave: 'sawtooth', f0: 420, f1: 260, dur: 0.3, gain: 0.18 * g, pitch: p });
+  },
+});
+
+// §5.8 — the orb going into gear instead of the bar. A variant of the xp-pickup
+// voice: same family, but it resolves upward rather than chiming.
+def('mending.repair', {
+  ...UI, cap: 2, capKey: 'mending', jitter: 1,
+  recipe: (v, t, p, g) => {
+    chime(v, t, { freq: 1180, ratio: 2.0, index: 2, dur: 0.28, gain: 0.3 * g, pitch: p });
+    return pluck(v, t + 0.03, { freq: 1560, dur: 0.09, gain: 0.25 * g, pitch: p });
+  },
+});
+
 // ---------------------------------------------------------------- helpers
 
 // BUFFERS is filled in place by bakeBuffers(), so reads must be deferred to

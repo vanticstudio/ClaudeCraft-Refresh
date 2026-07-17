@@ -285,6 +285,65 @@ P.glass = (c, x, y) => glassy(c, x, y, '#c9dbdc');
 P.glowstone = (c, x, y, r) => blotch(c, x, y, r, '#f9d49c', '#d2a04a', 10);
 P.obsidian = (c, x, y, r) => blotch(c, x, y, r, '#1b1029', '#3b2754', 6);
 
+// ============ 08-ENCHANTING §2.4 ============
+// The enchanting_table BOTTOM face reuses the obsidian recipe directly (§2.4),
+// so it needs no painter of its own — the block's tile list names 'obsidian'.
+
+P.enchanting_table_top = (c, x, y, r) => {
+  noise(c, x, y, r, '#2a4746', 8);                        // teal cloth
+  for (const [gx, gy] of [[1, 1], [12, 1], [1, 12], [12, 12]])   // 4 corner diamond glints
+    rect(c, x, y, gx, gy, 3, 3, '#4aedd9');
+  rect(c, x, y, 6, 6, 4, 4, '#e9e9e9');                   // open book, centre
+  rect(c, x, y, 8, 6, 1, 4, '#d0342c');                   // ribbon
+};
+
+P.enchanting_table_side = (c, x, y, r) => {
+  blotch(c, x, y, r, '#1b1029', '#3b2754', 6);            // obsidian body
+  rect(c, x, y, 0, 0, 16, 2, '#d0342c');                  // top 2 rows: cloth overhang
+  rect(c, x, y, 7, 7, 2, 2, '#4aedd9');                   // gem set mid-face
+};
+
+// §2.4: stage 1 adds 2 one-px zigzag cracks; stage 2 adds 4 cracks + 2 chipped
+// (transparent) corner pixels. Stage is bits2–3 of the state nibble (§2.2).
+const anvilTop = stage => (c, x, y, r) => {
+  noise(c, x, y, r, '#3f3f3f', 6);
+  rect(c, x, y, 0, 0, 16, 1, '#2a2a2a');                  // 1px rim
+  rect(c, x, y, 0, 15, 16, 1, '#2a2a2a');
+  rect(c, x, y, 0, 0, 1, 16, '#2a2a2a');
+  rect(c, x, y, 15, 0, 1, 16, '#2a2a2a');
+  const cracks = stage === 0 ? 0 : stage === 1 ? 2 : 4;
+  for (let i = 0; i < cracks; i++) {
+    let cx = 3 + Math.floor(r() * 10), cy = 3 + Math.floor(r() * 4) + i * 2;
+    for (let s = 0; s < 6; s++) {                         // one-px zigzag
+      px(c, x, y, cx, cy, '#1f1f1f');
+      cx += r() < 0.5 ? 1 : 0;
+      cy += r() < 0.5 ? 1 : 0;
+    }
+  }
+  if (stage >= 2) {                                       // 2 chipped corner pixels
+    c.clearRect(x + 0, y + 0, 1, 1);
+    c.clearRect(x + 15, y + 15, 1, 1);
+  }
+};
+P.anvil_top_0 = anvilTop(0);
+P.anvil_top_1 = anvilTop(1);
+P.anvil_top_2 = anvilTop(2);
+
+P.anvil_side = (c, x, y, r) => {
+  noise(c, x, y, r, '#464646', 8);
+  rect(c, x, y, 0, 13, 16, 3, '#303030');                 // darker underside rows
+};
+
+P.grindstone_side = (c, x, y, r) => {                     // wheel side
+  rings(c, x, y, r, '#8a8a8a', '#6f6f6f');
+  rect(c, x, y, 0, 0, 16, 1, '#565656');                  // 1px outer rim
+  rect(c, x, y, 0, 15, 16, 1, '#565656');
+  rect(c, x, y, 0, 0, 1, 16, '#565656');
+  rect(c, x, y, 15, 0, 1, 16, '#565656');
+};
+
+P.grindstone_tread = (c, x, y, r) => noise(c, x, y, r, '#7f7f7f', 8);
+
 P.crafting_table_top = (c, x, y, r) => {
   planks(c, x, y, r, '#a76e35');
   for (let i = 0; i < 16; i++) {
@@ -1058,6 +1117,15 @@ P.item_book = (c, x, y) => {
   rect(c, x, y, 11, 4, 2, 9, '#f4f4f4');
   rect(c, x, y, 3, 3, 1, 10, '#4a2d18');
   rect(c, x, y, 5, 5, 4, 1, '#8a5a3a');
+};
+// 08 §2.4 — the base book silhouette recolored to a violet cover, keeping the
+// page-edge column. The glint is NOT baked in: §11 composites it over the icon
+// at runtime (source-atop), so this sprite must stay plain.
+P.item_enchanted_book = (c, x, y) => {
+  rect(c, x, y, 3, 3, 10, 10, '#6b2f7a');           // violet cover
+  rect(c, x, y, 11, 4, 2, 9, '#e9e9e9');            // page edge column
+  rect(c, x, y, 3, 3, 1, 10, '#4a1f55');            // spine
+  rect(c, x, y, 6, 7, 2, 2, '#4aedd9');             // 2×2 clasp
 };
 P.item_redstone = (c, x, y, r) => {
   for (let i = 0; i < 26; i++)

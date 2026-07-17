@@ -125,6 +125,31 @@ export class Particles {
       0, 0.03, 0, 16, -0.001);
   }
 
+  /**
+   * 08 §2.2 / §4.5 — the enchanting table's glyphs: white 1-px sprites drifting
+   * from a bookshelf position toward the table's floating book, lifetime 20–30
+   * ticks. Cosmetic only.
+   *
+   * §2.2 spawns 2/tick from random ACTIVE bookshelf positions while the UI is
+   * open; §4.5 fires a burst of 8–12 at the item slot on purchase. Both land
+   * here — `from` is a shelf position when there is one, else the table itself.
+   */
+  enchantGlyphs(pos, from = null, count = 10) {
+    if (!pos) return;
+    const bx = pos.x + 0.5, by = pos.y + 12 / 16 + 0.15, bz = pos.z + 0.5;
+    for (let i = 0; i < count; i++) {
+      const sx = from ? from.x + 0.5 : bx + (Math.random() - 0.5) * 1.2;
+      const sy = from ? from.y + 0.5 : by + Math.random() * 0.4;
+      const sz = from ? from.z + 0.5 : bz + (Math.random() - 0.5) * 1.2;
+      const life = 20 + ((Math.random() * 11) | 0);
+      // Drift toward the book: velocity is the remaining gap spread over life.
+      const m = this.colored(0xffffff, 0.045);
+      this.spawn(m, sx, sy, sz,
+        (bx - sx) / life, (by - sy) / life, (bz - sz) / life,
+        life, 0);
+    }
+  }
+
   teleport(x, y, z, height = 2.9) {
     for (let i = 0; i < 12; i++) {
       const m = this.colored(0xe079fa, 0.06);

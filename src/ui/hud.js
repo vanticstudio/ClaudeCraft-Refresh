@@ -2,6 +2,7 @@
 // Dirty-checked DOM writes only (01 §15.3).
 import { ITEMS } from '../registry/items.js';
 import { BLOCKS } from '../registry/blocks.js';
+import { isGlinted, paintGlintIcon } from '../render/glint.js';
 
 export function iconCss(el, tile) {
   const col = tile & 31, row = tile >> 5;
@@ -16,6 +17,41 @@ export function tileForItemId(game, id) {
   if (item.sprite && game.atlas.TILE[item.sprite] !== undefined) return game.atlas.TILE[item.sprite];
   if (item.place != null && BLOCKS[item.place]?.tileIndex) return BLOCKS[item.place].tileIndex[4];
   return 0;
+}
+
+// 08 §11 — the shared glint frame. Advanced at 4 Hz by Hud.update (one counter
+// for the whole UI, so every enchanted slot shimmers in step). §11: "Re-composited
+// at 4 Hz, only for enchanted slots currently on screen".
+export const glintFrame = { n: 0 };
+
+/**
+ * 08 §11 — paint one slot icon. An enchanted stack gets a <canvas> with the
+ * silhouette-clipped shimmer; everything else keeps the plain atlas-background
+ * div, which costs nothing.
+ *
+ * Both the HUD hotbar and every container slot funnel through here, so the two
+ * cannot drift apart on which stacks glint.
+ */
+export function paintSlotIcon(el, game, stack) {
+  const tile = tileForItemId(game, stack.id);
+  if (!isGlinted(stack)) {
+    if (el._glintCanvas) { el._glintCanvas.remove(); el._glintCanvas = null; }
+    iconCss(el, tile);
+    return;
+  }
+  let c = el._glintCanvas;
+  if (!c) {
+    c = document.createElement('canvas');
+    c.width = 16; c.height = 16;
+    c.className = 'glint-canvas';
+    el.appendChild(c);
+    el._glintCanvas = c;
+  }
+  // The div's own atlas background would show through the canvas's transparent
+  // pixels, so it must be cleared once the canvas takes over.
+  el.classList.remove('icon');
+  el.style.backgroundPosition = '';
+  paintGlintIcon(c, game.atlas, tile, glintFrame.n);
 }
 
 export class Hud {
@@ -156,6 +192,9 @@ export class Hud {
     const p = this.game.player;
     if (!p) return;
 
+    // 08 §11 — advance the shared glint frame at 4 Hz (every 5 ticks at 20 TPS).
+    glintFrame.n = ((this.game.world?.time ?? 0) / 5) | 0;
+
     // 18 §4.3 — the survival rows are hidden in creative; skip their writes
     // entirely, or update() would immediately undo rebuild()'s display:none
     // (the air row in particular sets its own display every frame).
@@ -221,7 +260,7 @@ export class Hud {
   paintSlot(d, s) {
     const icon = d.children[0], count = d.children[1], dur = d.children[2];
     if (s) {
-      iconCss(icon, tileForItemId(this.game, s.id));
+      paintSlotIcon(icon, this.game, s);      // 08 §11 — glints when enchanted
       icon.style.display = 'block';
       count.textContent = s.count > 1 ? s.count : '';
       const item = ITEMS.get(s.id);
@@ -241,7 +280,12 @@ export class Hud {
   updateHotbar(p) {
     for (let i = 0; i < 9; i++) {
       const s = p.inventory[i];
-      const sig = s ? `${s.id}|${s.count}|${s.damage ?? ''}|${i === p.selectedSlot}` : `e|${i === p.selectedSlot}`;
+      // 08 §11 — the glint frame joins the signature ONLY for an enchanted
+      // stack, so it re-composites at 4 Hz while every plain slot keeps its
+      // "nothing changed → don't touch the DOM" path ("only for enchanted slots
+      // currently on screen").
+      const gs = s && isGlinted(s) ? `|${glintFrame.n}` : '';
+      const sig = s ? `${s.id}|${s.count}|${s.damage ?? ''}|${i === p.selectedSlot}${gs}` : `e|${i === p.selectedSlot}`;
       if (!this.setDirty('hb' + i, sig)) continue;
       const d = this.slots[i];
       d.classList.toggle('selected', i === p.selectedSlot);
@@ -249,7 +293,7 @@ export class Hud {
     }
     // 08 §7.5 — offhand slot, rendered only when the offhand is non-empty.
     const o = p.offhand;
-    const osig = o ? `${o.id}|${o.count}|${o.damage ?? ''}` : 'e';
+    const osig = o ? `${o.id}|${o.count}|${o.damage ?? ''}${isGlinted(o) ? `|${glintFrame.n}` : ''}` : 'e';
     if (this.setDirty('offhand', osig)) {
       this.el.offhand.classList.toggle('filled', !!o);
       this.paintSlot(this.offhandSlot, o);

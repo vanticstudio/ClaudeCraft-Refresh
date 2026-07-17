@@ -4,6 +4,7 @@ import { Goal, SwimGoal, WanderGoal, LookAtPlayerGoal, IdleLookGoal, FleeSunGoal
 import { humanoidModel, skeletonBow } from './models.js';
 import { Arrow } from '../Arrow.js';
 import { emitSound, at } from '../../audio/engine.js';
+import { lootedRange } from '../../items/effects.js';
 
 class BowAttackGoal extends Goal {
   constructor(mob) {
@@ -103,11 +104,12 @@ export class Skeleton extends Mob {
     ];
   }
 
-  dropTable() {
+  // 08 §5.5 — bones/arrows 0–(2+L).
+  dropTable(looting = 0) {
     const r = this.world.rng;
     return [
-      { name: 'bone', count: Math.floor(r() * 3) },
-      { name: 'arrow', count: Math.floor(r() * 3) },
+      { name: 'bone', count: lootedRange(r, 0, 2, looting) },
+      { name: 'arrow', count: lootedRange(r, 0, 2, looting) },
     ];
   }
 

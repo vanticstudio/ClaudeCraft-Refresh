@@ -27,6 +27,7 @@ import { placeTree } from './world/gen/features.js';
 import { hasLineOfSight } from './world/raycast.js';
 import { DayNight } from './env/DayNight.js';
 import { Particles } from './render/Particles.js';
+import { isGlinted, addGlintPass, tickGlint } from './render/glint.js';
 import { AABB } from './math/aabb.js';
 import { createMob, MobSpawner, HOSTILE_TYPES } from './entities/mobs/index.js';
 import { emitSound, startLoop, at } from './audio/engine.js';
@@ -250,6 +251,9 @@ export class Game {
 
   render(alpha) {
     this.renderer.clear(true, true, true);
+    // 08 §11 — animate the shared glint texture offset (0.008 / 0.004 per frame).
+    // One material instance drives every glinted mesh, which §11 accepts.
+    tickGlint();
     if (!this.world || this.state === STATE.TITLE) {
       // Still drive the audio frame with no listener: the music lookahead
       // scheduler (16 §1.5) and the §4A theme layer must run on the title
@@ -390,8 +394,13 @@ export class Game {
     const vm = this.viewmodel;
     const held = this.player.heldStack;
     const id = held?.id;
-    if (id !== vm.itemId) {
+    // 08 §11 — the held viewmodel glints too, so the rebuild key must include
+    // whether the stack is enchanted: two swords of the same id, one enchanted,
+    // would otherwise share a cached mesh and the glint would not follow the swap.
+    const glint = isGlinted(held);
+    if (id !== vm.itemId || glint !== vm.glint) {
       vm.itemId = id;
+      vm.glint = glint;
       vm.group.clear();
       if (id !== undefined && id !== null) {
         const item = ITEMS.get(id);
@@ -406,6 +415,7 @@ export class Game {
           mesh.rotation.set(0.25, -Math.PI / 2 + 0.35, 0.44);
         }
         vm.group.add(mesh);
+        if (glint) addGlintPass(mesh);
       }
       vm.switchAnim = 3;
     }
@@ -622,9 +632,13 @@ export class Game {
       // override cannot cover it: 05 §12.3's blast shove is its own code path.
       // Blocks and every other entity are still thrown normally (§4.2).
       if (e.creative) continue;
-      e.vel.x += (cx - x) / len * impact;
-      e.vel.y += (cy - y) / len * impact;
-      e.vel.z += (cz - z) / len * impact;
+      // 08 §5.2.1 — Blast Protection scales the explosion knockback impact by
+      // (1 − 0.15 × L), from the HIGHEST single level among worn pieces. Only
+      // the player wears armor; every other entity keeps impact unscaled.
+      const kbImpact = impact * (e.armor ? explosionKnockbackScale(e.armor) : 1);
+      e.vel.x += (cx - x) / len * kbImpact;
+      e.vel.y += (cy - y) / len * kbImpact;
+      e.vel.z += (cz - z) / len * kbImpact;
     }
     this.particles?.explosion?.(x, y, z, power);
     // One emit covers both §5.2 triggers (creeper 05 §12 and TNT 06 §5.6); the
@@ -686,8 +700,8 @@ export class Game {
     return this.entities.add(new ThrownProjectile(this.world, kind, x, y, z, vx, vy, vz, owner));
   }
 
-  spawnFallingBlock(id, x, y, z) {
-    return this.entities.add(new FallingBlock(this.world, id, x + 0.5, y, z + 0.5));
+  spawnFallingBlock(id, x, y, z, state = 0) {
+    return this.entities.add(new FallingBlock(this.world, id, x + 0.5, y, z + 0.5, state));
   }
 
   igniteTnt(x, y, z, fuse = 80) {

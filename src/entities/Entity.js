@@ -157,11 +157,25 @@ export class LivingEntity extends Entity {
     this.fireTicks = 0;
   }
 
+  /**
+   * Ignite for `ticks` (never shortens an existing burn). 08 §5.4.3 / §5.9's
+   * Flame call this; Player overrides it to apply §5.2.1's Fire Protection
+   * reduction, so every ignition site routes through here rather than assigning
+   * fireTicks directly.
+   */
+  setOnFire(ticks) {
+    this.fireTicks = Math.max(this.fireTicks, Math.max(0, Math.floor(ticks)));
+  }
+
   armorPoints() { return 0; }
   armorToughness() { return 0; }
 
   // Armor applicability by damage source (05 §14.2)
-  static ARMOR_SOURCES = new Set(['melee', 'arrow', 'explosion', 'cactus', 'thorns']);
+  // 08 §8.6 adds 'anvil': the falling anvil's damage is armor-applicable (and
+  // 08 §5.2.1 folds it into blast_protection). 'thorns' was already here and
+  // stays — 08 §5.2.4 explicitly makes Thorns armor-applicable too, which
+  // diverges from vanilla on purpose.
+  static ARMOR_SOURCES = new Set(['melee', 'arrow', 'explosion', 'cactus', 'thorns', 'anvil']);
 
   // Shared damage pipeline (05 §14). opts: {dirX, dirZ, knockback=0.4, attacker}
   hurt(amount, source = 'generic', opts = {}) {
@@ -187,6 +201,12 @@ export class LivingEntity extends Entity {
       dmg = this.armorReduce(dmg);
       this.damageArmor?.(dmg);
     }
+    // 08 §5.2.1 — the EPF reduction runs AFTER the armor-points step, and for
+    // the sources armor does NOT reduce (fall, fire, lava, drown, suffocate) it
+    // runs "directly on the raw amount" — which is why it sits outside the
+    // branch above rather than inside it. Only Player implements the hook; mobs
+    // wear no armor and leave dmg untouched.
+    dmg = this.reduceByEnchants?.(dmg, source, opts) ?? dmg;
     this.health -= dmg;
     this.hurtTime = 10;
     if (!noNewWindow && opts.dirX !== undefined) {

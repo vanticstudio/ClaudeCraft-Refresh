@@ -6,6 +6,7 @@ import { ITEMS } from '../registry/items.js';
 import { AABB } from '../math/aabb.js';
 import { emitSound } from '../audio/engine.js';
 import { tagsEqual, cloneTags } from '../items/tags.js';
+import { isGlinted, addGlintPass } from '../render/glint.js';
 
 // ---- shared visual helpers (initialised once from main with the atlas) ----
 
@@ -190,6 +191,9 @@ export class ItemEntity extends Entity {
       dup.position.set((i + 1) * 0.06 - 0.09, i * 0.02, (i + 1) * 0.05 - 0.08);
       group.add(dup);
     }
+    // 08 §11 — a dropped enchanted stack gets the additive glint pass, sharing
+    // each mesh's geometry. Added last so the count-duplicates are covered too.
+    if (isGlinted(this.stack)) addGlintPass(group);
     return group;
   }
 

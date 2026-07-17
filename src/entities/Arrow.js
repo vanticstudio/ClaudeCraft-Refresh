@@ -5,10 +5,15 @@ import { raycastBlocks } from '../world/raycast.js';
 import { tileSpriteGeometry, makeAtlasMaterial, entityAtlas } from './ItemEntity.js';
 import { idOf } from '../registry/items.js';
 import { emitSound, at } from '../audio/engine.js';
-import { matOf } from '../registry/blocks.js';
+import { matOf, B } from '../registry/blocks.js';
 
 export class Arrow extends Entity {
-  constructor(world, x, y, z, vx, vy, vz, owner, { crit = false, fromPlayer = false } = {}) {
+  constructor(world, x, y, z, vx, vy, vz, owner, {
+    crit = false, fromPlayer = false,
+    // 08 §5.9 — bow enchant payload. Skeleton bows are visual only (05 §3) and
+    // are never enchanted, so these all default off for them.
+    powerLvl = 0, punchLvl = 0, flame = false, noPickup = false,
+  } = {}) {
     super(world, x, y, z);
     this.type = 'arrow';
     this.width = 0.5; this.height = 0.5;
@@ -16,6 +21,10 @@ export class Arrow extends Entity {
     this.owner = owner;
     this.crit = crit;
     this.fromPlayer = fromPlayer;
+    this.powerLvl = powerLvl;
+    this.punchLvl = punchLvl;
+    this.flame = flame;
+    this.noPickup = noPickup;
     this.stuck = false;
     this.stuckAge = 0;
     this.aimFromVelocity();
@@ -35,7 +44,8 @@ export class Arrow extends Entity {
     this.baseTick();
     if (this.stuck) {
       if (++this.stuckAge > 1200) { this.dead = true; return; }
-      if (this.fromPlayer) this.tryPickup();
+      // 08 §5.9 — an Infinity arrow renders normally but is never collectible.
+      if (this.fromPlayer && !this.noPickup) this.tryPickup();
       return;
     }
     if (this.age > 1200) { this.dead = true; return; }
@@ -69,12 +79,26 @@ export class Arrow extends Entity {
       if (target.tryDodgeProjectile?.()) {
         // treated as a miss; arrow keeps flying
       } else {
-        let dmg = Math.ceil(speed * 2);
+        // 08 §5.9 Power — base 2 becomes 2 + 0.5L + 0.5 (§5.1); the crit bonus
+        // then applies to the BOOSTED value (Java order). L=0 keeps the base ×2
+        // exactly, so unenchanted and skeleton arrows are unchanged.
+        const mult = this.powerLvl > 0 ? 2 + 0.5 * this.powerLvl + 0.5 : 2;
+        let dmg = Math.ceil(speed * mult);
         if (this.crit) dmg += Math.floor(this.world.rng() * (Math.floor(dmg / 2) + 2));
         const h = Math.hypot(v.x, v.z) || 1;
+        const nx = v.x / h, nz = v.z / h;
         target.hurt(dmg, 'arrow', {
-          dirX: v.x / h, dirZ: v.z / h, knockback: 0.4, attacker: this.owner,
+          dirX: nx, dirZ: nz, knockback: 0.4, attacker: this.owner,
         });
+        // §5.9 Punch — an EXTRA velocity added after the normal 0.4 knockback
+        // (not a knockback multiplier): (nx × 0.6L, 0.1, nz × 0.6L).
+        if (this.punchLvl > 0 && target.vel) {
+          target.vel.x += nx * 0.6 * this.punchLvl;
+          target.vel.y += 0.1;
+          target.vel.z += nz * 0.6 * this.punchLvl;
+        }
+        // §5.9 Flame — 100 ticks (5 s) on an entity hit.
+        if (this.flame && !target.dead) target.setOnFire(100);
         emitSound('entity.arrow.hit_mob',                     // §3.3 (05 §11)
           at(target.pos.x, target.pos.y + target.height / 2, target.pos.z));
         this.dead = true;
@@ -83,6 +107,13 @@ export class Arrow extends Entity {
     }
 
     if (blockHit && blockHit.t <= speed) {
+      // 08 §5.9 Flame — a flaming arrow striking TNT ignites it (06 §5.6
+      // ignition source (d)). Checked before the arrow sticks.
+      if (this.flame && blockHit.id === B.TNT) {
+        this.world.igniteTnt?.(blockHit.x, blockHit.y, blockHit.z, 80);
+        this.dead = true;
+        return;
+      }
       this.pos.x = blockHit.px; this.pos.y = blockHit.py - 0.25; this.pos.z = blockHit.pz;
       this.stuck = true;
       this.vel.x = this.vel.y = this.vel.z = 0;
@@ -95,6 +126,8 @@ export class Arrow extends Entity {
 
     this.pos.x += v.x; this.pos.y += v.y; this.pos.z += v.z;
     this.updateMedium();
+    // 08 §5.9 — Flame is extinguished (flag cleared) if the arrow enters water.
+    if (this.flame && this.inWater) this.flame = false;
     const drag = this.inWater ? 0.6 : 0.99;
     v.x *= drag; v.y *= drag; v.z *= drag;
     v.y -= 0.05;

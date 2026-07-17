@@ -7,6 +7,7 @@ import {
 import { cowModel, pigModel, sheepModel, chickenModel } from './models.js';
 import { idOf } from '../../registry/items.js';
 import { emitSound, at } from '../../audio/engine.js';
+import { lootedRange } from '../../items/effects.js';
 
 class Passive extends Mob {
   constructor(world, x, y, z, opts = {}) {
@@ -66,11 +67,12 @@ export class Cow extends Passive {
     this.breedFoodId = idOf('wheat');
     this.setupGoals(2.0);
   }
-  dropTable() {
+  // 08 §5.5 — beef 1–(3+L), leather 0–(2+L).
+  dropTable(looting = 0) {
     const r = this.world.rng;
     return [
-      { name: 'beef', count: 1 + Math.floor(r() * 3) },
-      { name: 'leather', count: Math.floor(r() * 3) },
+      { name: 'beef', count: lootedRange(r, 1, 3, looting) },
+      { name: 'leather', count: lootedRange(r, 0, 2, looting) },
     ];
   }
   buildModel() { return cowModel(); }
@@ -86,8 +88,9 @@ export class Pig extends Passive {
     this.breedFoodId = idOf('carrot');
     this.setupGoals(1.25);
   }
-  dropTable() {
-    return [{ name: 'porkchop', count: 1 + Math.floor(this.world.rng() * 3) }];
+  // 08 §5.5 — porkchop 1–(3+L).
+  dropTable(looting = 0) {
+    return [{ name: 'porkchop', count: lootedRange(this.world.rng, 1, 3, looting) }];
   }
   buildModel() { return pigModel(); }
 }
@@ -142,8 +145,9 @@ export class Sheep extends Passive {
     if (this.parts.headWool) this.parts.headWool.visible = !this.sheared;
   }
 
-  dropTable() {
-    const out = [{ name: 'mutton', count: 1 + Math.floor(this.world.rng() * 2) }];
+  // 08 §5.5 — mutton 1–(2+L); wool is a FIXED drop and Looting never touches it.
+  dropTable(looting = 0) {
+    const out = [{ name: 'mutton', count: lootedRange(this.world.rng, 1, 2, looting) }];
     if (!this.sheared) out.push({ name: 'wool_white', count: 1 });
     return out;
   }
@@ -192,10 +196,11 @@ export class Chicken extends Passive {
     }
   }
 
-  dropTable() {
+  // 08 §5.5 — feathers 0–(2+L); chicken meat is a FIXED drop, unaffected.
+  dropTable(looting = 0) {
     return [
       { name: 'chicken', count: 1 },
-      { name: 'feather', count: Math.floor(this.world.rng() * 3) },
+      { name: 'feather', count: lootedRange(this.world.rng, 0, 2, looting) },
     ];
   }
 

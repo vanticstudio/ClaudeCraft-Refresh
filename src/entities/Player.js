@@ -7,7 +7,15 @@ import { collidesAny, overlapsBlockId } from '../physics/collision.js';
 import { AABB } from '../math/aabb.js';
 import { emitSound, audio } from '../audio/engine.js';
 import { GameMode, normalizeGameMode, KEYBINDS } from '../constants.js';
-import { tagsEqual, cloneStack } from '../items/tags.js';
+import { tagsEqual, cloneStack, getEnchantLvl } from '../items/tags.js';
+import { ENCH } from '../items/enchants.js';
+import {
+  unbreakingToolPoints, unbreakingArmorPoints, damageOf, remaining, setRemaining,
+} from '../items/durability.js';
+import {
+  currentXp, splitmix32, subtractLevels, xpToNext as xpToNextPoints,
+} from '../items/xp.js';
+import { epfMultiplier, rollThorns, fireTicksAfterProtection } from '../items/effects.js';
 
 const DEG = Math.PI / 180;
 
@@ -48,11 +56,16 @@ export class Player extends LivingEntity {
     this.foodTickTimer = 0;
     this.foodPoisonTicks = 0;
 
-    // XP (06 §13)
+    // XP (06 §13). xpTotal is the LIFETIME counter (08 §3.2's xpEarnedTotal):
+    // increment-only, never touched by spending, and what Score renders.
     this.xpTotal = 0;
     this.xpLevel = 0;
     this.xpPoints = 0;
     this.xpPickupCooldown = 0;
+
+    // 08 §3.3 — enchantment seed. Rerolled ONLY when an enchant is purchased.
+    // deserialize() overwrites this from the save when the field is present.
+    this.enchantSeed = this.defaultEnchantSeed();
 
     // inventory: hotbar 0–8, main 9–35, armor [helmet,chest,legs,boots],
     // offhand = slot 45 (UPDATE-08 §7.1)
@@ -189,6 +202,13 @@ export class Player extends LivingEntity {
     if (!s) return false;
     const item = ITEMS.get(s.id);
     if (!item?.durability) return false;
+    // 08 §5.7 / AMENDS 06 §7.1 — Unbreaking gates every durability point at
+    // every decrement site. Gating here (and in damageArmor) rather than at the
+    // eight call sites is the same reasoning as the break-sound emit below: a
+    // caller that forgets the roll would silently un-enchant the item.
+    // A −2 spend rolls twice, per the AMENDS.
+    n = unbreakingToolPoints(n, getEnchantLvl(s, ENCH.UNBREAKING), this.world?.rng ?? Math.random);
+    if (n <= 0) return false;
     s.damage = (s.damage ?? 0) + n;
     if (s.damage >= item.durability) {
       this.setStackIn(hand, null);
@@ -216,23 +236,81 @@ export class Player extends LivingEntity {
     if (dmg < 1) return;
     const loss = Math.max(1, Math.floor(dmg / 4));
     for (let i = 0; i < 4; i++) {
-      const s = this.armor[i];
-      if (!s) continue;
-      const item = ITEMS.get(s.id);
-      s.damage = (s.damage ?? 0) + loss;
-      if (s.damage >= (item?.durability ?? 1)) {
-        this.armor[i] = null;
-        emitSound('player.item_break', null);   // §3.3 covers armor, not just tools
-      }
+      // 08 §8.6 — a falling anvil costs the HELMET double durability; every
+      // other piece takes the normal loss. FallingBlock sets the flag around
+      // its hurt() call.
+      this.damageArmorSlot(i, i === 0 && this.anvilHit ? loss * 2 : loss);
     }
+  }
+
+  /**
+   * 08 §5.7 / AMENDS 05 §14.2 — spend `n` durability on one armor piece, gated
+   * per point by Unbreaking's ARMOR formula (a different curve from tools).
+   * Split out of damageArmor because §5.2.4's Thorns proc charges 2 extra points
+   * to one specific piece and must be gated the same way.
+   */
+  damageArmorSlot(i, n) {
+    if (this.creative) return;
+    const s = this.armor[i];
+    if (!s) return;
+    const item = ITEMS.get(s.id);
+    n = unbreakingArmorPoints(n, getEnchantLvl(s, ENCH.UNBREAKING), this.world?.rng ?? Math.random);
+    if (n <= 0) return;
+    s.damage = (s.damage ?? 0) + n;
+    if (s.damage >= (item?.durability ?? 1)) {
+      this.armor[i] = null;
+      emitSound('player.item_break', null);   // §3.3 covers armor, not just tools
+    }
+  }
+
+  // -------------------------------------------------- 08 §3.3 enchantment seed
+
+  /** §3.3 — (worldSeed ^ 0x9E3779B9) >>> 0 at first spawn. */
+  defaultEnchantSeed() {
+    return ((this.world?.worldSeed ?? 0) ^ 0x9e3779b9) >>> 0;
+  }
+
+  /** §4.5 step 3 — rerolled ONLY when an enchantment is purchased at the table. */
+  rerollEnchantSeed() {
+    this.enchantSeed = splitmix32(this.enchantSeed);
+    return this.enchantSeed;
   }
 
   // -------------------------------------------------- XP (06 §13)
 
-  xpToNext(L) {
-    if (L <= 15) return 2 * L + 7;
-    if (L <= 30) return 5 * L - 38;
-    return 9 * L - 158;
+  // 08 §3.1's closed forms are the running sum of exactly this ladder, so the
+  // two must never drift — items/xp.js owns it now and this delegates.
+  xpToNext(L) { return xpToNextPoints(L); }
+
+  /** 08 §3.2 — spend n levels, preserving progress into the level. */
+  subtractLevels(n) { subtractLevels(this, n); }
+
+  /**
+   * 08 §5.8 / AMENDS 05 §15 — XP-orb pickup runs the Mending repair step BEFORE
+   * adding points. 2 durability per 1 XP, on ONE random damaged Mending item
+   * among armor + both hands; the leftover value continues to the bar. No
+   * chaining to a second item (Java exact).
+   *
+   * §5.8 is written in remaining-durability terms; mapped here per
+   * durability.js's header (`s.durability < maxDur(s)` ⇔ damageOf(s) > 0, and
+   * `maxDur(item) − item.durability` ⇔ damageOf(item)).
+   *
+   * Every orb source routes through here — mob/mining/breeding orbs, the player
+   * death orb, and §9.2's grindstone refund (deliberate: it lets worn Mending
+   * gear intercept the refund). Furnace XP is awarded directly, not via an orb,
+   * so it bypasses Mending — §5.8 states that consequence and keeps it.
+   */
+  onOrbPickup(value) {
+    const candidates = [...this.armor, this.heldStack, this.offhand]
+      .filter(s => s && getEnchantLvl(s, ENCH.MENDING) > 0 && damageOf(s) > 0);
+    if (candidates.length > 0) {
+      const item = candidates[Math.floor(this.world.rng() * candidates.length)];
+      const repair = Math.min(value * 2, damageOf(item));
+      setRemaining(item, remaining(item) + repair);
+      value -= Math.ceil(repair / 2);
+      emitSound('mending.repair', null);
+    }
+    this.addXp(value);
   }
 
   addXp(n) {
@@ -657,7 +735,19 @@ export class Player extends LivingEntity {
 
     // drowning (03 §10.2)
     if (this.eyeSubmerged) {
-      this.air -= 1;
+      // 08 §5.3 — Respiration L: decrement air only when randInt(L+1) === 0,
+      // so average breath time is ×(L+1) (Respiration III ≈ 60 s).
+      //
+      // Only the BREATH decrement is gated. Below zero this same counter is the
+      // drowning-damage cadence (air runs 0 → −20, then resets to 0 and deals
+      // 2 HP), and §5.3 says that cadence is unchanged — gating the whole
+      // decrement would have slowed drowning damage by ×(L+1) too.
+      const resp = getEnchantLvl(this.armor[0], ENCH.RESPIRATION);
+      if (this.air > 0 && resp > 0) {
+        if (Math.floor(this.world.rng() * (resp + 1)) === 0) this.air -= 1;
+      } else {
+        this.air -= 1;
+      }
       if (this.air <= -20) {
         this.air = 0;
         this.hurt(2, 'drown');
@@ -666,13 +756,15 @@ export class Player extends LivingEntity {
       this.air = Math.min(300, this.air + 7.5);
     }
 
-    // lava / fire contact (03 §11.2)
+    // lava / fire contact (03 §11.2). setOnFire applies 08 §5.2.1's Fire
+    // Protection tick reduction; lava's 300 is an assignment in 03 §11.2 (it
+    // re-arms every tick you stand in it) but max() is equivalent there.
     if (this.inLava) {
       if (t % 10 === 0) this.hurt(4, 'lava');
-      this.fireTicks = 300;
+      this.setOnFire(300);
     } else if (overlapsBlockId(this.world, this.getAABB(), B.FIRE)) {
       if (t % 10 === 0) this.hurt(1, 'fire');
-      this.fireTicks = Math.max(this.fireTicks, 160);
+      this.setOnFire(160);
     }
 
     // burning (03 §11.3)
@@ -712,7 +804,46 @@ export class Player extends LivingEntity {
     super.applyKnockback(strength, dirX, dirZ);
   }
 
+  /** 08 §5.2.1 — the armor EPF reduction, called from LivingEntity.applyDamage. */
+  reduceByEnchants(dmg, source) {
+    return dmg * epfMultiplier(this.armor, source);
+  }
+
+  /**
+   * 08 §5.2.1 — Fire Protection cuts applied fire ticks by floor(ticks×0.15×L),
+   * computed from the HIGHEST single level among worn pieces (Java exact).
+   * Checklist: "Fire Protection IV halves-and-more burn time (−60%)".
+   */
+  setOnFire(ticks) {
+    super.setOnFire(fireTicksAfterProtection(ticks, this.armor));
+  }
+
+  /**
+   * 08 §5.2.4 — Thorns. Each worn piece with Thorns L independently rolls
+   * 0.15 × L; every proc deals 1 + randInt(4) to the attacker and costs that
+   * piece 2 extra durability (Unbreaking-gated via damageArmorSlot).
+   *
+   * Only melee and arrow damage with a live attacker procs. The attacker is hurt
+   * with source 'thorns', which §5.2.1's table marks Protection-applicable — so
+   * it is deliberately in ARMOR_SOURCES and IS armor-reduced here (this diverges
+   * from vanilla, where Thorns bypasses armor; the spec is explicit). Direction
+   * is victim→attacker per §5.2.4.
+   */
+  procThorns(source, opts) {
+    const attacker = opts?.attacker;
+    if (!attacker || attacker === this || attacker.dead) return;
+    if (source !== 'melee' && source !== 'arrow') return;
+    const procs = rollThorns(this.armor, this.world.rng);
+    for (const { slot, damage } of procs) {
+      const dx = attacker.pos.x - this.pos.x, dz = attacker.pos.z - this.pos.z;
+      const h = Math.hypot(dx, dz) || 1;
+      attacker.hurt(damage, 'thorns', { dirX: dx / h, dirZ: dz / h, knockback: 0, attacker: this });
+      this.damageArmorSlot(slot, 2);
+    }
+  }
+
   onHurt(dmg, source, opts) {
+    this.procThorns(source, opts);
     this.hurtTilt = 8;
     this.hurtTiltDir = this.world.rng() < 0.5 ? -1 : 1;
     if (LivingEntity.ARMOR_SOURCES.has(source)) this.addExhaustion(0.1);
@@ -781,7 +912,15 @@ export class Player extends LivingEntity {
       health: this.health,
       hunger: this.foodLevel, saturation: this.saturation, exhaustion: this.exhaustion,
       foodPoisonTicks: this.foodPoisonTicks,
-      xp: this.xpTotal,
+      // 08 §13 — `xp` is CURRENT total points (spend-sensitive); `xpEarnedTotal`
+      // is the lifetime Score counter (§3.2). Before E4 this field wrote
+      // xpTotal (lifetime) and deserialize replayed it as current — harmless
+      // only because nothing could spend XP. The enchanting table spends, so a
+      // reload would have handed every spent level straight back. See
+      // DEVIATIONS.md; the read side stays backward-compatible.
+      xp: currentXp(this),
+      xpEarnedTotal: this.xpTotal,
+      enchantSeed: this.enchantSeed,
       air: this.air, fireTicks: this.fireTicks, fallDistance: this.fallDistance,
       gameMode: this.gameMode,
       inventory: packStacks(this.inventory),
@@ -816,6 +955,14 @@ export class Player extends LivingEntity {
     this._silentXp = true;
     if (rec.xp) this.addXp(rec.xp);
     this._silentXp = false;
+    // 08 §13 — restore the lifetime counter AFTER addXp (which drives xpTotal
+    // up as a side effect of rebuilding the ladder). Pre-E4 saves have no
+    // xpEarnedTotal; their `xp` was the lifetime total and nothing could spend,
+    // so lifetime == current and falling back to it is exactly right.
+    // §13: "absent fields default (no migration)" — SAVE_VERSION stays 1.
+    this.xpTotal = rec.xpEarnedTotal ?? rec.xp ?? 0;
+    // §3.3 — missing enchantSeed derives from the world seed.
+    this.enchantSeed = (rec.enchantSeed ?? this.defaultEnchantSeed()) >>> 0;
     this.prevPos.x = this.pos.x; this.prevPos.y = this.pos.y; this.prevPos.z = this.pos.z;
   }
 }

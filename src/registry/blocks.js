@@ -35,6 +35,12 @@
 //     * Toggling bit 7 must run the light edit AND neighbor updates even though
 //       the id is unchanged (AMENDS 01 §4.6/§4.2).
 // ============================================================================
+// 08 §5.6.3 — Fortune's drop math. fortune.js is a dependency-free LEAF on
+// purpose: importing items/effects.js here would cycle back through
+// enchants.js → items.js → blocks.js, and items.js builds block-items by
+// walking BLOCKS at module-eval time — it would see an empty array.
+import { fortuneM, fortuneChance } from '../items/fortune.js';
+
 export const WATERLOGGED = 0x80;
 export const STATE_NIBBLE = 0x0F;
 
@@ -77,12 +83,15 @@ const gated = fn => function (ctx) {
 };
 
 // Leaves drop table A (06 §2)
+// 08 §5.6.3 — Fortune raises the sapling / stick / apple rolls. (Silk Touch
+// drops the leaf block itself and never reaches here — breakBlock overrides it.)
 const leafDrops = (sapling, withApple) => function (ctx) {
   if (ctx.toolClass === 'shears') return [{ name: this.name, count: 1 }];
+  const f = ctx.fortune ?? 0;
   const out = [];
-  if (ctx.rng() < 0.05) out.push({ name: sapling, count: 1 });
-  if (ctx.rng() < 0.02) out.push({ name: 'stick', count: ri(ctx.rng, 1, 2) });
-  if (withApple && ctx.rng() < 0.005) out.push({ name: 'apple', count: 1 });
+  if (ctx.rng() < fortuneChance('sapling', f)) out.push({ name: sapling, count: 1 });
+  if (ctx.rng() < fortuneChance('stick', f)) out.push({ name: 'stick', count: ri(ctx.rng, 1, 2) });
+  if (withApple && ctx.rng() < fortuneChance('apple', f)) out.push({ name: 'apple', count: 1 });
   return out;
 };
 
@@ -361,7 +370,9 @@ defBlock(18, 'sand', { hardness: 0.5, blast: 0.5, tool: 'shovel', gravity: true 
 
 defBlock(19, 'gravel', {
   hardness: 0.6, blast: 0.6, tool: 'shovel', gravity: true,
-  drops: ctx => (ctx.rng() < 0.10 ? [{ name: 'flint', count: 1 }] : [{ name: 'gravel', count: 1 }]),
+  // 08 §5.6.3 — flint chance 10% → 14.29% (I) / 25% (II) / 100% (III).
+  drops: ctx => (ctx.rng() < fortuneChance('flint', ctx.fortune ?? 0)
+    ? [{ name: 'flint', count: 1 }] : [{ name: 'gravel', count: 1 }]),
 });
 
 defBlock(20, 'sandstone', {
@@ -374,15 +385,17 @@ const ore = (id, name, tier, dropFn, xpFn) => defBlock(id, name, {
   hardness: 3.0, blast: 3.0, tool: 'pickaxe', tier,
   drops: gated(dropFn), xpForMine: xpFn,
 });
-ore(21, 'coal_ore', 0, ctx => [{ name: 'coal', count: 1 }],
+// 08 §5.6.3 — coal/diamond/iron/gold take the M multiplier; lapis takes M on
+// its 4–9 roll; redstone takes a uniform +randInt(0,L) bonus instead of M.
+ore(21, 'coal_ore', 0, ctx => [{ name: 'coal', count: fortuneM(ctx.fortune ?? 0, ctx.rng) }],
   function (ctx) { return harvestOK(this, ctx.toolClass, ctx.toolTier) ? ri(ctx.rng, 0, 2) : 0; });
-ore(22, 'iron_ore', 1, () => [{ name: 'raw_iron', count: 1 }], null);
-ore(23, 'gold_ore', 2, () => [{ name: 'raw_gold', count: 1 }], null);
-ore(24, 'diamond_ore', 2, () => [{ name: 'diamond', count: 1 }],
+ore(22, 'iron_ore', 1, ctx => [{ name: 'raw_iron', count: fortuneM(ctx.fortune ?? 0, ctx.rng) }], null);
+ore(23, 'gold_ore', 2, ctx => [{ name: 'raw_gold', count: fortuneM(ctx.fortune ?? 0, ctx.rng) }], null);
+ore(24, 'diamond_ore', 2, ctx => [{ name: 'diamond', count: fortuneM(ctx.fortune ?? 0, ctx.rng) }],
   function (ctx) { return harvestOK(this, ctx.toolClass, ctx.toolTier) ? ri(ctx.rng, 3, 7) : 0; });
-ore(25, 'redstone_ore', 2, ctx => [{ name: 'redstone', count: ri(ctx.rng, 4, 5) }],
+ore(25, 'redstone_ore', 2, ctx => [{ name: 'redstone', count: ri(ctx.rng, 4, 5) + ri(ctx.rng, 0, ctx.fortune ?? 0) }],
   function (ctx) { return harvestOK(this, ctx.toolClass, ctx.toolTier) ? ri(ctx.rng, 1, 5) : 0; });
-ore(26, 'lapis_ore', 1, ctx => [{ name: 'lapis_lazuli', count: ri(ctx.rng, 4, 9) }],
+ore(26, 'lapis_ore', 1, ctx => [{ name: 'lapis_lazuli', count: ri(ctx.rng, 4, 9) * fortuneM(ctx.fortune ?? 0, ctx.rng) }],
   function (ctx) { return harvestOK(this, ctx.toolClass, ctx.toolTier) ? ri(ctx.rng, 2, 5) : 0; });
 
 defBlock(27, 'coal_block', { hardness: 5.0, blast: 6.0, tool: 'pickaxe', tier: 0, drops: gated(dropSelf('coal_block')) });
@@ -613,14 +626,18 @@ const cropDef = (id, name, tiles, dropsFn) => defBlock(id, name, {
   neighborUpdate: cropNeighbor,
   canPlaceAt: (world, x, y, z) => world.getBlock(x, y - 1, z) === B.FARMLAND,
 });
+// 08 §5.6.3 — mature wheat: seeds 0–(3+L) (approx of Java's binomial n=3+L,
+// p=0.57); the wheat count itself is unaffected by Fortune.
 cropDef(56, 'wheat_crop', 'wheat', ctx =>
   (ctx.state & 7) >= 7
-    ? [{ name: 'wheat', count: 1 }, { name: 'wheat_seeds', count: ri(ctx.rng, 0, 3) }]
+    ? [{ name: 'wheat', count: 1 },
+       { name: 'wheat_seeds', count: ri(ctx.rng, 0, 3 + (ctx.fortune ?? 0)) }]
     : [{ name: 'wheat_seeds', count: 1 }]);
+// 08 §5.6.3 — mature carrot/potato: 2–(5+L) (approx).
 cropDef(57, 'carrot_crop', 'carrot', ctx =>
-  [{ name: 'carrot', count: (ctx.state & 7) >= 7 ? ri(ctx.rng, 2, 5) : 1 }]);
+  [{ name: 'carrot', count: (ctx.state & 7) >= 7 ? ri(ctx.rng, 2, 5 + (ctx.fortune ?? 0)) : 1 }]);
 cropDef(58, 'potato_crop', 'potato', ctx =>
-  [{ name: 'potato', count: (ctx.state & 7) >= 7 ? ri(ctx.rng, 2, 5) : 1 }]);
+  [{ name: 'potato', count: (ctx.state & 7) >= 7 ? ri(ctx.rng, 2, 5 + (ctx.fortune ?? 0)) : 1 }]);
 
 defBlock(59, 'sugar_cane_block', {
   ...CROSS, displayName: 'Sugar Cane', tiles: all('sugar_cane'), needsSupport: 'below',
@@ -632,9 +649,11 @@ defBlock(59, 'sugar_cane_block', {
 
 defBlock(60, 'short_grass', {
   ...CROSS, tool: 'shears', replaceable: true, needsSupport: 'below',
+  // 08 §5.6.3 — seeds 12.5% → 14.29% / 16.67% / 25%.
   drops: ctx => (ctx.toolClass === 'shears'
     ? [{ name: 'short_grass', count: 1 }]
-    : (ctx.rng() < 0.125 ? [{ name: 'wheat_seeds', count: 1 }] : [])),
+    : (ctx.rng() < fortuneChance('seeds', ctx.fortune ?? 0)
+      ? [{ name: 'wheat_seeds', count: 1 }] : [])),
   neighborUpdate: needsBelow([2, 3]),
   canPlaceAt: (world, x, y, z) => [B.GRASS_BLOCK, B.DIRT].includes(world.getBlock(x, y - 1, z)),
 });
@@ -692,6 +711,55 @@ defBlock(66, 'dead_bush', {
 });
 
 // =======================================================================
+// 08-ENCHANTING §2.2 — blocks 105–107. (108/109 reserved, unused by 08.)
+//
+// All three carry `interactable` (03 §16.1 step 2 opens their UI unless
+// sneaking). Enchanting table and grindstone use state 0. The anvil's nibble is
+// bits0–1 facing (visual only, set toward the player on place) + bits2–3 damage
+// stage 0 pristine / 1 chipped / 2 damaged (stage 3 = destroyed, never stored).
+// Bits 4–6 stay free; bit 7 remains 15's waterlogged flag — none of these three
+// is waterloggable, so setBlock clears it for them (the bit-7 contract above).
+// =======================================================================
+
+defBlock(105, 'enchanting_table', {
+  hardness: 5.0, blast: 1200, tool: 'pickaxe', tier: 0,
+  interactable: 'enchanting',
+  // §2.2: 12/16-height box + floating book. opaque F / opacity 0 so it neither
+  // culls its neighbours' faces nor blocks light.
+  shape: 'enchanting_table', bucket: 'cutout', opaque: false, opacity: 0,
+  collisionBox: [0, 0, 0, 1, 12 / 16, 1],
+  tiles: ['enchanting_table_side', 'enchanting_table_side', 'enchanting_table_top',
+    'obsidian', 'enchanting_table_side', 'enchanting_table_side'],
+});
+
+defBlock(106, 'anvil', {
+  hardness: 5.0, blast: 1200, tool: 'pickaxe', tier: 0,
+  interactable: 'anvil',
+  gravity: true,                                  // §8.6 falling anvil
+  shape: 'anvil', bucket: 'cutout', opaque: false, opacity: 0,
+  collisionBox: [0, 0, 0, 1, 1, 1],               // full cube (approx) per §2.2
+  tiles: ['anvil_side', 'anvil_side', 'anvil_top_0', 'anvil_side', 'anvil_side', 'anvil_side'],
+  // §2.2: the damage stage (bits2–3) only changes the top-face crack texture.
+  // Stage 3 is "destroyed" and is never stored, so only 0–2 have tiles; clamp
+  // rather than resolve a missing tile if a malformed state ever reaches here.
+  tilesFor: (state, face) =>
+    (face === 2 ? `anvil_top_${Math.min((state >> 2) & 3, 2)}` : 'anvil_side'),
+  // §2.2: "self (damage stage NOT preserved — one anvil item; stage resets on
+  // re-place)". dropSelf ignores state, so this IS the default — spelled out so
+  // nobody later "fixes" it into a stage-preserving drop.
+  drops: gated(dropSelf('anvil')),
+});
+
+defBlock(107, 'grindstone', {
+  hardness: 2.0, blast: 6.0, tool: 'pickaxe', tier: 0,
+  interactable: 'grindstone',
+  shape: 'grindstone', bucket: 'cutout', opaque: false, opacity: 0,
+  collisionBox: [0, 0, 0, 1, 1, 1],               // full cube (approx) per §2.2
+  tiles: ['grindstone_side', 'grindstone_side', 'grindstone_tread', 'grindstone_tread',
+    'grindstone_side', 'grindstone_side'],
+});
+
+// =======================================================================
 // Material classes — the `Mat` column (16-AUDIO AMENDS 06 §2, table 16 §3.1).
 //
 // Transcribed verbatim from 16 §3.1 rather than threaded through each defBlock
@@ -705,9 +773,13 @@ defBlock(66, 'dead_bush', {
 // cactus→wool, glowstone→glass, ice→glass, coal_block→stone (unlike the other
 // metal blocks), dirt/farmland→gravel, sandstone→stone, dead_bush→grass.
 const MAT = {
-  stone: ['stone', 'cobblestone', 'sandstone', 'bedrock', 'obsidian', 'furnace', 'furnace_lit', 'coal_block'],
+  // 08 §2.2: enchanting_table is obsidian-bodied and grindstone is stone-tooled
+  // (its wheel/legs are the minority surface) → both 'stone'; the anvil is the
+  // one new 'metal'.
+  stone: ['stone', 'cobblestone', 'sandstone', 'bedrock', 'obsidian', 'furnace', 'furnace_lit',
+    'coal_block', 'enchanting_table', 'grindstone'],
   ore: ['coal_ore', 'iron_ore', 'gold_ore', 'diamond_ore', 'redstone_ore', 'lapis_ore'],
-  metal: ['iron_block', 'gold_block', 'diamond_block'],
+  metal: ['iron_block', 'gold_block', 'diamond_block', 'anvil'],
   wood: ['oak_planks', 'birch_planks', 'spruce_planks', 'oak_log', 'birch_log', 'spruce_log',
     'crafting_table', 'chest', 'bookshelf', 'ladder', 'oak_fence', 'oak_door', 'bed_block',
     'torch', 'pumpkin', 'jack_o_lantern'],

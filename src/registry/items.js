@@ -179,6 +179,14 @@ defItem(343, 'lapis_lazuli', {});
 defItem(344, 'bed', { kind: 'bed', stack: 1, placesAs: 'bed' });
 defItem(345, 'oak_door', { kind: 'door', placesAs: 'door' });
 
+// --- 08-ENCHANTING §10 (items 346–369; 347–369 reserved, unused by 08) ---
+// Stack 1, always glinted (§11). Not equippable, not usable, not fuel: its only
+// consumers are the anvil (§8.3 case b, incl. book+book) and the grindstone
+// (→ plain book). The default `kind: 'material'` is what makes it inert — with
+// no place/plantsCrop/hunger/bucketFluid, 03 §16.1's RMB pipeline finds no
+// action for it and passes to the offhand (08 §7.3).
+defItem(346, 'enchanted_book', { stack: 1 });
+
 export const idOf = name => {
   const v = NAME_TO_ID.get(name);
   if (v === undefined) throw new Error(`unknown item/block name: ${name}`);
@@ -216,6 +224,14 @@ shaped(B.OAK_FENCE, 3, ['PSP', 'PSP'], { P: PLANKS, S: [318] });
 shaped(344, 1, ['WWW', 'PPP'], { W: WOOLS, P: PLANKS });    // bed item
 shaped(B.TNT, 1, ['GSG', 'SGS', 'GSG'], { G: [329], S: [B.SAND] });
 shaped(B.BOOKSHELF, 1, ['PPP', 'BBB', 'PPP'], { P: PLANKS, B: [341] });
+
+// 08-ENCHANTING §2.3
+shaped(B.ENCHANTING_TABLE, 1, ['.B.', 'DOD', 'OOO'], { B: [341], D: [325], O: [B.OBSIDIAN] });
+shaped(B.ANVIL, 1, ['III', '.i.', 'iii'], { I: [B.IRON_BLOCK], i: [322] });   // 31 ingots total
+// §2.3 Adaptation: the grindstone's vanilla centre ingredient is a stone SLAB;
+// no slabs exist in this registry, so full `stone` (smelted from cobblestone,
+// 06 §11.2) substitutes.
+shaped(B.GRINDSTONE, 1, ['SCS', 'P.P'], { S: [318], C: [B.STONE], P: PLANKS });
 shaped(B.JACK_O_LANTERN, 1, ['P', 'T'], { P: [B.PUMPKIN], T: [B.TORCH] });
 shaped(B.SANDSTONE, 1, ['SS', 'SS'], { S: [B.SAND] });
 shaped(B.SNOW_BLOCK, 1, ['SS', 'SS'], { S: [335] });

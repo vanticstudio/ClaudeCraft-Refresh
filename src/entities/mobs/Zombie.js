@@ -2,6 +2,7 @@
 import { Mob } from './Mob.js';
 import { SwimGoal, WanderGoal, LookAtPlayerGoal, IdleLookGoal, MeleeAttackGoal } from './ai.js';
 import { humanoidModel } from './models.js';
+import { lootedRange, lootedRareChance } from '../../items/effects.js';
 
 export class Zombie extends Mob {
   constructor(world, x, y, z, opts = {}) {
@@ -38,10 +39,12 @@ export class Zombie extends Mob {
 
   armorPoints() { return this.naturalArmor; }
 
-  dropTable() {
+  // 08 §5.5 — flesh 0–(2+L); rare carrot/potato 2.5% + 1%×L (Looting III = 5.5%).
+  dropTable(looting = 0) {
     const r = this.world.rng;
-    const out = [{ name: 'rotten_flesh', count: Math.floor(r() * 3) }];
-    if (r() < 0.025) out.push({ name: r() < 0.5 ? 'carrot' : 'potato', count: 1 });
+    const out = [{ name: 'rotten_flesh', count: lootedRange(r, 0, 2, looting) }];
+    if (r() < lootedRareChance(0.025, looting))
+      out.push({ name: r() < 0.5 ? 'carrot' : 'potato', count: 1 });
     return out;
   }
 

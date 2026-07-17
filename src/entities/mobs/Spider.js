@@ -2,6 +2,7 @@
 import { Mob } from './Mob.js';
 import { Goal, SwimGoal, WanderGoal, LookAtPlayerGoal, IdleLookGoal, MeleeAttackGoal } from './ai.js';
 import { spiderModel } from './models.js';
+import { lootedRange } from '../../items/effects.js';
 
 class LeapAtTargetGoal extends Goal {
   canStart() {
@@ -26,6 +27,7 @@ export class Spider extends Mob {
     super(world, x, y, z);
     this.type = 'spider';
     this.hostile = true;
+    this.arthropod = true;       // 08 §5.1 — Bane of Arthropods target
     this.width = 1.4; this.height = 0.9;
     this.wide3 = true;
     this.health = this.maxHealth = 16;
@@ -75,8 +77,9 @@ export class Spider extends Mob {
     }
   }
 
-  dropTable() {
-    return [{ name: 'string', count: Math.floor(this.world.rng() * 3) }];
+  // 08 §5.5 — string 0–(2+L).
+  dropTable(looting = 0) {
+    return [{ name: 'string', count: lootedRange(this.world.rng, 0, 2, looting) }];
   }
 
   buildModel() { return spiderModel(); }

@@ -5,6 +5,7 @@ import { endermanModel, mobTexture } from './models.js';
 import { hasLineOfSight } from '../../world/raycast.js';
 import { BLOCKS } from '../../registry/blocks.js';
 import { emitSound, at } from '../../audio/engine.js';
+import { lootedRange } from '../../items/effects.js';
 
 class StareDownGoal extends Goal {
   get flags() { return 3; }   // MOVE + LOOK
@@ -200,8 +201,11 @@ export class Enderman extends Mob {
     if (!this.dead) this.teleportRandom();
   }
 
-  dropTable() {
-    return this.world.rng() < 0.5 ? [{ name: 'ender_pearl', count: 1 }] : [];
+  // 08 §5.5 — ender pearl 0–(1+L). The base 50/50 IS a uniform 0–1 roll, so
+  // expressing it as a range keeps L=0 identical and lets Looting widen it.
+  dropTable(looting = 0) {
+    const n = lootedRange(this.world.rng, 0, 1, looting);
+    return n > 0 ? [{ name: 'ender_pearl', count: n }] : [];
   }
 
   buildModel() {

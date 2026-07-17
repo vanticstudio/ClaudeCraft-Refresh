@@ -455,3 +455,83 @@ html, body {
 .slot-abs[data-ph="destroy"]:hover { background: #a58b8b; }
 /* always visible, not just when "empty" — the cell holds nothing by design */
 .slot-abs[data-ph="destroy"] .slot-ph { opacity: 0.55; }
+
+/* ============ 08-ENCHANTING §4.2 / §8.3 screens ============
+   Same GUI-px reference frame as .panel-abs (176×166, scaled by --gpx). */
+
+/* §4.2 — three offer buttons stacked vertically, right of the two input slots. */
+.offer-btn {
+  position: absolute;
+  left: calc(60 * var(--gpx));
+  width: calc(108 * var(--gpx));
+  height: calc(17 * var(--gpx));
+  background: #7d6f5a;
+  border: calc(1 * var(--gpx)) solid;
+  border-color: #a08d72 #4c4336 #4c4336 #a08d72;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: calc(3 * var(--gpx));
+  padding: 0 calc(4 * var(--gpx));
+  font-size: calc(5 * var(--gpx));
+  color: #e0d8c8;
+  cursor: pointer;
+}
+.offer-btn:hover { background: #8d7e68; }
+/* Disabled still SHOWS the offer (§4.2 reveals it either way) — it just can't
+   be clicked, and the requirement renders gray rather than green. */
+.offer-btn.disabled { background: #6b6b6b; cursor: default; opacity: 0.75; }
+.offer-btn.disabled:hover { background: #6b6b6b; }
+.offer-pips { color: #4aedd9; letter-spacing: calc(-1 * var(--gpx)); }
+.offer-text { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.offer-req { font-weight: bold; margin-left: auto; }
+
+/* §8.3 — the anvil's rename field and its cost line. */
+.anvil-name-wrap {
+  position: absolute;
+  left: calc(26 * var(--gpx));
+  top: calc(20 * var(--gpx));
+  width: calc(124 * var(--gpx));
+  height: calc(14 * var(--gpx));
+  background: #000;
+  border: calc(1 * var(--gpx)) solid #373737;
+  box-sizing: border-box;
+}
+.anvil-name {
+  width: 100%; height: 100%;
+  background: transparent;
+  border: 0;
+  outline: none;
+  color: #e0e0e0;
+  font: inherit;
+  font-size: calc(6 * var(--gpx));
+  padding: 0 calc(3 * var(--gpx));
+  box-sizing: border-box;
+}
+.anvil-cost {
+  position: absolute;
+  left: calc(26 * var(--gpx));
+  top: calc(68 * var(--gpx));
+  width: calc(124 * var(--gpx));
+  text-align: center;
+  font-size: calc(5 * var(--gpx));
+  text-shadow: calc(1 * var(--gpx)) calc(1 * var(--gpx)) #3f3f3f;
+  pointer-events: none;
+}
+
+/* 08 §11 — the per-slot glint canvas replaces the atlas-background div for
+   enchanted stacks. Fills the icon box; pixelated so the 16×16 composite scales
+   like every other icon. */
+.glint-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  image-rendering: pixelated;
+  pointer-events: none;
+}
+
+/* AMENDS 06 §15.2 (08) — multi-line tooltips: name, then one line per enchant. */
+#tooltip .tt-name { color: #ffffff; }
+#tooltip .tt-renamed { font-style: italic; }        /* renamed via tags.name (§8.4) */
+#tooltip .tt-ench { color: #a8a8ff; }               /* light purple, per §15.2 */
