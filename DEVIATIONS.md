@@ -4,6 +4,76 @@ Deviations and ambiguity rulings. (The base-spec `.md` files were removed from
 the working tree during repo cleanup; the pre-UPDATE deviation log for the
 initial build lives in git history — `git show 8441ac9:DEVIATIONS.md`.)
 
+## UPDATE — right-click fix (2026-07-17)
+
+Work order: `UPDATE-rightclick-fix.md`. Reproduced both reported bugs with
+instrumentation before changing anything. **One was real; the other does not
+exist.**
+
+### Bug A (world RMB placement) — REAL. Root cause: `air` was not `replaceable`
+
+The work order's checklist suspected delivery/interception (steps A1-A3), or a
+missing `held.place` (A4, "the most likely world-side cause"). Instrumenting the
+whole chain showed all of those are fine — RMB arrives, the snapshot latches the
+edge, `use()` runs, and `tryPlace()` is *called*:
+
+```
+A1  document mousedown(button=2) fired : 1
+A2  snapshot saw rightPressed          : 1
+A1  interaction.use() ran              : 2
+A5  tryPlace() called / returned true  : 2 / 0     <- fails INSIDE tryPlace
+A4  held item: dirt | item.place = 3               <- A4 was fine all along
+```
+
+`tryPlace` rejected at `if (!BLOCKS[targetId].replaceable) return false`, because
+**`defBlock(0, 'air', …)` never set `replaceable` and the default is `false`.**
+03 §16.2 defines the set verbatim:
+
+> `blockAt(placePos) is in the replaceable set: {air, water, lava, fire,
+> short_grass, dandelion, poppy, dead_bush} (06 §5.7)`
+
+The code had only 5 of those 8 — `air`, `water` and `lava` were all missing. So a
+block could only ever be placed *over a flower*, which is exactly the reported
+"nothing, or nothing reliably". **Fix: add `replaceable: true` to air, water and
+lava**, making the code's set match 03 §16.2 exactly (verified by comparing the
+two sets programmatically). No spec change; base specs stay frozen.
+
+The same guard gated three other paths that were therefore *also* silently
+broken, and all three now work: **filled buckets could not be poured into air**
+(06 §6.4), and **doors and beds could not be placed** at all (06 §5.13/§5.7).
+
+### Bug B (crafting-grid RMB deposit-one) — NOT REPRODUCIBLE
+
+The report says a single item cannot be right-clicked into a grid slot and that
+"left-click-drag-distribute … is the sole working path", forcing groups of four.
+Tested with **real** `mousedown/mouseup button:2` events against the **unmodified**
+code, on both grids:
+
+- 2×2 (inventory): three successive right-clicks → slot 1, 2, 3; cursor 31, 30, 29.
+- 3×3 (table): same handler, same result.
+- Empty cursor on a filled slot → picks up `ceil(9/2) = 5`, leaves 4.
+- Result slot take-only; live recipe recompute after each single deposit.
+
+All pass **before** my change. Two further points against the report's model:
+there is **no drag-distribute code in this codebase at all** (the only `mousemove`
+handler positions the cursor sprite; the only root `mousedown` is the
+throw-stack path, already split by button), so the hypothesised "drag state that
+begins on any button eats the RMB click" (checklist step 7) has nothing to
+attach to; and 06 §14.2's stated adaptation already logged right-click
+drag-painting as out of scope. **Nothing changed for Bug B** — inventing a fix
+for a working path would only risk the behaviour the tests now pin down.
+
+Most likely the report describes the live Vercel build, which predates this work.
+Worth re-checking there after deploy.
+
+### Verified
+
+16 browser assertions, 0 console errors. An A/B against the reverted fix proves
+the one-line change is responsible for exactly the world-placement failures and
+nothing else: pre-fix **9 passed / 4 failed** (all four world-place), post-fix
+**16 / 0**. Audio suites re-run for regressions (35 + 8 + 7, all green) — the
+`block.place.*` events fire from the path this unblocks.
+
 ## UPDATE — audio-not-playing fix: E1 integration audit (2026-07-17)
 
 Work order: `UPDATE-audio-not-playing-fix.md`. **Its two stated root causes were

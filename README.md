@@ -75,6 +75,13 @@ autosaves to the browser's IndexedDB every 30 seconds — close the tab and
 
 *This section is updated as new features land.*
 
+- **2026-07-17** — **Right-click placement fix** (`UPDATE-rightclick-fix`): `air`
+  was never marked `replaceable` (nor were `water`/`lava`), so `tryPlace` rejected
+  every placement into empty space — you could only ever place a block *over a
+  flower*. The replaceable set now matches 03 §16.2 exactly. The same guard had
+  also silently broken filled buckets, doors and beds; all now work. The reported
+  crafting-grid right-click bug did not reproduce — RMB already deposits one item
+  at a time in both the 2×2 and 3×3 grids, verified with real mouse events.
 - **2026-07-17** — Audio integration audit (`UPDATE-audio-not-playing-fix`):
   re-verified the whole E1 chain against the **real** browser autoplay policy
   (suspended → running on a genuine gesture, audio flowing immediately) and

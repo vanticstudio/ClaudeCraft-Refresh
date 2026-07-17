@@ -257,6 +257,11 @@ const CROSS = {
 defBlock(0, 'air', {
   shape: 'none', bucket: null, opaque: false, collidable: false,
   targetable: false, opacity: 0, hardness: -1, tiles: null, drops: noDrop,
+  // 03 §16.2's replaceable set is {air, water, lava, fire, short_grass,
+  // dandelion, poppy, dead_bush}. Without this, tryPlace's
+  // `if (!BLOCKS[targetId].replaceable) return false` rejects EVERY placement
+  // into empty space — RMB could only ever replace a flower.
+  replaceable: true,
 });
 
 defBlock(1, 'stone', {
@@ -591,12 +596,14 @@ defBlock(63, 'water', {
   shape: 'liquid', bucket: 'water', opaque: false, opacity: 1,
   collidable: false, targetable: false, hardness: -1, blast: 100,
   fluid: 'water', fluidAlpha: 0.7, drops: noDrop,
+  replaceable: true,            // 03 §16.2 replaceable set
 });
 
 defBlock(64, 'lava', {
   shape: 'liquid', bucket: 'water', opaque: false, opacity: 15,
   collidable: false, targetable: false, hardness: -1, blast: 100,
   emission: 15, fluid: 'lava', fluidAlpha: 1.0, drops: noDrop,
+  replaceable: true,            // 03 §16.2 replaceable set
 });
 
 defBlock(65, 'fire', {
