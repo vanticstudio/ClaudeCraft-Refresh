@@ -215,7 +215,11 @@ export class Mob extends LivingEntity {
   // ------------------------------------------------------------ targeting (05 §6)
 
   updateTarget(player) {
-    if (this.target && (this.target.dead ||
+    // AMENDS 05 §5 (give-up rules) / 18 §7.1 — a hostile already chasing a
+    // player drops the target the tick that player switches to creative. Must
+    // sit in the give-up branch, not the acquire branch below: an existing
+    // target short-circuits this method before acquisition is ever reconsidered.
+    if (this.target && (this.target.dead || this.target.creative ||
         this.distTo(this.target) > this.detectionRange * 1.5)) {
       this.target = null;
     }
@@ -226,7 +230,7 @@ export class Mob extends LivingEntity {
       }
       return;
     }
-    if (!this.hostile || !player || player.dead || player.gameMode === 'debugCreative') return;
+    if (!this.hostile || !player || player.dead || player.creative) return;   // 18 §7.1
     if (this.age % 10 !== 0) return;
     const range = this.detectionRange * (player.sneaking ? 0.8 : 1);
     if (this.distTo(player) <= range && this.acquireGate(player) && this.canSee(player)) {
@@ -249,7 +253,10 @@ export class Mob extends LivingEntity {
     if (dmg > 0) {
       emitSound(`mob.${this.type}.hurt`, at(this.pos.x, this.pos.y + this.height / 2, this.pos.z));
     }
-    if (opts?.attacker && this.retaliates !== false) {
+    // 18 §7.1 — retaliation is disabled against a creative attacker: 05 §5's
+    // "damaged by the player always sets target" clause is skipped. The mob
+    // still takes the damage and still dies; it just never fights back.
+    if (opts?.attacker && this.retaliates !== false && !opts.attacker.creative) {
       this.target = opts.attacker;
       this.forcedAggro = true;
       this.losMemory = 0;

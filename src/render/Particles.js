@@ -6,12 +6,39 @@ import { blockCubeGeometry, makeAtlasMaterial } from '../entities/ItemEntity.js'
 
 const MAX = 256;
 
+// 08 §6.4 — the sweep arc tile: 24×6 px, a flat white crescent. Procedural like
+// every other texture in the build (CLAUDE.md §6); built once, shared by every
+// swing. The material can't be shared (per-particle opacity), the texture can.
+let SWEEP_TEX = null;
+function sweepTexture() {
+  if (SWEEP_TEX) return SWEEP_TEX;
+  const c = document.createElement('canvas');
+  c.width = 24; c.height = 6;
+  const g = c.getContext('2d');
+  g.strokeStyle = '#ffffff';
+  g.lineWidth = 1.6;
+  g.lineCap = 'round';
+  g.beginPath();
+  // Shallow crescent: an ellipse arc whose centre sits below the tile, so only
+  // the upper sliver lands inside the 6 rows — spans x≈1..23, y≈1..6.
+  g.ellipse(12, 7.5, 11, 6.5, 0, Math.PI * 1.08, Math.PI * 1.92);
+  g.stroke();
+  SWEEP_TEX = new THREE.CanvasTexture(c);
+  SWEEP_TEX.magFilter = THREE.NearestFilter;
+  SWEEP_TEX.minFilter = THREE.NearestFilter;
+  return SWEEP_TEX;
+}
+
 export class Particles {
   constructor(scene) {
     this.scene = scene;
     this.pool = [];
     this.active = [];
     this.colorGeo = new THREE.BoxGeometry(0.1, 0.1, 0.1);
+    // Baked flat so the arc needs only a single yaw rotation at spawn — setting
+    // rotation.x and rotation.z together would depend on Euler order.
+    this.sweepGeo = new THREE.PlaneGeometry(1, 0.25);
+    this.sweepGeo.rotateX(-Math.PI / 2);
   }
 
   obtain(mesh) {
@@ -20,10 +47,14 @@ export class Particles {
     return mesh;
   }
 
-  spawn(mesh, x, y, z, vx, vy, vz, life, gravity = 0.04) {
+  // opts (all optional, used by sweep()): {scale0, scale1, alpha0, disposeMat}.
+  // Absent for every other caller, so their records behave exactly as before.
+  spawn(mesh, x, y, z, vx, vy, vz, life, gravity = 0.04, opts = null) {
     if (this.active.length >= MAX) return;
     mesh.position.set(x, y, z);
-    this.active.push({ mesh, vx, vy, vz, life, gravity });
+    const rec = { mesh, vx, vy, vz, life, gravity };
+    if (opts) Object.assign(rec, opts, { maxLife: life });
+    this.active.push(rec);
     this.scene.add(mesh);
   }
 
@@ -57,6 +88,22 @@ export class Particles {
         (Math.random() - 0.5) * 0.04, 0.02 + Math.random() * 0.02, (Math.random() - 0.5) * 0.04,
         10 + (Math.random() * 6) | 0, 0.01);
     }
+  }
+
+  // 08 §6.4 — one flat white arc quad, 1.7 m in front of the player at hip
+  // height, lying horizontally, widening 0.8 → 1.6 m and fading over 6 ticks.
+  // `yaw` is the player's yaw; the geometry is pre-laid flat (see constructor).
+  sweep(px, py, pz, yaw) {
+    const fx = -Math.sin(yaw), fz = -Math.cos(yaw);
+    const mat = new THREE.MeshBasicMaterial({
+      map: sweepTexture(), transparent: true, opacity: 0.4,
+      depthWrite: false, side: THREE.DoubleSide,
+    });
+    const m = new THREE.Mesh(this.sweepGeo, mat);
+    m.rotation.y = yaw;
+    m.scale.setScalar(0.8);
+    this.spawn(m, px + fx * 1.7, py + 0.9, pz + fz * 1.7, 0, 0, 0, 6, 0,
+      { scale0: 0.8, scale1: 1.6, alpha0: 0.4, disposeMat: true });
   }
 
   explosion(x, y, z, power) {
@@ -96,9 +143,16 @@ export class Particles {
       p.mesh.position.z += p.vz;
       p.vy -= p.gravity;
       p.vx *= 0.95; p.vy *= 0.98; p.vz *= 0.95;
+      if (p.scale0 !== undefined) {
+        const k = 1 - (p.life - 1) / p.maxLife;      // 0 → 1 across its life
+        p.mesh.scale.setScalar(p.scale0 + (p.scale1 - p.scale0) * k);
+        p.mesh.material.opacity = p.alpha0 * (1 - k);
+      }
       if (--p.life <= 0) {
         this.scene.remove(p.mesh);
-        if (p.mesh.material.map == null) p.mesh.material.dispose();
+        // Mapped materials are normally shared and must not be disposed; the
+        // sweep's is per-particle (it animates opacity) and opts in explicitly.
+        if (p.disposeMat || p.mesh.material.map == null) p.mesh.material.dispose();
         this.active.splice(i, 1);
       }
     }

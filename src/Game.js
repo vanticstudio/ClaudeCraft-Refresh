@@ -5,6 +5,7 @@ import {
 } from './constants.js';
 import { BLOCKS, B, blockByName, FACING_DIR, WATERLOGGED } from './registry/blocks.js';
 import { ITEMS, idOf, SMELTING, fuelValue } from './registry/items.js';
+import { cloneStack } from './items/tags.js';
 import { World } from './world/World.js';
 import { ChunkManager } from './world/ChunkManager.js';
 import { ChunkState } from './world/Chunk.js';
@@ -35,6 +36,7 @@ const NEUTRAL_FRAME = {
   forward: 0, strafe: 0, jump: false, sneak: false, sprintKey: false,
   mouseLeft: false, mouseRight: false, leftPressed: false, rightPressed: false,
   middlePressed: false, pressed: new Set(), wheel: 0, hotbar: -1, shift: false,
+  ctrl: false,
 };
 
 export class Game {
@@ -615,6 +617,11 @@ export class Game {
       if (e instanceof LivingEntity) {
         e.hurt(dmg, 'explosion', {});
       }
+      // 18 §4.4 — a creative player takes no knockback from explosions. This
+      // push is applied directly, NOT through applyKnockback, so the Player
+      // override cannot cover it: 05 §12.3's blast shove is its own code path.
+      // Blocks and every other entity are still thrown normally (§4.2).
+      if (e.creative) continue;
       e.vel.x += (cx - x) / len * impact;
       e.vel.y += (cy - y) / len * impact;
       e.vel.z += (cz - z) / len * impact;
@@ -644,7 +651,9 @@ export class Game {
   }
 
   dropStackAt(stack, x, y, z) {
-    const e = new ItemEntity(this.world, x, y, z, { ...stack }, 40);
+    // cloneStack: a spread would leave the entity and the source stack sharing
+    // one tags object (08 §1 invariant 4).
+    const e = new ItemEntity(this.world, x, y, z, cloneStack(stack), 40);
     const r = this.world.rng;
     e.vel.x = (r() - 0.5) * 0.4;
     e.vel.y = 0.2;
@@ -658,7 +667,7 @@ export class Game {
     const d = this.interaction.lookDir();
     const r = this.world.rng;
     const e = new ItemEntity(this.world,
-      p.pos.x, p.pos.y + p.eyeHeight - 0.3, p.pos.z, { ...stack }, 40);
+      p.pos.x, p.pos.y + p.eyeHeight - 0.3, p.pos.z, cloneStack(stack), 40);
     e.vel.x = d.x * 0.3 + (r() - 0.5) * 0.04;
     e.vel.y = d.y * 0.3 + 0.1 + (r() - 0.5) * 0.04;
     e.vel.z = d.z * 0.3 + (r() - 0.5) * 0.04;
@@ -806,6 +815,27 @@ export class Game {
 
   onPlayerHurt() {
     this.ui?.hud?.onDamage?.();
+  }
+
+  // 18 §7.1 — every hostile chasing this player drops its target the instant the
+  // switch lands. Mob.updateTarget's give-up rule would also catch this on its
+  // next run, but the enderman's `aggro` flag is separate state that no give-up
+  // rule clears, and it gates that mob's whole chase behaviour.
+  onPlayerEnteredCreative(player) {
+    if (!this.entities) return;
+    for (const e of this.entities.entities.values()) {
+      if (e.target === player) {
+        e.target = null;
+        if (e.aggro) { e.aggro = false; e.aggroLostTicks = 0; }
+      }
+    }
+  }
+
+  // 18 §1.4 — hud.rebuild() toggles the survival cluster rather than
+  // per-frame branching; the switch is rare.
+  onGameModeChanged(mode) {
+    this.ui?.hud?.rebuild?.();
+    this.ui?.onGameModeChanged?.(mode);
   }
 
   onPlayerDeath() {

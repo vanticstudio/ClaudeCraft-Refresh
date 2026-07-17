@@ -206,6 +206,18 @@ def('player.item_break', {
     return whoosh(v, t, { f0: 1200, f1: 300, dur: 0.15, gain: 0.3 * g, pitch: p });
   },
 });
+// 08 §12 hook `player.attack.sweep` (vanilla entity.player.attack.sweep): a
+// broad falling swoosh — the blade's arc — with a thin band of noise across it
+// for the edge. Self event, so it plays flat rather than positionally.
+def('player.attack.sweep', {
+  ...SELF, capKey: 'attackSweep',
+  recipe: (v, t, p, g) => {
+    whoosh(v, t, { f0: 2600, f1: 700, dur: 0.22, gain: 0.45 * g, pitch: p });
+    return noiseBurst(v, t, {
+      src: 'white', filter: 'bp', freq: 1800, Q: 1.5, dur: 0.12, gain: 0.22 * g, pitch: p,
+    });
+  },
+});
 def('player.armor_equip', {
   ...UI, capKey: 'armor', jitter: 1,
   recipe: (v, t, p, g) => chime(v, t, { freq: 2400, ratio: 2.76, index: 3, dur: 0.15, gain: 0.3 * g, pitch: p }),
@@ -313,6 +325,33 @@ def('ui.click', {
 def('ui.hotbar', {
   ...UI, cap: 2, capKey: 'hotbar',
   recipe: (v, t, p, g) => blip(v, t, { wave: 'square', freq: 1200, dur: 0.02, gain: 0.2 * g }),
+});
+
+// AMENDS 16 §3 by 18-CREATIVE §8 — the mode's only two new events. Every other
+// creative interaction reuses the events above (block.break/place, ui.click).
+
+// 18 §8: "short two-note rising (creative) / falling (survival) blip". §5.1's
+// signature has no channel for direction, so the caller passes pitchMult 1 for
+// creative and 0.5 for survival and the recipe reads it — same trick §3.3's
+// `player.fall.big` uses to carry damage.
+def('ui.gamemode.switch', {
+  ...UI, cap: 1, capKey: 'gamemode',
+  recipe: (v, t, p, g) => {
+    const rising = p >= 0.75;
+    const [f0, f1] = rising ? [660, 990] : [990, 660];
+    blip(v, t, { wave: 'triangle', freq: f0, dur: 0.06, gain: 0.3 * g });
+    return blip(v, t + 0.07, { wave: 'triangle', freq: f1, dur: 0.08, gain: 0.3 * g });
+  },
+});
+
+// 18 §8: "brief downward noise 'poof'". §2.7's noise sweep is exactly this
+// shape — noiseBurst has a fixed filter frequency and cannot fall.
+def('ui.item.destroy', {
+  ...UI, cap: 2, capKey: 'destroy',
+  recipe: (v, t, p, g) => sweep(v, t, {
+    src: 'noise', f0: 1400, f1: 180, dur: 0.16, gain: 0.25 * g, pitch: p,
+    filter: { Q: 0.8 },
+  }),
 });
 
 // ---------------------------------------------------------------- §3.4 mob voices

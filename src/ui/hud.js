@@ -39,29 +39,33 @@ export class Hud {
           </div>
           <div id="xp-bar"><div id="xp-fill"></div><div id="xp-level"></div></div>
         </div>
+        <div id="offhand-slot"></div>
         <div id="hotbar"></div>
         <div id="item-name"></div>
         <div id="toast"></div>
         <div id="sleep-fade"></div>
-        <div id="debug-badge">DEBUG CREATIVE (F4)</div>
+        <div id="mode-badge">CREATIVE</div>
       </div>`;
     this.el = {
       hearts: document.getElementById('hearts-row'),
       hunger: document.getElementById('hunger-row'),
       armor: document.getElementById('armor-row'),
       air: document.getElementById('air-row'),
+      xpBar: document.getElementById('xp-bar'),
       xpFill: document.getElementById('xp-fill'),
       xpLevel: document.getElementById('xp-level'),
       hotbar: document.getElementById('hotbar'),
+      offhand: document.getElementById('offhand-slot'),
       itemName: document.getElementById('item-name'),
       toast: document.getElementById('toast'),
       vignette: document.getElementById('vignette-damage'),
       fire: document.getElementById('overlay-fire'),
       water: document.getElementById('overlay-water'),
       sleep: document.getElementById('sleep-fade'),
-      badge: document.getElementById('debug-badge'),
+      badge: document.getElementById('mode-badge'),
       hud: document.getElementById('hud'),
     };
+    this.creative = false;
     this.slots = [];
     for (let i = 0; i < 9; i++) {
       const d = document.createElement('div');
@@ -70,6 +74,13 @@ export class Hud {
       this.el.hotbar.appendChild(d);
       this.slots.push(d);
     }
+    // 08 §7.5 — the offhand slot: same markup and style as a hotbar slot, in
+    // its own frame left of the hotbar. Shown only when non-empty (vanilla);
+    // the frame's visibility is the `filled` class on the wrapper.
+    this.offhandSlot = document.createElement('div');
+    this.offhandSlot.className = 'hotbar-slot';
+    this.offhandSlot.innerHTML = `<div class="slot-icon"></div><div class="slot-count"></div><div class="dur-bar" style="display:none"><div></div></div>`;
+    this.el.offhand.appendChild(this.offhandSlot);
     this.pips(this.el.hearts, 10);
     this.pips(this.el.hunger, 10);
     this.pips(this.el.armor, 10);
@@ -114,6 +125,27 @@ export class Hud {
 
   setSleepFade(on) { this.el.sleep.style.opacity = on ? '1' : '0'; }
 
+  /**
+   * AMENDS 03 §23 / 18 §1.4 — show/hide the survival cluster on a mode switch
+   * instead of branching every frame. Hearts, hunger, air and the XP bar are
+   * meaningless in creative (§4.3); the crosshair, hotbar and selection/crack
+   * overlays stay. The armor row keeps its own `points > 0` rule — §23's amend
+   * enumerates four rows and armor is not among them.
+   */
+  rebuild() {
+    this.creative = !!this.game.player?.creative;
+    const vis = this.creative ? 'none' : '';
+    this.el.hearts.style.display = vis;
+    this.el.hunger.style.display = vis;
+    this.el.xpBar.style.display = vis;
+    if (this.creative) this.el.air.style.display = 'none';
+    this.el.badge.style.display = this.creative ? 'block' : 'none';
+    // The dirty cache would otherwise suppress the re-render on the way back:
+    // update() compares against the value it last WROTE, which is still the
+    // live one, so every row would stay hidden.
+    this.cache = {};
+  }
+
   setDirty(key, value) {
     if (this.cache[key] === value) return false;
     this.cache[key] = value;
@@ -123,6 +155,11 @@ export class Hud {
   update() {
     const p = this.game.player;
     if (!p) return;
+
+    // 18 §4.3 — the survival rows are hidden in creative; skip their writes
+    // entirely, or update() would immediately undo rebuild()'s display:none
+    // (the air row in particular sets its own display every frame).
+    if (this.creative) { this.updateHotbar(p); this.updateOverlays(p); return; }
 
     // hearts (2 HP per heart)
     const hp = Math.ceil(p.health);
@@ -175,36 +212,56 @@ export class Hud {
       this.el.xpLevel.textContent = p.xpLevel > 0 ? p.xpLevel : '';
     }
 
-    // hotbar
+    this.updateHotbar(p);
+    this.updateOverlays(p);
+  }
+
+  // Icon / count / durability bar for one slot frame. Shared by the hotbar and
+  // the offhand slot so they cannot drift apart in style (08 §7.5).
+  paintSlot(d, s) {
+    const icon = d.children[0], count = d.children[1], dur = d.children[2];
+    if (s) {
+      iconCss(icon, tileForItemId(this.game, s.id));
+      icon.style.display = 'block';
+      count.textContent = s.count > 1 ? s.count : '';
+      const item = ITEMS.get(s.id);
+      if (item?.durability && s.damage > 0) {
+        const f = 1 - s.damage / item.durability;
+        dur.style.display = 'block';
+        dur.firstElementChild.style.width = `${f * 100}%`;
+        dur.firstElementChild.style.background = `hsl(${f * 120}, 90%, 45%)`;
+      } else dur.style.display = 'none';
+    } else {
+      icon.style.display = 'none';
+      count.textContent = '';
+      dur.style.display = 'none';
+    }
+  }
+
+  updateHotbar(p) {
     for (let i = 0; i < 9; i++) {
       const s = p.inventory[i];
       const sig = s ? `${s.id}|${s.count}|${s.damage ?? ''}|${i === p.selectedSlot}` : `e|${i === p.selectedSlot}`;
       if (!this.setDirty('hb' + i, sig)) continue;
       const d = this.slots[i];
       d.classList.toggle('selected', i === p.selectedSlot);
-      const icon = d.children[0], count = d.children[1], dur = d.children[2];
-      if (s) {
-        iconCss(icon, tileForItemId(this.game, s.id));
-        icon.style.display = 'block';
-        count.textContent = s.count > 1 ? s.count : '';
-        const item = ITEMS.get(s.id);
-        if (item?.durability && s.damage > 0) {
-          const f = 1 - s.damage / item.durability;
-          dur.style.display = 'block';
-          dur.firstElementChild.style.width = `${f * 100}%`;
-          dur.firstElementChild.style.background = `hsl(${f * 120}, 90%, 45%)`;
-        } else dur.style.display = 'none';
-      } else {
-        icon.style.display = 'none';
-        count.textContent = '';
-        dur.style.display = 'none';
-      }
+      this.paintSlot(d, s);
     }
+    // 08 §7.5 — offhand slot, rendered only when the offhand is non-empty.
+    const o = p.offhand;
+    const osig = o ? `${o.id}|${o.count}|${o.damage ?? ''}` : 'e';
+    if (this.setDirty('offhand', osig)) {
+      this.el.offhand.classList.toggle('filled', !!o);
+      this.paintSlot(this.offhandSlot, o);
+    }
+  }
 
-    // overlays
-    const fire = p.fireTicks > 0 && p.gameMode !== 'debugCreative';
+  updateOverlays(p) {
+    // 18 §4.2 — no flame overlay in creative; fireTicks is forced to 0 anyway,
+    // so this guard is belt-and-braces against a same-tick ignition.
+    const fire = p.fireTicks > 0 && !p.creative;
     if (this.setDirty('fire', fire)) this.el.fire.style.display = fire ? 'block' : 'none';
+    // §4.2: the underwater tint still renders in creative (cosmetic honesty).
     if (this.setDirty('eye', p.eyeSubmerged)) this.el.water.style.display = p.eyeSubmerged ? 'block' : 'none';
-    if (this.setDirty('mode', p.gameMode)) this.el.badge.style.display = p.gameMode === 'debugCreative' ? 'block' : 'none';
   }
 }

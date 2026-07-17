@@ -15,7 +15,7 @@ import { Menus } from './ui/menus.js';
 import { Containers } from './ui/containers.js';
 import { DebugOverlay } from './ui/debug.js';
 import { SaveManager } from './save/saveManager.js';
-import { STATE } from './constants.js';
+import { STATE, GameMode } from './constants.js';
 
 async function boot() {
   const canvas = document.getElementById('game-canvas');
@@ -117,8 +117,15 @@ async function boot() {
       if (next === STATE.PAUSED) audio.onPause();
       else if (prev === STATE.PAUSED) audio.onResume();
       if (next !== STATE.PLAYING_UI && containers.isOpen()) containers.close(true);
-      menus.setPaletteVisible(next === STATE.PLAYING_UI &&
-        game.player?.gameMode === 'debugCreative');
+    },
+    // 18 §1.4 — the toggle's UI half. hud.rebuild() is driven from Game.
+    onGameModeChanged: mode => {
+      hud.toast(mode === GameMode.CREATIVE
+        ? 'Creative mode (double-tap Space to fly)' : 'Survival mode');
+      // The open screen belongs to the mode that opened it: E in creative shows
+      // the palette, in survival the inventory. Switching with one open would
+      // otherwise leave the wrong screen up, still wired to the old semantics.
+      if (containers.isOpen()) containers.close();
     },
   };
 
@@ -139,18 +146,19 @@ async function boot() {
   input.onKeyEdge = code => {
     if (code === 'F3') {
       debug.toggle();
-    } else if (code === 'F4' && game.player) {
-      const p = game.player;
-      p.gameMode = p.gameMode === 'survival' ? 'debugCreative' : 'survival';
-      if (p.gameMode === 'survival') p.flying = false;
-      hud.toast(p.gameMode === 'debugCreative' ? 'Debug creative ON (double-Space to fly)' : 'Survival mode');
-      menus.setPaletteVisible(game.state === STATE.PLAYING_UI && p.gameMode === 'debugCreative');
     } else if (code === 'KeyE') {
-      if (game.state === STATE.PLAYING) game.openContainer('inventory');
-      else if (game.state === STATE.PLAYING_UI) containers.close();
+      // 18 §6 — E opens the creative palette while creative, the survival
+      // inventory otherwise. Both are PLAYING_UI screens (AMENDS 01 §15.3).
+      if (game.state === STATE.PLAYING) {
+        game.openContainer(game.player?.creative ? 'creative' : 'inventory');
+      } else if (game.state === STATE.PLAYING_UI) containers.close();
     } else if (code === 'Escape') {
       if (game.state === STATE.PLAYING_UI) containers.close();
     }
+    // F4 is deliberately NOT handled here: 18 §1.4 requires the switch to land
+    // inside player.tick(), before the movement branch, so the new mode's
+    // physics take effect the same tick. Player.tick() reads the F4 down-edge
+    // off the input snapshot instead.
   };
 
   // PRESS START via keyboard (19-MAIN-MENU §3.2). Guarded to TITLE: this is a

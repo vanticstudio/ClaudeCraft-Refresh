@@ -6,6 +6,8 @@ import { ITEMS } from '../registry/items.js';
 import { collidesAny, overlapsBlockId } from '../physics/collision.js';
 import { AABB } from '../math/aabb.js';
 import { emitSound, audio } from '../audio/engine.js';
+import { GameMode, normalizeGameMode, KEYBINDS } from '../constants.js';
+import { tagsEqual, cloneStack } from '../items/tags.js';
 
 const DEG = Math.PI / 180;
 
@@ -31,7 +33,8 @@ export class Player extends LivingEntity {
     this.sneaking = false;
     this.sprinting = false;
     this.flying = false;
-    this.gameMode = 'survival';        // 'survival' | 'debugCreative'
+    this.gameMode = GameMode.SURVIVAL;  // 18 §1.1 enum: 0 survival | 1 creative
+    this.pendingGameMode = null;        // set by F4; applied in tick() (§1.4)
     this.jumpCooldown = 0;
     this.ticksSinceForward = 99;
     this.ticksSinceSpace = 99;
@@ -99,7 +102,9 @@ export class Player extends LivingEntity {
     if (stackable) {
       for (const i of order) {
         const s = this.inventory[i];
-        if (s && s.id === stack.id && (s.damage ?? 0) === (stack.damage ?? 0) && s.count < max) {
+        // AMENDS 06 §14.2 (08 §1): tags must deep-equal to merge.
+        if (s && s.id === stack.id && (s.damage ?? 0) === (stack.damage ?? 0) &&
+            tagsEqual(s, stack) && s.count < max) {
           const add = Math.min(max - s.count, remaining);
           s.count += add; remaining -= add;
           if (remaining === 0) return 0;
@@ -109,8 +114,11 @@ export class Player extends LivingEntity {
     for (const i of order) {
       if (!this.inventory[i]) {
         const put = Math.min(max, remaining);
-        this.inventory[i] = { id: stack.id, count: put };
-        if (stack.damage !== undefined) this.inventory[i].damage = stack.damage;
+        // cloneStack, not a spread: each slot needs its own tags object (08 §1
+        // invariant 4) or two slots alias one enchant list.
+        const dst = cloneStack(stack);
+        dst.count = put;
+        this.inventory[i] = dst;
         remaining -= put;
         if (remaining === 0) return 0;
       }
@@ -118,23 +126,72 @@ export class Player extends LivingEntity {
     return remaining;
   }
 
-  consumeHeld(n = 1) {
-    const s = this.heldStack;
+  get creative() { return this.gameMode === GameMode.CREATIVE; }
+
+  // 18 §5.3 — the single choke point for "creative never depletes a stack".
+  // Every place/use path in interaction.js funnels through here, so the rule is
+  // stated once instead of at seven call sites (any of which a later phase
+  // could add to and forget).
+  consumeHeld(n = 1) { this.consumeIn('main', n); }
+
+  // -------------------------------------------------- 08 §7 hand accessors
+  // 'main' = selected hotbar slot, 'off' = slot 45. The un-suffixed helpers
+  // above (heldStack/heldItem/consumeHeld/damageHeld) stay MAIN-hand only:
+  // mining and attacking are main-hand by definition (§7.1), and routing them
+  // through a hand parameter would put a branch in two hot paths to no end.
+  // Only the RMB pipeline (§7.3) and the bow's ammo search (§7.4) are
+  // hand-aware, and they call these explicitly.
+
+  stackIn(hand) { return hand === 'off' ? this.offhand : this.heldStack; }
+  setStackIn(hand, v) { if (hand === 'off') this.offhand = v; else this.heldStack = v; }
+  itemIn(hand) { const s = this.stackIn(hand); return s ? ITEMS.get(s.id) : null; }
+
+  consumeIn(hand, n = 1) {
+    if (this.creative) return;
+    const s = this.stackIn(hand);
     if (!s) return;
     s.count -= n;
-    if (s.count <= 0) this.heldStack = null;
+    if (s.count <= 0) this.setStackIn(hand, null);
+  }
+
+  // 18 §1.3/§1.4 — the consolidated toggle. Runs inside tick() before the
+  // movement branch so the new mode's physics take effect the same tick.
+  setGameMode(mode) {
+    if (this.gameMode === mode) return;
+    this.gameMode = mode;
+    emitSound('ui.gamemode.switch', null, mode === GameMode.CREATIVE ? 1 : 0.5);
+    if (mode === GameMode.CREATIVE) {
+      this.health = 20;
+      this.foodLevel = 20; this.saturation = 20; this.exhaustion = 0;
+      this.fireTicks = 0;
+      this.fallDistance = 0;
+      this.air = 300;
+      // flying stays false — the player may double-tap Space to enable it.
+      // inventory/hotbar untouched; the stacks simply stop depleting (§5.3).
+    } else {
+      this.flying = false;
+      this.fallDistance = 0;
+      // health/hunger keep their current (max) values and resume draining;
+      // stack counts become finite again — both are emergent, not assignments.
+    }
+    // §7.1: a hostile already chasing this player drops the target the tick the
+    // switch lands, rather than waiting out its own give-up rules.
+    if (mode === GameMode.CREATIVE) this.world.game?.onPlayerEnteredCreative?.(this);
+    this.world.game?.onGameModeChanged?.(mode);
   }
 
   // durability spend (06 §7.1); returns true if the tool broke
-  damageHeld(n = 1) {
-    if (this.gameMode === 'debugCreative') return false;
-    const s = this.heldStack;
+  damageHeld(n = 1) { return this.damageIn('main', n); }
+
+  damageIn(hand, n = 1) {
+    if (this.creative) return false;
+    const s = this.stackIn(hand);
     if (!s) return false;
     const item = ITEMS.get(s.id);
     if (!item?.durability) return false;
     s.damage = (s.damage ?? 0) + n;
     if (s.damage >= item.durability) {
-      this.heldStack = null;
+      this.setStackIn(hand, null);
       // Most callers ignore this return value, so the emit lives here rather
       // than at the six call sites.
       emitSound('player.item_break', null);
@@ -194,12 +251,12 @@ export class Player extends LivingEntity {
   // -------------------------------------------------- exhaustion / hunger (06 §12)
 
   addExhaustion(v) {
-    if (this.gameMode === 'debugCreative') return;
+    if (this.creative) return;
     this.exhaustion += v;
   }
 
   tickHunger() {
-    if (this.gameMode === 'debugCreative') return;
+    if (this.creative) return;
     if (this.foodPoisonTicks > 0) {
       this.foodPoisonTicks--;
       this.exhaustion += 0.005;
@@ -278,6 +335,20 @@ export class Player extends LivingEntity {
     // 2. dead?
     if (this.dead) return;
 
+    // 2.5 game-mode toggle (18 §1.3/§1.4) — applied atomically here, BEFORE the
+    // movement branch, so the new mode's physics take effect this same tick.
+    // The F4 edge is read off the snapshot rather than a keydown listener: the
+    // listener fires mid-frame and would flip `flying` and the damage guard in
+    // the middle of a tick's own movement/damage pass. `pressed` is the per-tick
+    // down-edge set (01 §15.1), so this cannot auto-repeat.
+    if (input.pressed.has(KEYBINDS.gameMode)) {
+      this.pendingGameMode = this.creative ? GameMode.SURVIVAL : GameMode.CREATIVE;
+    }
+    if (this.pendingGameMode !== null) {
+      this.setGameMode(this.pendingGameMode);
+      this.pendingGameMode = null;
+    }
+
     // 3–4. sneak + sprint state
     this.updateSneak(input);
     this.updateSprint(input);
@@ -307,6 +378,12 @@ export class Player extends LivingEntity {
     else if (this.inLava) this.lavaMove(input);
     else if (this.inWater) this.waterMove(input);
     else this.landMove(input);
+
+    // 6b. flight ground-cancel (18 §2.4, Java behavior). Gated on a DOWNWARD
+    // move, per §2.4's own wording ("onGround on a downward move"): the tick a
+    // double-tap ENABLES flight from a standing start, onGround is still true,
+    // and an ungated test would cancel flight before it ever began.
+    if (this.flying && this.onGround && this.pos.y < y0) this.flying = false;
 
     // 7. fall damage
     // trackFall() zeroes fallDistance unconditionally on the landing tick, so the
@@ -370,8 +447,12 @@ export class Player extends LivingEntity {
     const targetEye = this.sneaking ? 1.27 : 1.62;
     this.eyeHeight += (targetEye - this.eyeHeight) * 0.5;
 
-    // FOV effect (03 §18.3)
-    const targetFov = (this.sprinting || (this.flying && this.sprinting)) ? 1.10 : 1.0;
+    // FOV effect (03 §18.3 sprint; 18 §2.3 flight). Flying is +10% on its own
+    // and "increased further when holding sprint" — the old expression made
+    // flight FOV identical to walking, since both its arms reduced to `sprinting`.
+    const targetFov = this.flying
+      ? (this.sprinting ? 1.21 : 1.10)          // 1.10² for sprint-fly (approx)
+      : (this.sprinting ? 1.10 : 1.0);
     this.fovScale += (targetFov - this.fovScale) * 0.5;
   }
 
@@ -544,7 +625,7 @@ export class Player extends LivingEntity {
       }
       this.ticksSinceForward = 0;
     }
-    if (input.pressed.has('Space') && this.gameMode === 'debugCreative') {
+    if (input.pressed.has('Space') && this.creative) {
       if (this.ticksSinceSpace <= 7) {
         this.flying = !this.flying;
         this.vel.y = 0;
@@ -571,7 +652,7 @@ export class Player extends LivingEntity {
   // -------------------------------------------------- environment (03 §10–13)
 
   tickEnvironment() {
-    if (this.gameMode === 'debugCreative') { this.air = 300; this.fireTicks = 0; return; }
+    if (this.creative) { this.air = 300; this.fireTicks = 0; return; }
     const t = this.age;
 
     // drowning (03 §10.2)
@@ -618,8 +699,17 @@ export class Player extends LivingEntity {
   // -------------------------------------------------- damage / death (03 §20)
 
   beforeHurt(amount, source) {
-    if (this.gameMode === 'debugCreative' && source !== 'void') return false;
+    // 18 §4.1 — void is the ONE source creative does not nullify.
+    if (this.creative && source !== 'void') return false;
     return true;
+  }
+
+  // 18 §4.4 — a creative player is immovable by mob melee, projectiles and
+  // explosions. beforeHurt already stops the hurt() path from ever reaching
+  // applyKnockback, but Game.explode pushes entities directly, outside hurt().
+  applyKnockback(strength, dirX, dirZ) {
+    if (this.creative) return;
+    super.applyKnockback(strength, dirX, dirZ);
   }
 
   onHurt(dmg, source, opts) {
@@ -680,7 +770,10 @@ export class Player extends LivingEntity {
   // -------------------------------------------------- persistence (01 §16)
 
   serialize() {
-    const packStacks = arr => arr.map(s => s ? { id: s.id, count: s.count, damage: s.damage } : null);
+    // 08 §13 / AMENDS 06 §18: every serialized stack is {id, count, damage?,
+    // tags?}. cloneStack deep-copies tags and preserves unknown keys, so a 09+
+    // key survives a round-trip through a build that predates its owner.
+    const packStacks = arr => arr.map(s => cloneStack(s));
     return {
       pos: [this.pos.x, this.pos.y, this.pos.z],
       vel: [this.vel.x, this.vel.y, this.vel.z],
@@ -693,7 +786,7 @@ export class Player extends LivingEntity {
       gameMode: this.gameMode,
       inventory: packStacks(this.inventory),
       armor: packStacks(this.armor),
-      offhand: this.offhand ? { id: this.offhand.id, count: this.offhand.count, damage: this.offhand.damage } : null,
+      offhand: cloneStack(this.offhand),
       selectedSlot: this.selectedSlot,
       spawnPoint: this.spawnPoint,
     };
@@ -710,7 +803,9 @@ export class Player extends LivingEntity {
     this.air = rec.air ?? 300;
     this.fireTicks = rec.fireTicks ?? 0;
     this.fallDistance = rec.fallDistance ?? 0;
-    this.gameMode = rec.gameMode ?? 'survival';
+    // AMENDS 01 §16.1 / 18 §1.2 — pre-EC saves stored the string form.
+    this.gameMode = normalizeGameMode(rec.gameMode);
+    this.flying = false;                  // AMENDS 03 §2.4: transient, never persisted
     this.selectedSlot = rec.selectedSlot ?? 0;
     this.spawnPoint = rec.spawnPoint ?? null;
     if (rec.inventory) rec.inventory.forEach((s, i) => { this.inventory[i] = s || null; });

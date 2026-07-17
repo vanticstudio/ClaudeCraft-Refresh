@@ -75,6 +75,36 @@ autosaves to the browser's IndexedDB every 30 seconds — close the tab and
 
 *This section is updated as new features land.*
 
+- **2026-07-17** — **Sweep attack + offhand slot (expansion phase E3, `08` part 1)**:
+  a full-charge sword swing while standing now **sweeps** — every mob in the halo
+  around the one you hit takes damage, gets shoved the way you're looking, and the
+  arc flashes with a new synthesized `player.attack.sweep` sound. Sprinting,
+  jumping, or swinging an axe won't sweep, same as vanilla. The **offhand slot**
+  is live: `F` swaps your held item with it (in the world and over a hovered
+  inventory slot), the slot appears left of the hotbar only when it holds
+  something, and right-click runs the real two-hand pipeline — pickaxe in main +
+  torch in offhand places torches, offhand food is eaten only when your main hand
+  has nothing to do, and bows fire offhand arrows first. Under the hood this lands
+  the item-stack `tags` schema that enchanting, potions, the Nether, the End,
+  villages and bosses all build on. Also fixes two long-standing bugs found along
+  the way: **carrots and potatoes could never be planted** (they were always eaten
+  instead), and the item-name popup on switching hotbar slots never appeared.
+
+- **2026-07-17** — **Creative mode (expansion phase EC, `18`)**: the old F4
+  debug-creative flag is now a first-class, persisted **game mode**. `F4` toggles
+  survival ⇄ creative; double-tap `Space` to fly (`Space` up, `Shift` down, both
+  to hover, `Ctrl` to sprint-fly at ~21.8 m/s). In creative you take **no damage
+  from anything but the void** and no knockback at all, hunger and health freeze,
+  blocks break instantly with no drops/XP/tool wear (bedrock, water and lava stay
+  unbreakable, and chests still spill), placing never depletes the stack, and
+  middle-click **pick-block** grabs whatever you're looking at. `E` opens a new
+  **tabbed, searchable creative inventory** — every registered item across 8
+  categories, a search tab, the real survival inventory with its craft grid, and
+  a destroy slot (shift-click it to empty everything). Hostile mobs ignore you
+  entirely and won't retaliate, but still spawn and still drop loot when you kill
+  them. Creative adds **zero new block or item ids**. *(Ctrl+pick's `tags` copy is
+  deferred until 08 freezes that schema — see DEVIATIONS.md.)*
+
 - **2026-07-17** — **Fire spread & waterlogging (expansion phase E2, `15`)**: the
   full Java 1.20 fire-spread engine replaces the old "fire never spreads" stub —
   age-nibble state, the exact scheduled-tick algorithm, a flammability table for

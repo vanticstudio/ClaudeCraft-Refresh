@@ -61,6 +61,21 @@ html, body {
   border: 2px solid #222;
   padding: 2px;
 }
+/* 08 §7.5 — the offhand slot frame, immediately left of the hotbar with a 2 px
+   gap, same style. The hotbar is centred and 9*--slot + 8px wide (2px padding +
+   2px border a side), so its left edge is at 50% − (9*--slot + 8px)/2; the
+   -100% shifts this frame by its own width so its RIGHT edge lands 2 px short
+   of that. Hidden entirely when the offhand is empty (vanilla). */
+#offhand-slot {
+  position: absolute; bottom: 8px; left: 50%;
+  transform: translateX(calc(-100% - (9 * var(--slot) + 8px) / 2 - 2px));
+  display: none;
+  background: rgba(0,0,0,0.55);
+  border: 2px solid #222;
+  padding: 2px;
+}
+#offhand-slot.filled { display: block; }
+
 .hotbar-slot {
   width: var(--slot); height: var(--slot);
   border: 2px solid #555;
@@ -140,9 +155,11 @@ html, body {
   position: absolute; inset: 0; background: #000;
   opacity: 0; transition: opacity 2.5s; pointer-events: none;
 }
-#debug-badge {
+/* AMENDS 03 §23 — "CREATIVE", top-right, 50% alpha (was "DEBUG CREATIVE (F4)") */
+#mode-badge {
   position: absolute; top: 8px; right: 10px;
   color: rgba(255,255,255,0.5); font-size: 13px;
+  letter-spacing: 0.08em;
   display: none;
 }
 
@@ -363,3 +380,78 @@ html, body {
   padding: 4px 8px;
   white-space: nowrap;
 }
+
+/* ---------- creative inventory (18 §6) ---------- */
+/* Its own reference panel: the survival 176×166 cannot hold a tab strip + a
+   9×5 palette + the full personal inventory + the destroy slot. Width/height
+   are set inline from CV in containers.js so the two cannot drift. */
+
+/* The strip sits INSIDE the panel: .panel-title already occupies the space
+   above it (translateY(-100%)), and the two would render on top of each other. */
+.cv-tabs {
+  position: absolute;
+  display: flex;
+  gap: calc(1 * var(--gpx));
+}
+.cv-tab {
+  width: calc(16 * var(--gpx));
+  height: calc(16 * var(--gpx));
+  display: flex; align-items: center; justify-content: center;
+  background: #8b8b8b;
+  border: calc(1 * var(--gpx)) solid;
+  border-color: #6a6a6a #4a4a4a #4a4a4a #6a6a6a;
+  border-bottom: none;
+  cursor: pointer;
+  font-size: calc(8 * var(--gpx));
+  color: #3f3f3f;
+}
+.cv-tab:hover { background: #a5a5a5; }
+.cv-tab.selected {
+  background: #c6c6c6;
+  border-color: #fefefe #565656 transparent #fefefe;
+}
+.cv-tab > .icon { width: calc(16 * var(--gpx)); height: calc(16 * var(--gpx)); }
+
+.cv-scrollbar {
+  position: absolute;
+  width: calc(12 * var(--gpx));
+  height: calc(90 * var(--gpx));      /* CV.ROWS * 18 */
+  background: #565656;
+  border: calc(1 * var(--gpx)) solid;
+  border-color: #373737 #fff #fff #373737;
+}
+.cv-knob {
+  position: absolute; left: 0; right: 0;
+  background: #c6c6c6;
+  border: calc(1 * var(--gpx)) solid;
+  border-color: #fefefe #565656 #565656 #fefefe;
+  box-sizing: border-box;
+  min-height: calc(8 * var(--gpx));
+}
+
+.cv-search {
+  position: absolute;
+  width: calc(160 * var(--gpx));
+  height: calc(14 * var(--gpx));
+  padding: 0 calc(3 * var(--gpx));
+  background: #000;
+  color: #e0e0e0;
+  border: calc(1 * var(--gpx)) solid;
+  border-color: #373737 #fff #fff #373737;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: calc(7 * var(--gpx));
+  outline: none;
+}
+
+/* §6.4 destroy slot — procedural trash silhouette, no downloaded art */
+.slot-abs[data-ph="destroy"] .slot-ph {
+  background: #6e3030;
+  clip-path: polygon(
+    20% 22%, 80% 22%, 74% 92%, 26% 92%,
+    26% 22%, 38% 22%, 38% 12%, 62% 12%, 62% 22%);
+}
+.slot-abs[data-ph="destroy"] { background: #8b7b7b; }
+.slot-abs[data-ph="destroy"]:hover { background: #a58b8b; }
+/* always visible, not just when "empty" — the cell holds nothing by design */
+.slot-abs[data-ph="destroy"] .slot-ph { opacity: 0.55; }

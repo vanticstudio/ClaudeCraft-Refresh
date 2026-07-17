@@ -5,6 +5,7 @@ import { BLOCKS } from '../registry/blocks.js';
 import { ITEMS } from '../registry/items.js';
 import { AABB } from '../math/aabb.js';
 import { emitSound } from '../audio/engine.js';
+import { tagsEqual, cloneTags } from '../items/tags.js';
 
 // ---- shared visual helpers (initialised once from main with the atlas) ----
 
@@ -135,9 +136,12 @@ export class ItemEntity extends Entity {
     const max = item?.stack ?? 64;
     if (this.stack.count >= max) return;
     const box = this.getAABB().expand(0.5, 0.25, 0.5);
+    // AMENDS 06 §16 (08 §1): merge only when id, durability AND deep-equal tags
+    // all match — two differently-enchanted swords must never fuse on the floor.
     const near = this.world.getEntitiesInBox(box,
       e => e !== this && e.type === 'item' && !e.dead &&
-           e.stack.id === this.stack.id && (e.stack.damage ?? 0) === (this.stack.damage ?? 0));
+           e.stack.id === this.stack.id && (e.stack.damage ?? 0) === (this.stack.damage ?? 0) &&
+           tagsEqual(e.stack, this.stack));
     for (const other of near) {
       if (this.stack.count + other.stack.count > max) continue;
       this.stack.count += other.stack.count;
@@ -201,6 +205,8 @@ export class ItemEntity extends Entity {
     return {
       type: 'item',
       itemId: this.stack.id, count: this.stack.count, damage: this.stack.damage,
+      // 08 §13: item entities round-trip `tags` like every other stack.
+      tags: cloneTags(this.stack.tags),
       pos: [this.pos.x, this.pos.y, this.pos.z],
       vel: [this.vel.x, this.vel.y, this.vel.z],
       age: this.age, pickupDelay: this.pickupDelay,
@@ -208,8 +214,11 @@ export class ItemEntity extends Entity {
   }
 
   static deserialize(world, rec) {
+    const stack = { id: rec.itemId, count: rec.count, damage: rec.damage };
+    const tags = cloneTags(rec.tags);
+    if (tags) stack.tags = tags;
     const e = new ItemEntity(world, rec.pos[0], rec.pos[1], rec.pos[2],
-      { id: rec.itemId, count: rec.count, damage: rec.damage }, rec.pickupDelay ?? 0);
+      stack, rec.pickupDelay ?? 0);
     e.vel.x = rec.vel[0]; e.vel.y = rec.vel[1]; e.vel.z = rec.vel[2];
     e.age = rec.age ?? 0;
     return e;

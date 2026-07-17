@@ -4,6 +4,358 @@ Deviations and ambiguity rulings. (The base-spec `.md` files were removed from
 the working tree during repo cleanup; the pre-UPDATE deviation log for the
 initial build lives in git history — `git show 8441ac9:DEVIATIONS.md`.)
 
+## E3 — 08-ENCHANTING part 1: the `tags` contract, sweep attack, offhand (2026-07-17)
+
+Built to `08-ENCHANTING.md` §1, §6, §7, §12 (the sweep hook), §13. **§2–§5 and
+§8–§11 are E4's and are deliberately not built** — no enchanting table, anvil,
+grindstone, catalog, enchanted book or glint exists yet.
+
+**Registry footprint: ZERO.** E3 allocates no block id, no item id, no state bit.
+08's range (blocks 105–109, items 346–369) stays empty until E4. The one shared
+namespace addition is §12's `player.attack.sweep` sound event. 15's bit-7
+contract is untouched — E3 introduces no block states at all.
+
+### THE `tags` CONTRACT (frozen — read before any 09/10/11/12/13 work)
+
+`src/items/tags.js` is the single definition, per 08 §1's "**This section is the
+single definition used by all expansion files (07–16).**" and CLAUDE.md §8.2's
+build-order gate. The module header carries the schema, the five invariants and
+the reserved-key note. Consumers: **do not redefine the shape, do not compare
+tags with JSON.stringify, do not spread a stack.**
+
+| Key | Owner | Status at E3 |
+|---|---|---|
+| `enchants: [{id,lvl}]` | 08 §5.1 | container shape frozen; ids arrive in E4 |
+| `name: string` | 08 §8.4 | frozen; written by E4's anvil |
+| `anvilUses: uint8` | 08 §8.2 | frozen; written by E4's anvil |
+| `potionId: uint8` | **09-POTIONS** | key reserved, no shape, no code |
+| `containerItems` | **11-END** (inferred) | reserved only — see the ruling below |
+
+### Deviations
+
+**1. `containerItems` is reserved, not defined — CLAUDE.md §8.2 and 08 §1 conflict.**
+§8.2 describes 08's schema as "(enchants / **containerItems** / potionId)", but
+08 §1 does not define `containerItems` at all. 08 §1 is the owning text and says
+"**This section is the single definition**"; §2 precedence puts the owning
+expansion's body above the orchestration doc's prose. On the evidence it is
+11-END's shulker box. **Ruling:** reserved in `RESERVED_KEYS` and named to
+11-END, arriving via §1's own forward-compat clause ("future keys may be added
+by other expansion files; unknown keys must be preserved on load/save") — exactly
+how §1 treats `potionId` as 09's. 08 defines no shape and writes no code for it.
+Unknown keys are provably preserved through clone, merge-compat and save/load
+(tests `t_unknownPreserved`, `t_neqUnknown`, `p_offhandTagsRoundTrip`), so 11 can
+land its shape without touching this module. **11-END must not assume 08 defined it.**
+
+**2. F-swap mid-bow-draw: 08 §7.2 and AMENDS 03 §3 contradict each other.**
+§7.2: "Swapping counts as a main-hand item switch → resets the attack-charge
+timer t and cancels an in-progress bow draw or eat on either hand." AMENDS 03 §3:
+"F is **ignored** while an item-use channel is active mid-bow-draw (draw cancels,
+no arrow fired)." One says the swap happens and cancels the draw; the other says
+F is ignored. Both are 08, so §2 precedence cannot separate them. **Ruling:** the
+only reading that leaves both sentences true — mid-bow-draw, F cancels the draw
+(no arrow) and does **not** swap; mid-eat, F cancels the eat **and** swaps.
+Implemented in `Interaction.swapOffhand`. Java would swap in both cases; the
+AMENDS note is the more specific and unambiguous statement about the observable
+outcome, so it wins for the bow. Revisit if E4 finds a third statement.
+
+**3. Entity interaction (feeding/shearing) sits outside §7.3's step list.**
+§7.3 is declared "the single **canonical** RMB step list" and begins at the block
+raycast; it never mentions entities. The shipped code interacts with the nearest
+entity on the ray before anything else (03 §16.1). Kept as-is — ahead of step 1,
+main-hand only — rather than dropped or renumbered, since deleting it would break
+feeding/shearing and §7.3 gives no instruction either way. Offhand entity
+interaction is not implemented (vanilla has it; §7.3 does not ask for it).
+
+**4. §7.3's step order fixed a live bug: carrots and potatoes could never be planted.**
+Items 315/316 carry **both** `kind:'food'` and `plantsCrop`. The shipped `use()`
+ran place → food → … → `plantsCrop`, and the food branch returned
+unconditionally, so the `plantsCrop` branch was unreachable for the only two
+items that are both. §7.3's canonical order puts block-targeted uses (step 2)
+**before** self-use (step 4), which makes a carrot plant on farmland and feed the
+player anywhere else — vanilla's `useOn` → PASS → `use()`. This is a **behavior
+change against shipped v1**, caused by applying the spec. Verified both ways
+(`r_carrotPlants`, `r_carrotEatsOnStone`). Consequence: the step-2 helpers
+(`plantSeed`, `useHoe`, `useBoneMeal`, `useFlintSteel`, `useBucketEmpty`,
+`useBucketFilled`) now return a boolean "did it perform" — a wrong return there
+either swallows the press or leaks it to the offhand.
+
+**5. `game.hud` never existed — three calls were silently dead.**
+The HUD lives at `game.ui.hud` (`main.js:100`). `interaction.js` called
+`this.game.hud?.onHotbarChange?.()` at three sites; the optional chain swallowed
+it, so the item-name popup (06 §15.2) has never fired on a hotbar switch in the
+shipped build. Repointed to `game.ui?.hud?.…`, which resurrects that popup —
+a **visible behavior change** beyond E3's scope, but the alternative was to copy
+a known-dead call into the new F-swap path. `ItemEntity.js:168`'s
+`game.hud?.flashPickup?.(…)` is left alone: `flashPickup` is not defined on `Hud`
+either, so it is doubly dead and belongs to whoever writes that method.
+
+**6. Six stack-copy sites shared their `tags` object (08 §1 rule 4).**
+`{...stack}` is a shallow copy, so a split/drop left both halves pointing at one
+tags object — a later anvil rename on one would silently rewrite the other. Found
+and fixed at `Game.js` ×2 (`dropStackAt`, `throwStack`), `containers.js` ×3
+(shift-click leftover, right-click split-half, right-click place-one),
+`interaction.js` ×1 (`dropHeld`, which additionally **dropped tags entirely** —
+Q on an enchanted sword returned a plain one). All now route through
+`cloneStack`/`withCount`. Regression-tested (`t_deepClone`, `m_giveClones`).
+
+**7. `pickBlock` compared tags with `JSON.stringify` (18 §5.4).**
+Key order makes stringify report equal objects unequal and vice versa — the exact
+anti-pattern §1 rule 5 forbids. Inert today (18's `pickTags` hook returns
+`undefined` for every block, deliberately, pending 08), but it must not be the
+pattern E4 copies. Switched to `tagsEqual`. **18's `pickTags` hook is now
+unblocked** — it deferred explicitly "until 08 lands" and can be wired whenever
+someone owns that decision; E3 did not, as it is 18's call, not 08's.
+
+**8. Sweeping Edge is hardcoded to level 0 until E4.**
+§6.3's `ratio = sweepingEdgeLvl/(sweepingEdgeLvl+1)` needs the enchant's catalog
+id from §5.1, which is E4's. `sweepLvl = 0` → ratio 0 → `sweepDmg` is exactly 1,
+which is precisely §6.3's own reference number ("plain iron sword → 1 HP to
+victims"). The seam is one line, marked, and named in a comment
+(`getEnchantLvl(p.heldStack, ENCH.SWEEPING_EDGE)`). The acceptance line "Iron
+sword + Sweeping Edge I deals exactly 4 HP to secondaries" is **E4's to close**.
+
+**9. The acceptance checklist's "1 HP" is pre-armor.**
+"all zombies … flash red for **1 HP** (plain sword)" — §6.3 says victims take
+`sweepDmg` "through the normal `hurt()` pipeline", and zombies carry
+`naturalArmor = 2`, so 05 §14.2's armor formula lands 0.94 HP, not 1.00. The
+sweep damage handed to `hurt()` **is** exactly 1. Tested both ways
+(`s_secondaryRawDmg1`, `s_secondaryAfterArmor`); not a code deviation, but the
+checklist line reads as an HP delta and is not one.
+
+### Defects found by the CRITICAL-tier review pass and fixed
+
+A separate Opus review subagent audited the frozen contract + the combat and
+offhand changes (CLAUDE.md §8.3: the check must not be run by the context that
+wrote the code). It cleared §6's formulas and ordering, §7.3's pipeline, rule-4
+aliasing across the whole tree, and every E3 amendment, and found six defects —
+all fixed, all regression-tested.
+
+1. **HIGH — `tagsEqual` silently returned `true` for ANY two bare tags objects.**
+   The frozen §1 helper list names this one `tagsEqual(a, b)` while every sibling
+   says `stack`, so a downstream author reading the spec writes
+   `tagsEqual(a.tags, b.tags)` — and `.tags` on a tags object is `undefined`,
+   collapsing both sides to null and returning **true for every pair**. Proven by
+   execution: a Sharpness V sword compared equal to a vanilla one, and
+   `{potionId:7}` equal to `{potionId:9}`. Failure scenario: 09 implements potion
+   stack-compat per §1's literal signature and every potion merges with every
+   other — no error, no warning, on a contract frozen for five files. **Fixed** by
+   accepting both call shapes (`asTags`); a frozen contract must not answer
+   wrongly in silence. This was the highest-blast-radius item in the phase and
+   testing had not caught it.
+2. **MEDIUM — a failed main-hand throwable PASSED to the offhand.** `throwHeld`
+   returns false when an ender_pearl is on cooldown, which `useSelf` propagated
+   as PASS. Repro: pearl in main, torch in offhand, hold RMB → the offhand placed
+   ~5 torches across the 20-tick cooldown. §7.3: "a failed main-hand action …
+   still consumes the attempt and blocks the offhand that press" — a cooldown is
+   a failed action, not "no action". **Fixed**; the food-at-20 and failed-place
+   cases were already correct.
+3. **LOW-MEDIUM — step 2's `hand` parameter was a decoy.** `useOnBlock(hand, hit)`
+   read `itemIn(hand)` but every helper it dispatches to spends the MAIN hand
+   unconditionally (`consumeHeld`/`damageHeld`/`heldStack`). Correct today (step 2
+   is main-only and only ever called with `'main'`), but §7.3 explicitly invites
+   **12 §7.1's shovel→dirt_path at step 2b** — and 12 is being built now. The
+   first caller to pass `'off'` would read one hand and consume the other, with
+   no test failing. **Fixed** by removing the parameter, so the signature stops
+   advertising a capability it does not have. Steps 3–4 were confirmed fully
+   hand-threaded.
+4. **LOW — dead `'debugCreative'` guard.** `p.gameMode !== 'debugCreative'` in
+   `tryPlace` survived the string→`GameMode` int-enum migration; both `0` and `1`
+   are `!== 'debugCreative'`, so the guard was always true and did nothing. Inert
+   only because `consumeIn` re-checks creative internally. It read as a live
+   guard, so anyone "fixing" it while refactoring `consumeIn` would get infinite
+   block depletion in creative. **Removed**; 18 §5.3's choke point holds it.
+5. **LOW — `cloneTags` propagated a malformed `{enchants: []}`.** Unreachable via
+   the module's own API, but `cloneStack` is the documented one-true-way to copy
+   a stack and would carry a hand-edited-save/`direct-build` violation forward
+   forever — and it is *invisible*: `hasTags()` says tagged, `tagsEqual()` says
+   vanilla. **Fixed**: `cloneTags` now heals invariant 2 at the choke point, and
+   `setEnchant(…, 0)` prunes a pre-existing empty `{}`.
+6. **LOW (latent) — four stack spreads left in `containers.js`.** None live
+   defects (each aliased object was either handed to a now-cloning `throwStack`
+   or was the last surviving reference), but they contradict `tags.js`'s own
+   header six lines from the correct helper, and two of them are exactly where
+   **E4's anvil output will flow**. **Fixed** to `withCount`/`cloneStack`.
+
+The reviewer also noted §12 names the durability hook `item.break` while the code
+emits 16-AUDIO's pre-existing `player.item_break` at the right trigger. 16 owns
+the sound namespace (CLAUDE.md §3), so the existing name stands — not a defect.
+
+### Not an E3 regression: E2's wool-catches gate is seed-flaky
+
+`verify-e2`'s "a wool floor CATCHES" gate asserts `peakFire >= 3` on an
+RNG-driven spread with a **random world seed per headless run**. Observed peaks
+across 5 runs: **1, 1, 1, 3, 8** — it fails ~60% of the time. Its companion
+assertion ("burns out: fuel consumed, no fire left") passes even at peak 1, so
+fire genuinely spreads and consumes. **E3 cannot be the cause:**
+`src/world/fire.js`, `src/world/World.js` and `src/registry/blocks.js` are
+byte-identical to the E2 commit `9a953c8` (`git diff --quiet 9a953c8 --` is
+clean), and E3 touches no fire, world or fluid code. The exact driver is not
+pinned (a quick repro at distant coords failed to load chunks; it is not rain —
+`raining` was false on a failing run). **Left for E2's owner**: the gate should
+pin a seed or measure a distribution rather than threshold one sample. Flagged
+rather than "fixed" by loosening someone else's assertion.
+
+### Carried forward to E4 (found here, not fixed here)
+
+- **The XP model contradicts §3.2.** The spec assumes a single scalar
+  `player.xp`; the code keeps `xpLevel` + `xpPoints` + `xpTotal`, so §3.2's
+  `subtractLevels` cannot be dropped in as written.
+- **Latent save bug.** `Player.serialize` writes `xp: this.xpTotal` (lifetime)
+  and `deserialize` replays it as *current* XP. Harmless today; the moment E4's
+  enchanting **spends** levels, a reload hands them back. Untouched by E3 — no
+  E3 path spends XP — but E4 must fix it before the table ships.
+- **`durability` vs `damage` are inverted** relative to §8.3/§5.8's pseudocode
+  (spec: remaining; code: damage counting up). Every anvil/grindstone/Mending
+  formula must be mapped, not transcribed.
+
+### Verified
+
+59 browser assertions, 0 console errors (`scratchpad/e3.cjs`): the §1 contract
+(14), the 9 review-finding regressions, stack-compatibility (3), F-swap + §7.4
+ammo order (7), the §6 sweep (12), §7.3's two-hand pipeline + §7.5 HUD +
+persistence (12), the carrot regression (2).
+Gate items measured — a plain iron sword at full charge, standing, hands 1.0
+sweep damage to every zombie in the halo and none to one 5.5 blocks away, fires
+the arc particle once and the `player.attack.sweep` hook, and pushes all victims
+along the look direction (vel.x > 0.15, |vel.z| < 0.1); sprinting, falling, an
+axe, sub-0.848 charge and 0.30 b/t movement each correctly refuse to sweep while
+walking at 0.10 b/t sweeps; F swaps both ways and zeroes the charge timer;
+pickaxe main + torch offhand places the torch from the offhand; offhand bread is
+eaten out of the offhand only when the main hand has no use. Regression: E1 audio
+35/35, E2 24/24, RMB 16/16, in-game 7/7 — 132 assertions total, all passing.
+
+## EC — 18-CREATIVE: game mode, flight, instant-build, creative inventory (2026-07-17)
+
+Built to `18-CREATIVE.md`. **Registry footprint: ZERO new block ids, ZERO new
+item ids, no `states` bit, no effect/dimension id** — verified by a registry dump
+(blocks 0–66, items ≤ 345, unchanged). The only additions to any shared namespace
+are §8's two `ui.*` sound events. 15's bit-7 contract is untouched.
+
+New module: `src/ui/creativeTabs.js` (the §6.2 tab set + classifier). The screen
+itself lives in `containers.js` per AMENDS 01 §15.3.
+
+### Amendments applied to the codebase (base specs stay frozen)
+
+| AMENDS | Applied as |
+|---|---|
+| 01 §16.1 | `gameMode` is the integer enum `{SURVIVAL:0, CREATIVE:1}` (`constants.js`); `normalizeGameMode()` migrates legacy `"survival"→0`, `"debugCreative"\|"creative"→1`, missing→0. `SAVE_VERSION` deliberately **not** bumped — §1.2 says the format is unchanged, and the migration is value-keyed |
+| 01 §15.1 | `KEYBINDS.debugMode` → `KEYBINDS.gameMode` |
+| 01 §15.3 | F3 gains a `gameMode survival\|creative` line; the creative inventory is a `PLAYING_UI` screen in `containers.js` |
+| 03 §2.4 | `gameMode` enum; `flying` forced `false` in `deserialize()` and on any switch to survival |
+| 03 §3 | `Space` double-tap toggles flight in creative (was `debugCreative`) |
+| 03 §20.2 | `beforeHurt` early-outs on `creative && source !== 'void'`; `applyKnockback` overridden to early-out (§4.4) |
+| 03 §21 | Retitled to Creative mode: instant-break gains the 6-tick hold cooldown + the hardness-−1 carve-out; flight auto-cancels on the ground; §1.4 resets; reach stays 5.2 |
+| 03 §23 | Badge is `CREATIVE` (`#mode-badge`); `hud.rebuild()` hides hearts/hunger/air/XP, keeps crosshair + hotbar |
+| 05 §5 | `Mob.updateTarget` rejects a creative candidate **and** drops an existing creative target in the give-up branch; `Mob.onHurt` skips the retaliation clause for a creative attacker; Enderman's stare + damage provocations both guarded |
+| 06 §14.2 | Pick-block active whenever creative (§5.4); source stacks not decremented on place/use |
+| 06 §15.4 | The F4 debug palette is **deleted** from `menus.js`, replaced wholesale by §6's creative inventory |
+| 06 §15.1 / §12 | Hunger/saturation/exhaustion frozen; survival HUD hidden; eating is an explicit no-op |
+| 06 break/drop path | `breakBlock(x,y,z,{drops,xp,durability})`; creative passes all three false. Container spill is unaffected — it lives in `World.setBlock` |
+| 16 §3 | `ui.gamemode.switch` + `ui.item.destroy` registered on the `ui` bus |
+
+### Deviations
+
+1. **F4 is read from the input snapshot inside `player.tick()`, not from
+   `main.js`'s `onKeyEdge`.** §1.4 requires the switch to land "inside
+   `player.tick()`, **before** the movement branch". The keydown listener fires
+   mid-frame and would flip `flying` and the damage guard partway through a
+   tick's own movement/damage pass. Consequence: F4 does nothing while paused or
+   with a screen open, because `Game.tick()` feeds `NEUTRAL_FRAME` in those
+   states. That is arguably more correct, but it *is* a behaviour change from the
+   old always-on debug toggle.
+2. **Sprint-fly FOV is 1.21 `(approx)`.** §2.3 says flying is ×1.10 and
+   "increased further when holding sprint" without a number; 1.10² is the natural
+   reading. The pre-existing expression was
+   `(sprinting || (flying && sprinting)) ? 1.10 : 1.0`, whose second arm is
+   subsumed by the first — flight FOV was identical to walking. Now fixed.
+3. **Flight's ground-cancel is gated on a downward move.** §2.4's headline is
+   "if `onGround` becomes true while `flying`, set `flying = false`", but its own
+   next sentence says "on a downward move". The headline alone is unimplementable:
+   the tick a double-tap *enables* flight from a standing start, `onGround` is
+   still true, and flight would cancel before it began. Gate: `onGround && pos.y < y0`.
+   Side effect: a creative player hovering exactly at ground level keeps flight,
+   where Java would cancel it.
+4. **Ctrl+pick-block's `tags` copy is a declared no-op stub.** §5.4 asks Ctrl to
+   "copy the block-entity/`tags` payload (08's `tags`…)". 08-ENCHANTING owns that
+   schema and CLAUDE.md §8.2 freezes it **before** consumers build against it —
+   18 §0 says this file "only reads it". So `Interaction.pickTags()` exists as the
+   hook and returns `undefined` for every block; inventing a shape here would be
+   18 defining 08's frozen contract. **The §9 line "Ctrl+pick copies the block's
+   `tags`/state" therefore passes only for state and not for tags** — see Deferred.
+   Non-Ctrl state *does* work: §5.4 expresses state through item choice (a lit
+   furnace picks `furnace`, a wall torch picks `torch`), which is implemented and
+   tested.
+5. **Buckets: the source stack is untouched, diverging from MC.** §5.3 names
+   "buckets (06 §6.4)" under "Consumption does not deplete" and states the rule as
+   "using any item in creative leaves the source stack untouched". Taken
+   literally: a water bucket stays filled after pouring (matches MC), *and* an
+   empty bucket stays empty after scooping (MC would hand you a filled one). The
+   literal reading won because it is the spec's own stated rule; creative players
+   take filled buckets from the palette. Not covered by §9's checklist either way.
+6. **Arrows must still be present to fire a bow, they are just not consumed.**
+   §5.3 does not mention arrows. `takeItem` now returns `hasItem` in creative —
+   removing the depletion without inventing "shoot from an empty quiver", which
+   is a behaviour §5.3 never grants.
+7. **Weapons are classified before tools.** §6.2's pseudocode tests
+   `entry.toolClass` first, which assumes `toolClass ∈ {pickaxe,axe,shovel,hoe,
+   shears}`. This registry also files swords under `toolClass` (`items.js:93`), so
+   the spec's own order puts every sword in **Tools** and contradicts tab 5's
+   stated contents ("swords, bow, arrow…"). The tab tables win.
+8. **TNT is routed to Combat by an explicit `COMBAT_BLOCKS` set.** §6.2 tab 5
+   lists TNT, but the block branch of the classifier has no rule that reaches
+   Combat — TNT would fall through to Building.
+9. **Empty tabs are hidden, not rendered.** §6.2 defines ten tabs, but 07's
+   Redstone and 09's Brewing enumerate ids that do not exist yet. A tab appears
+   exactly when its registry range is populated, so Redstone/Brewing will light up
+   at E5/E9 with no code change. Today: 8 tabs (Building, Decoration, Tools,
+   Combat, Food, Misc, Search, Survival Inventory).
+10. **The creative screen uses its own 196×218 reference panel**, not the survival
+    176×166 one, which cannot hold a tab strip + a 9×5 palette + 27+9 personal
+    slots + a destroy slot. All slot geometry keeps the 18-px pitch and `--gpx`
+    scale. The Survival-Inventory tab renders 06 §14.1's exact layout, offset
+    clear of the tab strip.
+11. **Palette cells hide their stack count.** §6.3 is silent; 45 cells each
+    reading "64" reads as inventory the player owns. Matches Java.
+12. **`consumeHeld` is the single choke point for §5.3**, rather than a guard at
+    each of the seven call sites. (Since superseded by 08's `consumeIn(hand, n)`
+    refactor, which preserved the creative early-out.)
+
+### Deferred (declared, not silently skipped)
+
+**§5.4's Ctrl+`tags` copy** — blocked on 08-ENCHANTING's `tags` schema by design
+(deviation 4). `Interaction.pickTags()` is the wired hook; it needs one line once
+08 freezes. Until then Ctrl+pick behaves as a clean pick.
+
+**§1.3's `/gamemode` command** — §1.3 itself makes this conditional ("if a chat/
+command input exists… 14 adds one") and says "do **not** invent a bespoke console
+for this file". `Player.pendingGameMode` is the seam 14 will set.
+
+### Verified
+
+**68 browser assertions, 0 console errors** (headless Chromium, dev server),
+covering every §9 checklist line. Highlights, measured:
+
+| Gate | Measured |
+|---|---|
+| walk-fly / sprint-fly | 10.67 / 21.34 m/s (spec 10.89 / 21.78) |
+| FOV | ground 1.000 → fly 1.100 → sprint-fly 1.210 |
+| Ground-cancel | flight off 13 ticks into a descent, `onGround` true |
+| Damage immunity | 11/11 sources nulled (fall/drown/fire/burn/lava/suffocate/starve/melee/arrow/explosion/cactus); void still takes 4 |
+| Knockback | melee \|v\|=0; point-blank creeper-power explosion \|v\|=0, hp 20 |
+| Instant break | 0 drops, 0 orbs, 0 tool damage, crack stage −1 |
+| Hold cooldown | gaps `[6,6,6]` held; `[1,1,1]` re-clicking |
+| Unbreakable | bedrock/water/lava all survive |
+| Chest spill | 2 stacks ejected |
+| Infinite place | a stack of **1** placed 6/6, count still 1 |
+| Palette coverage | **146/146 ids, 0 duplicates, 0 unreachable** |
+| Scrolling | Search's 146 ids page 45 at a time, maxScroll 12 |
+| Save | `gameMode` round-trips as int 1; legacy `debugCreative`/`creative`→1, `survival`/missing→0 |
+| Registry | blocks 0–66, items ≤345 — **zero allocated** |
+
+Survival regression re-run in the same suite: reach 4.5, mining not instant,
+drops + durability intact, placement depletes, damage + knockback land, `E` opens
+the survival inventory.
+
 ## E2 — 15-FIRE-WATERLOGGING: fire spread + the global bit-7 allocation (2026-07-17)
 
 Built to `15-FIRE-WATERLOGGING.md`. **CRITICAL tier: this phase allocates the

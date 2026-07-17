@@ -6,9 +6,32 @@
 import { ITEMS, RECIPES, SMELTING, fuelValue } from '../registry/items.js';
 import { iconCss, tileForItemId } from './hud.js';
 import { emitSound, at, audio } from '../audio/engine.js';
+import { TAB, buildPalette, searchPalette, visibleTabs } from './creativeTabs.js';
+import { tagsEqual, cloneStack } from '../items/tags.js';
+
+// 18 §6.1 — creative screen geometry, GUI px on its own reference panel (the
+// survival panel is 176×166 and cannot hold a 9×5 palette + tab strip + the
+// full personal inventory + a destroy slot).
+const CV = {
+  W: 196, H: 218,
+  TAB_Y: 2, TAB_W: 18, TAB_H: 18,
+  GRID_X: 8, GRID_Y: 24, COLS: 9, ROWS: 5,     // 45 visible cells (§6.1)
+  BAR_X: 174,
+  SEARCH_Y: 118,
+  MAIN_Y: 138,                                  // 9×3 personal inventory
+  HOTBAR_Y: 198,
+  DESTROY_X: 178,
+  INV_DX: 10, INV_DY: 24,                       // survival-tab layout offset
+};
 
 const stackMax = id => ITEMS.get(id)?.stack ?? 64;
-const same = (a, b) => a && b && a.id === b.id && (a.damage ?? 0) === (b.damage ?? 0);
+// AMENDS 06 §14.2 (08 §1): stack-compatibility now requires deep-equal tags —
+// a renamed or enchanted stack never merges with a plain one.
+const same = (a, b) => a && b && a.id === b.id && (a.damage ?? 0) === (b.damage ?? 0)
+  && tagsEqual(a, b);
+// Split/copy a stack at a new count. Deep-clones tags so the two halves never
+// share one object (08 §1 invariant 4) — a spread did, silently.
+const withCount = (s, n) => { const c = cloneStack(s); c.count = n; return c; };
 
 // ------------------------------------------------------------------------
 // Shared recipe resolver (06 §9) — the ONLY matcher; serves 2×2 AND 3×3.
@@ -116,6 +139,10 @@ export class Containers {
     this.craftW = 2;
     this.hovered = null;
     this.lastClick = { time: 0, index: -1 };
+    // 18 §6 creative-screen state
+    this.tab = TAB.BUILDING;
+    this.scroll = 0;                 // first visible ROW of the current tab
+    this.search = '';
 
     document.addEventListener('mousemove', e => {
       this.mouseX = e.clientX; this.mouseY = e.clientY;
@@ -144,7 +171,7 @@ export class Containers {
         emitSound('ui.click', null);   // inside the guard: slot clicks bubble here too
         if (e.button === 0) { this.game.throwStack(this.cursor); this.cursor = null; }
         else if (e.button === 2) {
-          const one = { ...this.cursor, count: 1 };
+          const one = withCount(this.cursor, 1);
           this.cursor.count--;
           if (this.cursor.count <= 0) this.cursor = null;
           this.game.throwStack(one);
@@ -165,12 +192,15 @@ export class Containers {
     this.kind = kind;
     this.pos = x !== undefined ? { x, y, z } : null;
     this.be = this.pos ? this.game.getBlockEntity(x, y, z) : null;
-    if (kind === 'inventory' || kind === 'crafting') {
+    // 'creative' carries the 2×2 grid too — §6.2's tab 10 shows the real
+    // survival screen, and "crafting still works" there.
+    if (kind === 'inventory' || kind === 'crafting' || kind === 'creative') {
       this.craftW = kind === 'crafting' ? 3 : 2;
       this.craftGrid = new Array(this.craftW * this.craftW).fill(null);
     } else {
       this.craftGrid = null;
     }
+    if (kind === 'creative') { this.scroll = 0; this.search = ''; }
     this.build();
     this.root.classList.add('visible');
     this.game.onContainerOpened?.();
@@ -180,6 +210,7 @@ export class Containers {
     if (!this.kind) return;
     // Capture now: kind and pos are both nulled before the tail of this method.
     const wasChest = this.kind === 'chest';
+    const wasCreative = this.kind === 'creative';
     const chestPos = this.pos;
     const p = this.game.player;
     if (this.craftGrid) {                        // grid returns to inventory (06 §5.4)
@@ -187,13 +218,17 @@ export class Containers {
         const s = this.craftGrid[i];
         if (!s) continue;
         const leftover = p.give(s);
-        if (leftover > 0) this.game.throwStack({ ...s, count: leftover });
+        if (leftover > 0) this.game.throwStack(withCount(s, leftover));
         this.craftGrid[i] = null;
       }
     }
     if (this.cursor) {
       const leftover = p.give(this.cursor);
-      if (leftover > 0) this.game.throwStack({ ...this.cursor, count: leftover });
+      // 18 §6.5 — closing the CREATIVE screen with a full inventory deletes the
+      // overflow rather than spawning a world item: the source is infinite, so
+      // there is nothing to preserve and item clutter while building is the
+      // real cost. Every other screen keeps 06 §14.1's drop rule.
+      if (leftover > 0 && !wasCreative) this.game.throwStack(withCount(this.cursor, leftover));
       this.cursor = null;
     }
     this.kind = null;
@@ -256,6 +291,7 @@ export class Containers {
   // ---------------------------------------------------- DOM build
 
   build() {
+    if (this.kind === 'creative') { this.buildCreative(); return; }
     this.root.innerHTML = '';
     this.slots = [];
     const p = this.game.player;
@@ -363,6 +399,284 @@ export class Containers {
     this.refresh();
   }
 
+  // ---------------------------------------------------- creative screen (18 §6)
+
+  /** The current tab's full id list (§6.2); the Search tab filters all ids. */
+  paletteList() {
+    if (this.tab === TAB.SEARCH) return searchPalette(this.search);
+    return buildPalette().byTab.get(this.tab) ?? [];
+  }
+
+  maxScroll() {
+    return Math.max(0, Math.ceil(this.paletteList().length / CV.COLS) - CV.ROWS);
+  }
+
+  buildCreative() {
+    this.root.innerHTML = '';
+    this.slots = [];
+    const p = this.game.player;
+    const panel = document.createElement('div');
+    panel.className = 'panel-abs panel-creative';
+    panel.style.width = `calc(${CV.W} * var(--gpx))`;
+    panel.style.height = `calc(${CV.H} * var(--gpx))`;
+    this.panel = panel;
+
+    const tabs = visibleTabs();
+    const label = tabs.find(t => t.id === this.tab)?.label ?? '';
+    panel.innerHTML = `<div class="panel-title">${label}</div>`;
+    this.addTabStrip(panel, tabs);
+
+    const defs = [];
+    if (this.tab === TAB.INVENTORY) {
+      // §6.2 tab 10 — the player's REAL screen: 27 main + 9 hotbar + 4 armor +
+      // offhand + the 2×2 craft grid. Same geometry as the survival inventory,
+      // shifted clear of the tab strip.
+      defs.push(...this.inventoryTabDefs(panel));
+    } else {
+      this.scroll = Math.min(this.scroll, this.maxScroll());
+      const list = this.paletteList();
+      for (let r = 0; r < CV.ROWS; r++) {
+        for (let c = 0; c < CV.COLS; c++) {
+          const cell = (this.scroll + r) * CV.COLS + c;
+          const id = list[cell];
+          if (id === undefined) continue;
+          const item = ITEMS.get(id);
+          defs.push({
+            x: CV.GRID_X + c * 18, y: CV.GRID_Y + r * 18,
+            region: 'palette', paletteId: id, hideCount: true,
+            // A palette cell is a source, never storage: `get` mints a fresh
+            // full stack and `set` is a no-op sink (§6.3).
+            get: () => ({ id, count: item.stack ?? 64 }),
+            set: () => {},
+          });
+        }
+      }
+      this.addScrollbar(panel);
+      if (this.tab === TAB.SEARCH) this.addSearchBox(panel);
+      defs.push(...this.creativeStorageDefs());
+    }
+    defs.push(this.destroyDef());
+
+    for (const def of defs) this.addSlot(panel, def);
+    this.root.appendChild(panel);
+    // §6.1 — the grid scrolls on the wheel. Bound to the panel, not the slots:
+    // the gaps between cells must scroll too.
+    panel.addEventListener('wheel', e => {
+      if (this.tab === TAB.INVENTORY) return;
+      e.preventDefault();
+      const next = Math.min(this.maxScroll(), Math.max(0, this.scroll + Math.sign(e.deltaY)));
+      if (next !== this.scroll) { this.scroll = next; this.build(); }
+    }, { passive: false });
+    this.refresh();
+  }
+
+  /** Personal 9×3 + hotbar beneath the palette (§6.1). */
+  creativeStorageDefs() {
+    const p = this.game.player;
+    const defs = [];
+    for (let row = 0; row < 3; row++) {
+      for (let col = 0; col < 9; col++) {
+        const i = 9 + row * 9 + col;
+        defs.push({
+          x: CV.GRID_X + col * 18, y: CV.MAIN_Y + row * 18, region: 'main', slotIndex: i,
+          get: () => p.inventory[i], set: v => { p.inventory[i] = v; },
+        });
+      }
+    }
+    for (let col = 0; col < 9; col++) {
+      const i = col;
+      defs.push({
+        x: CV.GRID_X + col * 18, y: CV.HOTBAR_Y, region: 'hotbar', slotIndex: i, hotbarIndex: i,
+        get: () => p.inventory[i], set: v => { p.inventory[i] = v; },
+      });
+    }
+    return defs;
+  }
+
+  /** §6.2 tab 10 — the survival inventory, offset clear of the tab strip. */
+  inventoryTabDefs(panel) {
+    const p = this.game.player;
+    const dx = CV.INV_DX, dy = CV.INV_DY;
+    const defs = [];
+    const armorY = [8, 26, 44, 62];
+    for (let i = 0; i < 4; i++) {
+      const slot = i;
+      defs.push({
+        x: dx + 8, y: dy + armorY[i], region: 'armor', armorIndex: slot,
+        placeholder: ['helmet', 'chestplate', 'leggings', 'boots'][i],
+        get: () => p.armor[slot],
+        set: v => {
+          if (v && !p.armor[slot]) {
+            const name = ITEMS.get(v.id)?.name ?? '';
+            emitSound(name.startsWith('leather') ? 'player.armor_equip.leather' : 'player.armor_equip', null);
+          }
+          p.armor[slot] = v;
+        },
+        canPut: s => ITEMS.get(s.id)?.armorSlot === slot,
+      });
+    }
+    defs.push({
+      x: dx + 77, y: dy + 62, region: 'offhand', slotIndex: 45, placeholder: 'shield',
+      get: () => p.offhand, set: v => { p.offhand = v; },
+    });
+    const gxy = [[98, 18], [116, 18], [98, 36], [116, 36]];
+    for (let i = 0; i < 4; i++) {
+      defs.push({
+        x: dx + gxy[i][0], y: dy + gxy[i][1], region: 'craft', slotIndex: 40 + i,
+        get: () => this.craftGrid[i], set: v => { this.craftGrid[i] = v; },
+      });
+    }
+    defs.push(this.resultDef(dx + 154, dy + 28));
+    this.addArrow(panel, dx + 130, dy + 27);
+    this.addPlayerPreview(panel, dx + 26, dy + 8, 50, 70);
+    for (let row = 0; row < 3; row++) {
+      for (let col = 0; col < 9; col++) {
+        const i = 9 + row * 9 + col;
+        defs.push({
+          x: dx + 8 + col * 18, y: dy + 84 + row * 18, region: 'main', slotIndex: i,
+          get: () => p.inventory[i], set: v => { p.inventory[i] = v; },
+        });
+      }
+    }
+    for (let col = 0; col < 9; col++) {
+      const i = col;
+      defs.push({
+        x: dx + 8 + col * 18, y: dy + 142, region: 'hotbar', slotIndex: i, hotbarIndex: i,
+        get: () => p.inventory[i], set: v => { p.inventory[i] = v; },
+      });
+    }
+    return defs;
+  }
+
+  /** §6.4 — the trash cell at the hotbar row's right end. */
+  destroyDef() {
+    const y = this.tab === TAB.INVENTORY ? CV.INV_DY + 142 : CV.HOTBAR_Y;
+    return {
+      x: CV.DESTROY_X, y, region: 'destroy', placeholder: 'destroy',
+      tooltip: 'Destroy Item',
+      get: () => null, set: () => {},
+    };
+  }
+
+  addTabStrip(panel, tabs) {
+    const strip = document.createElement('div');
+    strip.className = 'cv-tabs';
+    strip.style.left = `calc(${CV.GRID_X} * var(--gpx))`;
+    strip.style.top = `calc(${CV.TAB_Y} * var(--gpx))`;
+    for (const t of tabs) {
+      const b = document.createElement('div');
+      b.className = 'cv-tab' + (t.id === this.tab ? ' selected' : '');
+      b.title = t.label;
+      if (t.glyph) {
+        b.textContent = t.glyph;
+      } else {
+        const icon = document.createElement('div');
+        iconCss(icon, tileForItemId(this.game, t.icon));
+        b.appendChild(icon);
+      }
+      b.addEventListener('mousedown', e => {
+        e.preventDefault(); e.stopPropagation();
+        emitSound('ui.click', null);
+        if (this.tab === t.id) return;
+        this.tab = t.id;
+        this.scroll = 0;
+        this.build();
+        // §6.2 tab 9: "Selecting this tab auto-focuses the field."
+        if (t.id === TAB.SEARCH) this.root.querySelector('.cv-search')?.focus();
+      });
+      strip.appendChild(b);
+    }
+    panel.appendChild(strip);
+  }
+
+  addScrollbar(panel) {
+    const max = this.maxScroll();
+    const bar = document.createElement('div');
+    bar.className = 'cv-scrollbar';
+    bar.style.left = `calc(${CV.BAR_X} * var(--gpx))`;
+    bar.style.top = `calc(${CV.GRID_Y} * var(--gpx))`;
+    const knob = document.createElement('div');
+    knob.className = 'cv-knob';
+    const frac = max > 0 ? this.scroll / max : 0;
+    knob.style.height = `${max > 0 ? Math.max(12, 100 / (max + 1)) : 100}%`;
+    knob.style.top = `calc(${frac} * (100% - ${knob.style.height}))`;
+    bar.appendChild(knob);
+    const drag = e => {
+      const r = bar.getBoundingClientRect();
+      const f = Math.min(1, Math.max(0, (e.clientY - r.top) / r.height));
+      const next = Math.round(f * max);
+      if (next !== this.scroll) { this.scroll = next; this.build(); }
+    };
+    bar.addEventListener('mousedown', e => {
+      e.preventDefault(); e.stopPropagation();
+      if (max === 0) return;
+      drag(e);
+      const move = ev => drag(ev);
+      const up = () => { document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up); };
+      document.addEventListener('mousemove', move);
+      document.addEventListener('mouseup', up);
+    });
+    panel.appendChild(bar);
+  }
+
+  addSearchBox(panel) {
+    const box = document.createElement('input');
+    box.className = 'cv-search';
+    box.setAttribute('aria-label', 'Search items');
+    box.placeholder = 'Search…';
+    box.value = this.search;
+    box.style.left = `calc(${CV.GRID_X} * var(--gpx))`;
+    box.style.top = `calc(${CV.SEARCH_Y} * var(--gpx))`;
+    box.addEventListener('input', () => {
+      this.search = box.value;
+      this.scroll = 0;
+      this.build();
+      const next = this.root.querySelector('.cv-search');
+      // Rebuilding replaces the node, so the caret has to be restored or every
+      // keystroke would blur the field.
+      if (next) { next.focus(); next.setSelectionRange(next.value.length, next.value.length); }
+    });
+    // The document-level hotbar/F/Q handler must not eat typing (it reads
+    // `hovered`, which a keystroke in the box does not clear).
+    box.addEventListener('keydown', e => e.stopPropagation());
+    box.addEventListener('mousedown', e => e.stopPropagation());
+    panel.appendChild(box);
+  }
+
+  /** §6.3 — palette cells are infinite sources; the destroy slot is a sink. */
+  onPaletteClick(slot, e) {
+    const id = slot.paletteId;
+    const max = stackMax(id);
+    if (e.shiftKey && e.button === 0) {
+      // "Send a full stack directly to the personal inventory, no cursor step"
+      this.game.player.give({ id, count: max });
+      return;
+    }
+    if (e.button === 2) { this.cursor = { id, count: 1 }; return; }
+    if (this.cursor && this.cursor.id === id) { this.cursor.count = max; return; }
+    // Cursor holding a different item: replaced, old stack discarded (§6.3).
+    if (this.cursor) emitSound('ui.item.destroy', null);
+    this.cursor = { id, count: max };
+  }
+
+  onDestroyClick(e) {
+    const p = this.game.player;
+    if (e.shiftKey) {
+      // §6.4 — clears the ENTIRE personal inventory: 36 slots + armor +
+      // offhand + the 2×2 craft grid.
+      p.inventory.fill(null);
+      p.armor.fill(null);
+      p.offhand = null;
+      if (this.craftGrid) this.craftGrid.fill(null);
+      this.cursor = null;
+      emitSound('ui.item.destroy', null);
+      return;
+    }
+    if (!this.cursor) return;
+    this.cursor = null;
+    emitSound('ui.item.destroy', null);
+  }
+
   addSlot(panel, def) {
     const el = document.createElement('div');
     el.className = 'slot-abs' + (def.takeOnly ? ' take-only' : '');
@@ -433,6 +747,13 @@ export class Containers {
     // them all. Above the takeOnly branch so result slots click too.
     emitSound('ui.click', null);
 
+    // 18 §6.3/§6.4 — a palette cell and the destroy cell are a source and a
+    // sink; neither obeys the storage click table below. §6.3's "dragging a
+    // stack back onto the palette deletes it" falls out of onPaletteClick's
+    // different-item branch, which discards the old cursor.
+    if (slot.region === 'palette') { this.onPaletteClick(slot, e); this.refresh(); return; }
+    if (slot.region === 'destroy') { this.onDestroyClick(e); this.refresh(); return; }
+
     if (slot.takeOnly) {
       this.takeResult(slot, e.shiftKey);
       this.refresh();
@@ -463,14 +784,14 @@ export class Containers {
     } else if (e.button === 2) {
       if (!cur && inSlot) {
         const take = Math.ceil(inSlot.count / 2);       // split-half
-        const taken = { ...inSlot, count: take };
+        const taken = withCount(inSlot, take);      // own tags (08 §1 rule 4)
         inSlot.count -= take;
         if (inSlot.count <= 0) slot.set(null);
         this.cursor = taken;
       } else if (cur && (!inSlot || (same(cur, inSlot) && inSlot.count < stackMax(cur.id)))) {
         if (!slot.canPut || slot.canPut(cur)) {
           if (inSlot) inSlot.count++;
-          else slot.set({ ...cur, count: 1 });
+          else slot.set(withCount(cur, 1));
           cur.count--;
           if (cur.count <= 0) this.cursor = null;
         }
@@ -495,7 +816,7 @@ export class Containers {
         if (this.cursor && !(same(this.cursor, out) &&
             this.cursor.count + out.count <= stackMax(out.id))) return;
         if (this.cursor) this.cursor.count += out.count;
-        else this.cursor = { ...out };
+        else this.cursor = cloneStack(out);   // 08 §1 rule 4 — E4's anvil output flows here
         slot.onCraft();                                  // consume exactly one each
       }
     } else {
@@ -508,7 +829,7 @@ export class Containers {
         if (this.cursor && !(same(this.cursor, out) &&
             this.cursor.count + out.count <= stackMax(out.id))) return;
         if (this.cursor) this.cursor.count += out.count;
-        else this.cursor = { ...out };
+        else this.cursor = cloneStack(out);   // 08 §1 rule 4 — E4's anvil output flows here
         slot.set(null);
         slot.onTakeOut?.();
       }
@@ -605,15 +926,27 @@ export class Containers {
     const s = slot.get();
     if (!s) return;
     const n = whole ? s.count : 1;
-    this.game.throwStack({ ...s, count: n });
+    this.game.throwStack(withCount(s, n));
     s.count -= n;
     if (s.count <= 0) slot.set(null);
     this.refresh();
   }
 
   showTooltip(index) {
-    const s = this.slots[index]?.get();
-    if (!s) { this.tooltipEl.style.display = 'none'; return; }
+    const slot = this.slots[index];
+    const s = slot?.get();
+    if (!s) {
+      // §6.4 — the destroy cell is permanently empty but still labelled.
+      if (slot?.tooltip) {
+        this.tooltipEl.textContent = slot.tooltip;
+        this.tooltipEl.style.display = 'block';
+        this.tooltipEl.style.left = (this.mouseX + 14) + 'px';
+        this.tooltipEl.style.top = (this.mouseY - 22) + 'px';
+        return;
+      }
+      this.tooltipEl.style.display = 'none';
+      return;
+    }
     const item = ITEMS.get(s.id);
     let text = item?.displayName ?? '?';
     if (item?.durability && s.damage > 0) text += ` ${item.durability - s.damage}/${item.durability}`;
@@ -625,12 +958,14 @@ export class Containers {
 
   // ---------------------------------------------------- rendering
 
-  renderStackInto(el, stack) {
+  renderStackInto(el, stack, hideCount = false) {
     const icon = el.children[0], count = el.children[1];
     if (stack) {
       iconCss(icon, tileForItemId(this.game, stack.id));
       icon.style.display = 'block';
-      count.textContent = stack.count > 1 ? stack.count : '';
+      // §6.3: a palette cell is a source, not a stack — a wall of "64"s across
+      // 45 cells reads as inventory the player owns. Matches Java.
+      count.textContent = (!hideCount && stack.count > 1) ? stack.count : '';
     } else {
       icon.style.display = 'none';
       icon.className = '';
@@ -651,7 +986,7 @@ export class Containers {
 
   refresh() {
     for (const slot of this.slots) {
-      this.renderStackInto(slot.el, slot.get());
+      this.renderStackInto(slot.el, slot.get(), slot.hideCount);
       slot.el.classList.toggle('empty-ph', !slot.get() && !!slot.placeholder);
     }
     this.renderCursor();

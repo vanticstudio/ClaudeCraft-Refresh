@@ -61,11 +61,25 @@ export const KEYBINDS = {
   sprint: 'ControlLeft',
   inventory: 'KeyE',
   drop: 'KeyQ',
+  swapOffhand: 'KeyF',            // AMENDS 01 §15.1 (08 §7.2)
   debugOverlay: 'F3',
-  debugMode: 'F4',
+  gameMode: 'F4',                 // AMENDS 01 §15.1 — was "debug creative toggle"
   hotbar: ['Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5',
            'Digit6', 'Digit7', 'Digit8', 'Digit9'],
 };
+
+// --- Game mode (18 §1.1; AMENDS 01 §16.1 / 03 §2.4) ---
+// Integer enum, persisted verbatim in the player record. Only these two exist:
+// Adventure and Spectator are explicitly out of scope (18 §1.1). The values are
+// stable — a future file may add Spectator without renumbering.
+export const GameMode = { SURVIVAL: 0, CREATIVE: 1 };
+
+/** 18 §1.2 — legacy save migration: pre-EC worlds stored a string. */
+export function normalizeGameMode(v) {
+  if (v === 1 || v === GameMode.CREATIVE) return GameMode.CREATIVE;
+  if (v === 'creative' || v === 'debugCreative') return GameMode.CREATIVE;
+  return GameMode.SURVIVAL;                       // 0, 'survival', or missing
+}
 
 // --- Game screen states (01 §15.2) ---
 export const STATE = {

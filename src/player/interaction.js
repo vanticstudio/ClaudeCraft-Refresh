@@ -9,6 +9,8 @@ import { raycastBlocks } from '../world/raycast.js';
 import { LivingEntity } from '../entities/Entity.js';
 import { emitSound, startLoop, at } from '../audio/engine.js';
 import { AABB } from '../math/aabb.js';
+import { KEYBINDS } from '../constants.js';
+import { cloneStack, tagsEqual } from '../items/tags.js';
 
 const REPLACEABLE_TARGET = id => BLOCKS[id]?.replaceable;
 
@@ -42,7 +44,8 @@ export class Interaction {
   get player() { return this.game.player; }
   get world() { return this.game.world; }
 
-  reach() { return this.player.gameMode === 'debugCreative' ? 5.2 : 4.5; }
+  // 03 §1 / AMENDS 03 §21(d) — creative keeps the 5.2 reach the old debug mode had.
+  reach() { return this.player.creative ? 5.2 : 4.5; }
 
   lookDir() {
     const p = this.player;
@@ -77,9 +80,9 @@ export class Interaction {
     if (input.hotbar >= 0) p.selectedSlot = input.hotbar;
     if (input.wheel) {
       p.selectedSlot = ((p.selectedSlot + input.wheel) % 9 + 9) % 9;
-      this.game.hud?.onHotbarChange?.();
+      this.game.ui?.hud?.onHotbarChange?.();
     }
-    if (input.hotbar >= 0) this.game.hud?.onHotbarChange?.();
+    if (input.hotbar >= 0) this.game.ui?.hud?.onHotbarChange?.();
     // §3.3 is a selection *change*: pressing '1' on slot 1 must stay silent, and
     // a tick with both wheel and digit input must click once, not twice.
     if (p.selectedSlot !== prevSlot) emitSound('ui.hotbar', null);
@@ -89,12 +92,18 @@ export class Interaction {
     // drop (03 §17)
     if (input.pressed.has('KeyQ')) this.dropHeld(input.shift);
 
-    // middle-click pick block (debug only)
-    if (input.middlePressed && p.gameMode === 'debugCreative' && this.currentHit) {
-      const id = this.currentHit.id;
-      const item = ITEMS.get(id);
-      if (item) p.inventory[p.selectedSlot] = { id, count: item.stack ?? 64 };
+    // swap offhand (08 §7.2; AMENDS 01 §15.1 / 03 §3)
+    if (input.pressed.has(KEYBINDS.swapOffhand)) this.swapOffhand();
+
+    // middle-click pick block (18 §5.4; AMENDS 06 §14.2)
+    if (input.middlePressed && p.creative && this.currentHit) {
+      this.pickBlock(this.currentHit, input.ctrl);
     }
+
+    // §5.1 — re-clicking bypasses the 6-tick hold cooldown (a HELD button does
+    // not). Without this, creative breaking is capped at 1 block / 6 ticks even
+    // when the player clicks faster.
+    if (input.leftPressed && p.creative) this.mineDelay = 0;
 
     // attack on press (entity priority, 03 §14/§15.3)
     let attacked = false;
@@ -130,6 +139,52 @@ export class Interaction {
     }
   }
 
+  // ---------------------------------------------------------- pick block (18 §5.4)
+
+  /**
+   * 18 §5.4 — "state" is expressed by picking the right ITEM for the block
+   * (a wall torch picks `torch`; a lit furnace picks `furnace`), not by a new
+   * field on the stack: placement re-derives state from the placement context
+   * (03 §16.2/§16.4), and the item-stack shape `{id,count,damage,tags?}` is
+   * 08's to extend, not ours (§0 registry footprint).
+   */
+  pickBlock(hit, ctrl) {
+    const p = this.player;
+    // A lit furnace has no block-item of its own (06 §1) — pick the plain one.
+    const id = hit.id === B.FURNACE_LIT ? B.FURNACE : hit.id;
+    const item = ITEMS.get(id);
+    if (!item) return;                       // air/water/lava/fire/crops: nothing to pick
+    const stack = { id, count: item.stack ?? 64 };
+    const tags = ctrl ? this.pickTags(hit) : undefined;
+    if (tags !== undefined) stack.tags = tags;
+
+    const inv = p.inventory;
+    // tagsEqual, not JSON.stringify: key order makes stringify compare unequal
+    // objects equal-ish and equal objects unequal (08 §1 rule 5). Inert while
+    // pickTags returns undefined, but it must not be the pattern E4 copies.
+    const identical = i => inv[i] && inv[i].id === id && tagsEqual(inv[i], stack);
+    for (let i = 0; i < 9; i++) {
+      if (identical(i)) { p.selectedSlot = i; emitSound('ui.hotbar', null); return; }
+    }
+    let slot = inv[p.selectedSlot] ? -1 : p.selectedSlot;
+    if (slot < 0) for (let i = 0; i < 9; i++) if (!inv[i]) { slot = i; break; }
+    // Every hotbar slot full: replace the active one. The displaced stack is
+    // discarded, not dropped — the palette is an infinite source, so there is
+    // nothing to lose and item clutter while building is the bigger cost (§6.5).
+    if (slot < 0) slot = p.selectedSlot;
+    inv[slot] = stack;
+    p.selectedSlot = slot;
+    emitSound('ui.hotbar', null);
+  }
+
+  /**
+   * 18 §5.4's Ctrl-modifier hook. Returns `undefined` today for every block:
+   * the `tags` object schema is 08-ENCHANTING's to define and CLAUDE.md §8.2
+   * freezes it BEFORE consumers build against it — so 18, which "only reads"
+   * tags (§0), cannot invent the shape here. Wire the read when 08 lands.
+   */
+  pickTags(_hit) { return undefined; }
+
   // ---------------------------------------------------------- attacking
 
   pickEntityTarget() {
@@ -155,14 +210,33 @@ export class Interaction {
     const speed = item?.attackSpeed ?? 4.0;
     const T = 20 / speed;
     const charge = Math.min(1, Math.max(0, (p.ticksSinceAttack + 0.5) / T));
+    // AMENDS 05 §13.1: damage = base × (0.2+0.8p²) × (crit?1.5:1) + enchBonus×p.
+    // The enchBonus term lands with the catalog in E4 (08 §5.4) and is added
+    // AFTER the crit multiply — it scales linearly with p and is never crit-
+    // multiplied (Java exact).
     let dmg = base * (0.2 + 0.8 * charge * charge);
 
     const crit = p.vel.y < 0 && !p.onGround && charge >= 0.848 &&
                  !p.sprinting && !p.inWater && !p.onLadder;
     if (crit) dmg *= 1.5;
 
-    let kb = 0.4;
+    // ---- 08 §6.1 sweep trigger. Evaluated BEFORE the sprint block below, which
+    // clears p.sprinting and scales p.vel — conditions 4 and 5 read pre-attack
+    // state, so testing after it would make every sprint hit sweep.
     const wasSprinting = p.sprinting;
+    const hSpeed = Math.hypot(p.vel.x, p.vel.z);
+    const sweeps =
+      item?.toolClass === 'sword' &&      // 1. sword, any tier
+      charge >= 0.848 &&                  // 2. same threshold as crits (05 §13.4)
+      p.onGround &&                       // 3.
+      !wasSprinting &&                    // 4. a sprint-knockback hit never sweeps
+      hSpeed < 0.25;                      // 5. walking can sweep, sprint-speed cannot
+
+    // §6.2's halo is centred on the struck mob's box, so the victim set must be
+    // gathered before the primary's hurt() knocks it backwards.
+    const victims = sweeps ? this.sweepVictims(target) : null;
+
+    let kb = 0.4;
     if (wasSprinting) {
       kb += 0.5;
       p.stopSprint();
@@ -174,10 +248,51 @@ export class Interaction {
     target.hurt(dmg, 'melee', { dirX: dx / h, dirZ: dz / h, knockback: kb, attacker: p });
 
     if (crit) this.game.particles?.crit?.(target);
+    if (sweeps) this.doSweep(victims, base, charge);
     if (item?.toolClass) p.damageHeld(item.toolClass === 'sword' ? 1 : 2);
     p.addExhaustion(0.1);
     p.ticksSinceAttack = 0;
     this.swing();
+  }
+
+  // 08 §6.2 — everything alive in the struck mob's halo, within 3 blocks of the
+  // player's feet. Java exact: the halo tracks the victim, not the attacker.
+  sweepVictims(target) {
+    const p = this.player;
+    // getEntitiesInBox already tests box.intersects(e.getAABB()), so the halo
+    // membership test is the box argument itself; the filter adds only §6.2's
+    // identity and 3-block range clauses.
+    const halo = target.getAABB().expand(1.0, 0.25, 1.0);
+    return this.world.getEntitiesInBox(halo,
+      e => e instanceof LivingEntity && e !== p && e !== target && !e.dead &&
+           ((e.pos.x - p.pos.x) ** 2 + (e.pos.y - p.pos.y) ** 2 +
+            (e.pos.z - p.pos.z) ** 2) < 9.0);
+  }
+
+  // 08 §6.3 / §6.4 — flat damage to each victim, all pushed the same way (the
+  // player's look direction), sound + arc once per swing.
+  doSweep(victims, weaponBase, charge) {
+    const p = this.player;
+    // ratio = sweepingEdgeLvl/(sweepingEdgeLvl+1) → 0, 1/2, 2/3, 3/4 for L 0–III.
+    // Sweeping Edge's catalog id arrives with 08 §5.1 in E4; until then every
+    // sword is L0 → ratio 0 → sweepDmg exactly 1, the spec's "plain iron sword
+    // → 1 HP to victims". E4: sweepLvl = getEnchantLvl(p.heldStack, ENCH.SWEEPING_EDGE).
+    const sweepLvl = 0;
+    const ratio = sweepLvl / (sweepLvl + 1);
+    // No Sharpness/Smite/Bane and no crit multiplier in the sweep at the 1.20
+    // baseline — they entered the sweep only in 1.21, deliberately not adopted.
+    const sweepDmg = 1 + ratio * (weaponBase * (0.2 + 0.8 * charge * charge));
+
+    // Direction is the player's horizontal look, identical for every victim.
+    const lx = -Math.sin(p.yaw), lz = -Math.cos(p.yaw);
+    for (const v of victims) {
+      if (v.dead) continue;
+      // 0.4 × 0.8 = 0.32 — 80% of base, replacing the normal knockback rather
+      // than stacking with it. The Knockback enchant does not boost this.
+      v.hurt(sweepDmg, 'melee', { dirX: lx, dirZ: lz, knockback: 0.32, attacker: p });
+    }
+    this.game.particles?.sweep?.(p.pos.x, p.pos.y, p.pos.z, p.yaw);
+    emitSound('player.attack.sweep', null);
   }
 
   // ---------------------------------------------------------- mining (03 §15)
@@ -209,15 +324,17 @@ export class Interaction {
     if (!hit) { this.resetMining(); return; }
     const block = BLOCKS[hit.id];
 
-    if (p.gameMode === 'debugCreative') {
-      if (block.hardness < 0) return;
-      // 15 §10.6 applies here too: this path bypasses breakBlock entirely, so
-      // without the same rule a creative-mode break would drink the lake.
-      const cleared = this.world.clearedCell(hit.x, hit.y, hit.z);
-      this.world.setBlock(hit.x, hit.y, hit.z, cleared.id, { state: cleared.state, byPlayer: true });
-      this.game.particles?.blockBreak?.(hit.x, hit.y, hit.z, hit.id);
+    // 18 §5.1 — instant break. Routed THROUGH breakBlock (rather than its own
+    // setBlock, as the old debug path did) so it inherits the break sound, the
+    // waterlog rule (15 §10.6) and the block-entity spill (§5.2) for free; the
+    // flags suppress only the three things creative removes.
+    if (p.creative) {
+      // §5.2: hardness −1 (bedrock/water/lava) stays unbreakable in creative.
+      if (block.hardness < 0) { this.resetMining(); return; }
+      this.breakBlock(hit.x, hit.y, hit.z, { drops: false, xp: false, durability: false });
+      this.resetMining();
       this.swing();
-      this.mineDelay = 4;
+      this.mineDelay = 6;      // §5.1: 0.3 s hold cooldown; a re-click bypasses it
       return;
     }
 
@@ -259,7 +376,14 @@ export class Interaction {
     this.progress = 0;
   }
 
-  breakBlock(x, y, z) {
+  /**
+   * AMENDS 06 block-break/drop path — `opts` lets 18 §5.2's creative break
+   * suppress loot, XP and durability while keeping everything else identical.
+   * Block-entity contents still spill: that happens inside World.setBlock
+   * (World.js:133), so a full chest is never silently voided.
+   */
+  breakBlock(x, y, z, opts = {}) {
+    const { drops: wantDrops = true, xp: wantXp = true, durability: wantDur = true } = opts;
     const p = this.player;
     const id = this.world.getBlock(x, y, z);
     const block = BLOCKS[id];
@@ -268,9 +392,10 @@ export class Interaction {
     const toolClass = item?.toolClass ?? null;
     const toolTier = item?.tier ?? null;
 
-    const drops = block.drops
+    const drops = wantDrops && block.drops
       ? block.drops({ state, toolClass, toolTier, rng: this.world.rng }) : [];
-    const xp = block.xpForMine ? block.xpForMine({ state, toolClass, toolTier, rng: this.world.rng }) : 0;
+    const xp = wantXp && block.xpForMine
+      ? block.xpForMine({ state, toolClass, toolTier, rng: this.world.rng }) : 0;
 
     // 15 §10.6 — a waterlogged block breaks to a water SOURCE, not air; drops
     // then run unchanged. `state` was read above, before the erase, so bit 7 is
@@ -281,7 +406,7 @@ export class Interaction {
       if (d.count > 0) this.game.spawnItemByName(d.name, d.count, x + 0.5, y + 0.5, z + 0.5);
     }
     if (xp > 0) this.game.spawnXpOrb(x + 0.5, y + 0.5, z + 0.5, xp);
-    if (block.hardness > 0 && item?.durability) {
+    if (wantDur && block.hardness > 0 && item?.durability) {
       p.damageHeld(toolClass === 'sword' ? 2 : 1);
     }
     p.addExhaustion(0.005);
@@ -304,7 +429,7 @@ export class Interaction {
     const chan = p.usingItem;
     if (!input.mouseRight) {
       // release
-      if (chan.kind === 'bow') this.releaseBow(chan.ticks);
+      if (chan.kind === 'bow') this.releaseBow(chan.ticks, chan.hand ?? 'main');
       this.stopBowLoop();
       p.usingItem = null;
       return;
@@ -317,10 +442,13 @@ export class Interaction {
     if (chan.kind === 'eat' && chan.ticks >= 32) {
       emitSound('player.eat.swallow', null);
       p.burpTimer = 10;               // §3.3: burp 10 ticks later, always
-      const item = p.heldItem();
+      // 08 §7.3: the acting hand owns the channel — offhand food is eaten out
+      // of the offhand, not whatever the main hand happens to hold.
+      const hand = chan.hand ?? 'main';
+      const item = p.itemIn(hand);
       if (item?.kind === 'food') {
         p.eat(item);
-        p.consumeHeld(1);
+        p.consumeIn(hand, 1);
       }
       p.usingItem = null;
     }
@@ -332,13 +460,14 @@ export class Interaction {
     }
   }
 
-  releaseBow(ticks) {
+  releaseBow(ticks, hand = 'main') {
     const p = this.player;
     const f0 = ticks / 20;
     const charge = Math.min(1, (f0 * f0 + 2 * f0) / 3);
     if (charge < 0.1) return;
     if (!this.takeItem('arrow')) return;
-    p.damageHeld(1);
+    // §7.4: a bow drawn in the offhand spends the OFFHAND bow's durability.
+    p.damageIn(hand, 1);
     const e = this.eyePos(), d = this.lookDir();
     const speed = 3 * charge;
     const rng = this.world.rng;
@@ -353,32 +482,84 @@ export class Interaction {
     this.swing();
   }
 
+  // 08 §7.2 — in-world F: swap the selected hotbar stack ↔ offhand (slot 45).
+  swapOffhand() {
+    const p = this.player;
+    // AMENDS 03 §3 says "F is ignored while an item-use channel is active
+    // mid-bow-draw (draw cancels, no arrow fired)", while §7.2 says the swap
+    // itself cancels an in-progress draw or eat. The only reading that leaves
+    // both sentences true: mid-draw F cancels and does NOT swap; mid-eat F
+    // cancels AND swaps. The clauses conflict — see DEVIATIONS.md (E3).
+    if (p.usingItem?.kind === 'bow') {
+      this.stopBowLoop();
+      p.usingItem = null;
+      return;
+    }
+    p.usingItem = null;                       // eat channel: cancelled, swap proceeds
+    const held = p.heldStack;
+    p.heldStack = p.offhand;
+    p.offhand = held;
+    // §7.2: counts as a main-hand item switch → resets the attack-charge timer.
+    // Player.tick's id-change check would miss a sword↔sword swap; this is the
+    // spec's "swapping always resets", not "resets when the item differs".
+    p.ticksSinceAttack = 0;
+    this.game.ui?.hud?.onHotbarChange?.();
+  }
+
   hasItem(name) {
     const id = idOf(name);
     return this.player.inventory.some(s => s && s.id === id && s.count > 0);
   }
 
-  takeItem(name) {
+  // 08 §7.4 — ammo search order: offhand → main hand → inventory 0–35 ascending.
+  findAmmo(name) {
     const id = idOf(name);
-    const inv = this.player.inventory;
+    const p = this.player;
+    if (p.offhand && p.offhand.id === id && p.offhand.count > 0) return 'off';
+    if (p.heldStack && p.heldStack.id === id && p.heldStack.count > 0) return 'main';
     for (let i = 0; i < 36; i++) {
-      if (inv[i] && inv[i].id === id) {
-        inv[i].count--;
-        if (inv[i].count <= 0) inv[i] = null;
-        return true;
-      }
+      if (p.inventory[i] && p.inventory[i].id === id && p.inventory[i].count > 0) return i;
     }
-    return false;
+    return null;
   }
 
-  // ---------------------------------------------------------- RMB (03 §16.1)
+  hasAmmo(name) { return this.findAmmo(name) !== null; }
+
+  takeItem(name) {
+    // 18 §5.3 — "using any item in creative leaves the source stack untouched".
+    // The arrow must still be PRESENT (creative removes depletion, not the
+    // requirement); only the decrement is skipped.
+    const where = this.findAmmo(name);
+    if (where === null) return false;
+    if (this.player.creative) return true;
+    const p = this.player;
+    if (where === 'off' || where === 'main') {
+      p.consumeIn(where, 1);
+    } else {
+      const s = p.inventory[where];
+      s.count--;
+      if (s.count <= 0) p.inventory[where] = null;
+    }
+    return true;
+  }
+
+  // ------------------------------------------- RMB (08 §7.3; AMENDS 03 §16.1)
+  //
+  // The canonical step list. Steps 1–5 run for the MAIN hand; if the main hand
+  // PASSES (step 5), steps 3–4 rerun for the OFFHAND. The offhand never reruns
+  // step 1 (UI) or step 2 (block-targeted uses). Only one hand can be "using".
+  //
+  // Sibling files insert against these numbers: 12 §7.1's shovel→dirt_path is
+  // step 2b (inside useOnBlock); 09's potion drink is step 4 (inside useSelf).
 
   use(input) {
     const p = this.player;
-    const held = p.heldItem();
     const hit = this.currentHit;
 
-    // 0: entity interaction (feeding, shearing) — nearest entity on the ray ≤ 3
+    // Step 0 (outside §7.3): entity interaction — feeding/shearing the nearest
+    // entity on the ray. §7.3's list begins at the block raycast and never
+    // mentions entities; this is pre-existing 03 §16.1 behavior, kept ahead of
+    // step 1 and main-hand only. See DEVIATIONS.md (E3).
     const entTarget = this.pickEntityTarget();
     if (entTarget && entTarget.interact) {
       if (entTarget.interact(p, p.heldStack)) {
@@ -388,7 +569,7 @@ export class Interaction {
       }
     }
 
-    // 1–2: interactables first (unless sneaking)
+    // 1: interactable block → open its UI. Hand-independent, evaluated once.
     if (hit) {
       const block = BLOCKS[hit.id];
       if (block.interactable && !p.sneaking) {
@@ -398,58 +579,99 @@ export class Interaction {
       }
     }
 
-    if (!held) return;
+    // 2: block-targeted item-on-block use — MAIN hand only (vanilla).
+    if (this.useOnBlock(hit)) { this.useDelay = 4; return; }
 
-    // 3: placeable block
-    if (held.place != null && hit) {
-      if (this.tryPlace(held, hit)) { this.useDelay = 4; return; }
-    }
-    if (held.placesAs && hit) {
-      if (this.tryPlaceSpecial(held, hit)) { this.useDelay = 4; return; }
-    }
+    // 3–4 for the main hand, then the offhand only if the main hand PASSED.
+    if (this.useHand('main', hit)) { this.useDelay = 4; return; }
+    if (this.useHand('off', hit)) { this.useDelay = 4; return; }
+    // 5: both hands passed — no action, no swing.
+  }
 
-    // 4: usable items
+  // §7.3 step 2 — MAIN HAND ONLY, deliberately not hand-parameterised. Every
+  // helper below spends the main hand via consumeHeld/damageHeld/heldStack, and
+  // §7.3 says the offhand never reruns step 2, so a `hand` argument here would
+  // advertise a capability that does not exist: passing 'off' would read the
+  // offhand's item and then consume the MAIN hand's stack. §7.3 invites 12 to
+  // insert shovel→dirt_path at 2b — whoever does must keep it main-hand only.
+  // Returns true only when the use actually PERFORMED; a hoe on stone or a
+  // carrot on gravel returns false so the pipeline continues to steps 3–4.
+  useOnBlock(hit) {
+    const held = this.player.heldItem();
+    if (!held) return false;
+    // 2d: buckets run their own fluid ray, so they act without a block hit.
+    if (held.name === 'bucket') return this.useBucketEmpty();
+    if (held.name === 'water_bucket' || held.name === 'lava_bucket') {
+      return this.useBucketFilled(held);
+    }
+    if (!hit) return false;
+    if (held.toolClass === 'hoe') return this.useHoe(hit);                    // 2a
+    // 2b: 12 §7.1's shovel → dirt_path inserts here.
+    if (held.name === 'flint_and_steel') return this.useFlintSteel(hit);      // 2c
+    if (held.plantsCrop != null) return this.plantSeed(held, hit);            // 2e
+    if (held.name === 'bone_meal') return this.useBoneMeal(hit);              // 2e
+    // 2e: shears — sheep shearing runs through step 0's entity interact.
+    return false;
+  }
+
+  // §7.3 steps 3–4 for one hand. Returns true = done, false = PASS.
+  useHand(hand, hit) {
+    const p = this.player;
+    const held = p.itemIn(hand);
+    if (!held) return false;
+
+    // 3: placeable block. Per §7.3 a place that FAILS still consumes the
+    // attempt and blocks the offhand — only "no block to place against" passes.
+    if (held.place != null && hit) { this.tryPlace(held, hit, hand); return true; }
+    if (held.placesAs && hit) { this.tryPlaceSpecial(held, hit, hand); return true; }
+
+    // 4: self-use.
+    return this.useSelf(hand, held);
+  }
+
+  // §7.3 step 4 — self-use items, not tied to a block. 09's potion drink lands
+  // here. Returns true = done (even when the action fails, per §7.3), false =
+  // this hand has no self-use → PASS.
+  useSelf(hand, held) {
+    const p = this.player;
     if (held.kind === 'food') {
+      // AMENDS 06 §15.1 / 18 §4.3 — in creative, eating is a no-op that neither
+      // heals nor consumes. Stated explicitly rather than leaning on the frozen
+      // `foodLevel === 20` to keep the eat channel shut: that invariant lives in
+      // two other files and is not this branch's to assume.
+      // Food at hunger 20 still returns DONE: §7.3 counts it as a failed action
+      // that consumes the press, so the offhand does not act on it.
+      if (p.creative) return true;
       if (p.foodLevel < 20 && !p.usingItem) {
-        p.usingItem = { kind: 'eat', ticks: 0 };
+        p.usingItem = { kind: 'eat', ticks: 0, hand };
       }
-      return;
+      return true;
     }
     if (held.name === 'bow') {
-      if (!p.usingItem && this.hasItem('arrow')) {
-        p.usingItem = { kind: 'bow', ticks: 0 };
+      // §7.4: offhand → main → inventory. An arrow anywhere permits the draw.
+      if (!p.usingItem && this.hasAmmo('arrow')) {
+        p.usingItem = { kind: 'bow', ticks: 0, hand };
         this.bowLoop = startLoop('item.bow.draw', null);
       }
-      return;
+      return true;
     }
-    if (held.kind === 'throwable') {
-      this.throwHeld(held);
-      this.useDelay = 4;
-      return;
-    }
+    // DONE even when the throw fails: an ender_pearl on cooldown is a failed
+    // action, not "this hand has no action". Returning throwHeld's boolean
+    // PASSED to the offhand, so holding RMB through a 20-tick pearl cooldown
+    // placed ~5 offhand torches the player never asked for (§7.3).
+    if (held.kind === 'throwable') { this.throwHeld(held, hand); return true; }
     if (held.kind === 'armor') {
       const slot = held.armorSlot;
       if (p.armor[slot] == null) {
-        p.armor[slot] = p.heldStack;
-        p.heldStack = null;
+        p.armor[slot] = p.stackIn(hand);
+        p.setStackIn(hand, null);
         // §3.3: metal chimes, leather rustles
         emitSound(held.name.startsWith('leather') ? 'player.armor_equip.leather' : 'player.armor_equip', null);
         this.swing();
       }
-      this.useDelay = 4;
-      return;
+      return true;
     }
-    if (held.name === 'bucket') { this.useBucketEmpty(); this.useDelay = 4; return; }
-    if (held.name === 'water_bucket' || held.name === 'lava_bucket') {
-      this.useBucketFilled(held); this.useDelay = 4; return;
-    }
-    if (!hit) return;
-
-    if (held.toolClass === 'hoe') { this.useHoe(hit); this.useDelay = 4; return; }
-    if (held.plantsCrop != null) { this.plantSeed(held, hit); this.useDelay = 4; return; }
-    if (held.name === 'bone_meal') { this.useBoneMeal(hit); this.useDelay = 4; return; }
-    if (held.name === 'flint_and_steel') { this.useFlintSteel(hit); this.useDelay = 4; return; }
-    if (held.name === 'shears' && hit) { /* sheep shearing handled via entity use */ }
+    return false;                         // 5: PASS
   }
 
   interactWith(block, hit) {
@@ -508,7 +730,9 @@ export class Interaction {
     return hits.length > 0;
   }
 
-  tryPlace(held, hit) {
+  // `hand` (08 §7.3): the offhand reruns step 3, so the block must come out of
+  // the hand that placed it — not always the main one.
+  tryPlace(held, hit, hand = 'main') {
     const p = this.player;
     const w = this.world;
     const blockId = held.place;
@@ -554,7 +778,10 @@ export class Interaction {
     w.setBlock(x, y, z, blockId, { state, byPlayer: true });
     // Reaching here IS the success path — six guards above return false first.
     this.emitPlace(blockId, x, y, z);
-    if (p.gameMode !== 'debugCreative') p.consumeHeld(1);
+    // No creative guard here: gameMode is the GameMode int enum now, so the old
+    // `!== 'debugCreative'` string test was always true and did nothing.
+    // consumeIn is 18 §5.3's single choke point and no-ops in creative itself.
+    p.consumeIn(hand, 1);
     this.swing();
     return true;
   }
@@ -565,7 +792,7 @@ export class Interaction {
     if (cls) emitSound(`block.place.${cls}`, at(x + 0.5, y + 0.5, z + 0.5));
   }
 
-  tryPlaceSpecial(held, hit) {
+  tryPlaceSpecial(held, hit, hand = 'main') {
     const p = this.player;
     const w = this.world;
     const pos = this.placePosFor(hit);
@@ -581,7 +808,7 @@ export class Interaction {
       w.setBlock(x, y, z, B.OAK_DOOR, { state: f << 2, byPlayer: true });
       w.setBlock(x, y + 1, z, B.OAK_DOOR, { state: (f << 2) | 1, byPlayer: true });
       this.emitPlace(B.OAK_DOOR, x, y, z);       // one door = two setBlocks, one sound
-      p.consumeHeld(1);
+      p.consumeIn(hand, 1);
       this.swing();
       return true;
     }
@@ -593,23 +820,28 @@ export class Interaction {
       w.setBlock(x, y, z, B.BED_BLOCK, { state: f, byPlayer: true });
       w.setBlock(hx, y, hz, B.BED_BLOCK, { state: f | 4, byPlayer: true });
       this.emitPlace(B.BED_BLOCK, x, y, z);
-      p.consumeHeld(1);
+      p.consumeIn(hand, 1);
       this.swing();
       return true;
     }
     return false;
   }
 
+  // §7.3 step 2 helpers return whether the use actually PERFORMED. False means
+  // "this item had no block-targeted action here" and the pipeline continues to
+  // steps 3–4 — that is what makes a carrot plant on farmland but feed the
+  // player anywhere else (Java's useOn → PASS → use()).
   plantSeed(held, hit) {
     const w = this.world;
-    if (hit.face[1] !== 1) return;
-    if (w.getBlock(hit.x, hit.y, hit.z) !== B.FARMLAND) return;
+    if (hit.face[1] !== 1) return false;
+    if (w.getBlock(hit.x, hit.y, hit.z) !== B.FARMLAND) return false;
     const y = hit.y + 1;
-    if (w.getBlock(hit.x, y, hit.z) !== B.AIR) return;
+    if (w.getBlock(hit.x, y, hit.z) !== B.AIR) return false;
     w.setBlock(hit.x, y, hit.z, held.plantsCrop, { state: 0, byPlayer: true });
     this.emitPlace(held.plantsCrop, hit.x, y, hit.z);
     this.player.consumeHeld(1);
     this.swing();
+    return true;
   }
 
   useHoe(hit) {
@@ -620,7 +852,9 @@ export class Interaction {
       w.setBlock(hit.x, hit.y, hit.z, B.FARMLAND, { byPlayer: true });
       this.player.damageHeld(1);
       this.swing();
+      return true;
     }
+    return false;
   }
 
   useBoneMeal(hit) {
@@ -652,6 +886,7 @@ export class Interaction {
       this.player.consumeHeld(1);
       this.swing();
     }
+    return used;
   }
 
   useFlintSteel(hit) {
@@ -664,7 +899,7 @@ export class Interaction {
       w.igniteTnt(hit.x, hit.y, hit.z, 80);
       this.player.damageHeld(1);
       this.swing();
-      return;
+      return true;
     }
     // 15 §4.1 — t = hit.pos + faceNormal; place if air && canSurvive(t). ANY
     // face, not just the top: canSurvive is solidTopBelow OR anyFlammableNeighbor,
@@ -676,7 +911,9 @@ export class Interaction {
       emitSound('item.flintandsteel.use', at(x + 0.5, y + 0.5, z + 0.5));
       this.player.damageHeld(1);
       this.swing();
+      return true;
     }
+    return false;
   }
 
   useBucketEmpty() {
@@ -691,24 +928,30 @@ export class Interaction {
       this.world.fluids.wakeNeighbors(bh.x, bh.y, bh.z);   // downstream drains re-derive
       this.fillBucketStack(idOf('water_bucket'));
       this.swing();
-      return;
+      return true;
     }
     // rule 3 — base fluidMode source scan (06 §6.4)
     const hit = this.rayHit(this.reach(), { fluidMode: true });
-    if (!hit) return;
+    if (!hit) return false;
     const blk = BLOCKS[hit.id];
-    if (blk.shape !== 'liquid') return;
+    if (blk.shape !== 'liquid') return false;
     const filled = idOf(blk.fluid === 'water' ? 'water_bucket' : 'lava_bucket');
     this.world.setBlock(hit.x, hit.y, hit.z, B.AIR, { byPlayer: true });
     emitSound(blk.fluid === 'lava' ? 'item.bucket.fill.lava' : 'item.bucket.fill',
       at(hit.x + 0.5, hit.y + 0.5, hit.z + 0.5));
     this.fillBucketStack(filled);
     this.swing();
+    return true;
   }
 
   /** Bucket -> filled bucket, honoring the bucket's stack size (16). */
   fillBucketStack(filledId) {
     const p = this.player;
+    // 18 §5.3 — the source stack is untouched in creative. The fluid is still
+    // scooped from the world (that setBlock already ran); the empty bucket just
+    // does not become a filled one. Diverges from MC, where a creative scoop
+    // does hand you the filled bucket — logged in DEVIATIONS.md.
+    if (p.creative) return;
     if (p.heldStack.count === 1) {
       p.heldStack = { id: filledId, count: 1 };
     } else {
@@ -720,7 +963,7 @@ export class Interaction {
 
   useBucketFilled(held) {
     const hit = this.currentHit;
-    if (!hit) return;
+    if (!hit) return false;
     const w = this.world;
     // 15 §13.1 rule 2 / §10.4 — water bucket on a targeted DRY waterloggable
     // block sets bit 7 instead of placing a source beside it.
@@ -736,34 +979,37 @@ export class Interaction {
       for (const [dx, dy, dz] of [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]) {
         w.fluids.checkInteractions(hit.x + dx, hit.y + dy, hit.z + dz);
       }
-      this.player.heldStack = { id: idOf('bucket'), count: 1 };
+      if (!this.player.creative) this.player.heldStack = { id: idOf('bucket'), count: 1 };   // 18 §5.3
       this.swing();
-      return;
+      return true;
     }
     const pos = this.placePosFor(hit);
     const targetId = w.getBlock(pos.x, pos.y, pos.z);
-    if (!BLOCKS[targetId].replaceable) return;
+    if (!BLOCKS[targetId].replaceable) return false;
     const fluidId = held.name === 'water_bucket' ? B.WATER : B.LAVA;
     w.setBlock(pos.x, pos.y, pos.z, fluidId, { state: 0, byPlayer: true });
     // before checkInteractions, which may itself fire block.extinguish (01 §6.3)
     emitSound('item.bucket.pour', at(pos.x + 0.5, pos.y + 0.5, pos.z + 0.5));
     w.fluids.checkInteractions(pos.x, pos.y, pos.z);
-    this.player.heldStack = { id: idOf('bucket'), count: 1 };
+    if (!this.player.creative) this.player.heldStack = { id: idOf('bucket'), count: 1 };   // 18 §5.3
     this.swing();
+    return true;
   }
 
-  throwHeld(held) {
+  // §7.3 step 4 — self-use, so it runs for either hand.
+  throwHeld(held, hand = 'main') {
     const p = this.player;
     if (held.name === 'ender_pearl') {
-      if (this.pearlCooldown > 0) return;
+      if (this.pearlCooldown > 0) return false;
       this.pearlCooldown = 20;
     }
     const e = this.eyePos(), d = this.lookDir();
     const speed = 1.5;
     this.game.spawnThrown(held.name, e.x, e.y - 0.1, e.z,
       d.x * speed, d.y * speed, d.z * speed, p);
-    p.consumeHeld(1);
+    p.consumeIn(hand, 1);
     this.swing();
+    return true;
   }
 
   dropHeld(wholeStack) {
@@ -771,8 +1017,10 @@ export class Interaction {
     const s = p.heldStack;
     if (!s) return;
     const n = wholeStack ? s.count : 1;
-    const drop = { id: s.id, count: n };
-    if (s.damage !== undefined) drop.damage = s.damage;
+    // cloneStack, not a hand-rolled copy: {id, count, damage} silently dropped
+    // `tags`, so Q on an enchanted sword returned a plain one (08 §1 rule 4).
+    const drop = cloneStack(s);
+    drop.count = n;
     s.count -= n;
     if (s.count <= 0) p.heldStack = null;
     this.game.throwStack(drop);

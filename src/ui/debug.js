@@ -1,5 +1,6 @@
 // F3 debug overlay (01 §15.3): fps, pos, chunks, light, draw calls. 4 Hz.
 import { BIOME_NAMES } from '../world/gen/biomes.js';
+import { GameMode } from '../constants.js';
 
 export class DebugOverlay {
   constructor(game, overlayEl) {
@@ -45,6 +46,7 @@ chunks R${counts.requested} G${counts.generated} L${counts.lit} M${counts.meshed
 draws ${info.render.calls} tris ${(info.render.triangles / 1000).toFixed(0)}k geoms ${info.memory.geometries}
 entities ${g.entities.count()} time ${g.world.time} (day ${Math.floor(g.world.time / 24000)} ${(Math.floor((g.world.time % 24000) / 1000) + 6) % 24}:00)${heap}
 weather ${g.dayNight.raining ? 'rain' : 'clear'}${g.dayNight.thundering ? '+thunder' : ''} seed ${g.world.seedString}
+gameMode ${p.gameMode === GameMode.CREATIVE ? 'creative' : 'survival'}${p.flying ? ' (flying)' : ''}
 audio ${a.voices}/${g.audio?.poolSize?.() ?? 0} voices drops ${a.drops}/s ${a.state} ${a.budgetMs.toFixed(2)} ms music ${music}`;
   }
 }

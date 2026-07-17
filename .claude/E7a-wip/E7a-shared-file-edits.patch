@@ -1,0 +1,517 @@
+diff --git a/src/constants.js b/src/constants.js
+index a29c96a..bb5ce95 100644
+--- a/src/constants.js
++++ b/src/constants.js
+@@ -43,7 +43,10 @@ export const AMBIENT_FLOOR = 0.04;        // 04 §11.1
+ export const AUTOSAVE_INTERVAL = 600;     // ticks (30 s)
+ export const DB_NAME = 'mc-world';
+ export const DB_VERSION = 1;
+-export const SAVE_VERSION = 1;
++// v2 (AMENDS 01 §16, 10 §2.4): chunk keys gained a "<dim>:" prefix, meta.player
++// gained `dimension`, and meta gained the per-dimension `dimensions` blob. v1
++// worlds MIGRATE rather than being discarded — see SaveManager.open().
++export const SAVE_VERSION = 2;
+ 
+ // --- Render (01 §1, §14) ---
+ export const CAMERA_FOV = 70;
+@@ -62,11 +65,24 @@ export const KEYBINDS = {
+   inventory: 'KeyE',
+   drop: 'KeyQ',
+   debugOverlay: 'F3',
+-  debugMode: 'F4',
++  gameMode: 'F4',                 // AMENDS 01 §15.1 — was "debug creative toggle"
+   hotbar: ['Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5',
+            'Digit6', 'Digit7', 'Digit8', 'Digit9'],
+ };
+ 
++// --- Game mode (18 §1.1; AMENDS 01 §16.1 / 03 §2.4) ---
++// Integer enum, persisted verbatim in the player record. Only these two exist:
++// Adventure and Spectator are explicitly out of scope (18 §1.1). The values are
++// stable — a future file may add Spectator without renumbering.
++export const GameMode = { SURVIVAL: 0, CREATIVE: 1 };
++
++/** 18 §1.2 — legacy save migration: pre-EC worlds stored a string. */
++export function normalizeGameMode(v) {
++  if (v === 1 || v === GameMode.CREATIVE) return GameMode.CREATIVE;
++  if (v === 'creative' || v === 'debugCreative') return GameMode.CREATIVE;
++  return GameMode.SURVIVAL;                       // 0, 'survival', or missing
++}
++
+ // --- Game screen states (01 §15.2) ---
+ export const STATE = {
+   TITLE: 'TITLE',
+diff --git a/src/entities/Entity.js b/src/entities/Entity.js
+index 3a8c144..5f74af6 100644
+--- a/src/entities/Entity.js
++++ b/src/entities/Entity.js
+@@ -44,6 +44,14 @@ export class Entity {
+     this.gravityBlocked = false;              // frozen outside SIM radius
+     this.blockAgainstUnloaded = false;        // player only
+     this.persistent = false;
++    // AMENDS 01 §13.1 (10 §2). Only entities whose dim === world.activeDim tick
++    // or render; the EntityManager holding an entity is itself per-dimension, so
++    // `dim` is the cross-check that catches a mis-filed entity rather than the
++    // primary filter. It seeds from the world's active dim at construction —
++    // every spawn path builds entities into the dimension being simulated.
++    this.dim = world?.activeDim ?? 0;
++    this.portalTimer = 0;                     // 10 §3.4 — transfer accumulator
++    this.portalCooldown = 0;                  // 10 §3.6 — blocks re-entry bounce
+   }
+ 
+   getAABB() {
+diff --git a/src/entities/EntityManager.js b/src/entities/EntityManager.js
+index 813c8c0..b53d3d4 100644
+--- a/src/entities/EntityManager.js
++++ b/src/entities/EntityManager.js
+@@ -55,6 +55,50 @@ export class EntityManager {
+     }
+   }
+ 
++  // ------------------------------------------------------------- 10 §2 dim transfer
++
++  /**
++   * 10 §2.5 — unfile an entity WITHOUT killing it. Deliberately not `remove()`:
++   * that disposes the mesh and fires `onRemoved()`, which every teardown hook
++   * treats as death (PrimedTnt stops its fuse voice, Creeper its hiss). A
++   * dimension transfer is a move, not a death, so the entity keeps its meshes and
++   * its loops — `detachAllMeshes` handles the visual side separately.
++   */
++  detach(entity) {
++    this.entities.delete(entity.id);
++    if (entity.chunkKey) {
++      this.world.chunks.get(entity.chunkKey)?.entities.delete(entity);
++      entity.chunkKey = null;
++    }
++  }
++
++  /** 10 §2.5 — file an existing entity into THIS dimension's index. */
++  adopt(entity) {
++    entity.id = this.nextId++;
++    this.entities.set(entity.id, entity);
++    this.register(entity);
++    return entity;
++  }
++
++  /**
++   * 10 §2.3 — an inactive dimension does not render. Drop the THREE objects but
++   * KEEP the entities: `updateRender` rebuilds `object3d` lazily from
++   * `buildMesh()` on reactivation, so this is a pure visual teardown and the
++   * frozen entity count stays observable in F3.
++   */
++  detachAllMeshes() {
++    for (const entity of this.entities.values()) {
++      if (!entity.object3d) continue;
++      this.scene.remove(entity.object3d);
++      entity.object3d.traverse(o => {
++        if (!o.isMesh || !o.material) return;
++        const mats = Array.isArray(o.material) ? o.material : [o.material];
++        for (const m of mats) if (!m.userData?.shared) m.dispose();
++      });
++      entity.object3d = null;
++    }
++  }
++
+   remove(entity) {
+     this.entities.delete(entity.id);
+     if (entity.chunkKey) {
+diff --git a/src/workers/terrainWorker.js b/src/workers/terrainWorker.js
+index f9dc765..6a739e7 100644
+--- a/src/workers/terrainWorker.js
++++ b/src/workers/terrainWorker.js
+@@ -1,23 +1,40 @@
+-// Terrain generation worker (01 §9 protocol, 02 §13 pipeline).
+-// main → worker: { type:'init', seed } once, then { type:'generate', cx, cz, jobId }.
++// Terrain generation worker (01 §9 protocol, 02 §13 pipeline, AMENDS 10 §2.2).
++// main → worker: { type:'init', seed } once, then { type:'generate', cx, cz, dim, jobId }.
+ // worker → main: { type:'ready', worldSpawn } then { type:'chunk', ... } with
+ // blocks/heightMap/biomes buffers TRANSFERRED (zero-copy).
++//
++// AMENDS 01 §9: `generate` gains `dim` and the worker dispatches to that
++// dimension's generator (10 §2.2). Generators are memoized per dim — the worker
++// stays stateless except its noise instances, now keyed by (dim). The `ready`
++// handshake is unchanged: world spawn is overworld-only.
+ 
+-import { createGenerator } from '../world/gen/terrain.js';
++import { createGeneratorFor, DIM_OVERWORLD } from '../world/gen/dimGen.js';
+ 
+-let gen = null;
++let seed = null;
++const gens = new Map();   // dim → generator
++
++function genFor(dim) {
++  let g = gens.get(dim);
++  if (!g) { g = createGeneratorFor(dim, seed); gens.set(dim, g); }
++  return g;
++}
+ 
+ self.onmessage = (e) => {
+   const msg = e.data;
+   if (msg.type === 'init') {
+-    gen = createGenerator(msg.seed);
+-    self.postMessage({ type: 'ready', worldSpawn: gen.findWorldSpawn() });
++    seed = msg.seed;
++    const overworld = genFor(DIM_OVERWORLD);
++    self.postMessage({ type: 'ready', worldSpawn: overworld.findWorldSpawn() });
+   } else if (msg.type === 'generate') {
++    const dim = msg.dim ?? DIM_OVERWORLD;
+     try {
+-      const r = gen.generateChunk(msg.cx, msg.cz);
++      const r = genFor(dim).generateChunk(msg.cx, msg.cz);
+       self.postMessage(
+         {
+-          type: 'chunk', cx: msg.cx, cz: msg.cz, jobId: msg.jobId,
++          // `dim` is echoed so the main thread can reject a job that resolves
++          // after a dimension swap: without it a stale dim-0 chunk would install
++          // into dim 1's map at the same (cx,cz).
++          type: 'chunk', cx: msg.cx, cz: msg.cz, dim, jobId: msg.jobId,
+           blocks: r.blocks, heightMap: r.heightMap, biomes: r.biomes,
+           spawns: r.spawns,
+         },
+@@ -25,7 +42,7 @@ self.onmessage = (e) => {
+       );
+     } catch (err) {
+       self.postMessage({
+-        type: 'error', jobId: msg.jobId, cx: msg.cx, cz: msg.cz,
++        type: 'error', jobId: msg.jobId, cx: msg.cx, cz: msg.cz, dim,
+         message: String((err && err.stack) || err),
+       });
+     }
+diff --git a/src/world/Chunk.js b/src/world/Chunk.js
+index 81de075..a347057 100644
+--- a/src/world/Chunk.js
++++ b/src/world/Chunk.js
+@@ -11,9 +11,15 @@ export const ChunkState = {
+ };
+ 
+ export class Chunk {
+-  constructor(cx, cz) {
++  constructor(cx, cz, dim = 0) {
+     this.cx = cx;
+     this.cz = cz;
++    // AMENDS 01 §4.2 (10 §2). `key` stays UN-prefixed: each DimensionState owns
++    // its own chunks Map, so the map is the namespace (see the contract block in
++    // world/dimensions.js). Only the shared IndexedDB store is prefixed, via
++    // saveKey(dim, key). `dim` exists so a cross-dim mixup is detectable rather
++    // than silent — the stale-worker-job guard in ChunkManager relies on it.
++    this.dim = dim;
+     this.key = cx + ',' + cz;
+     this.blocks = null;                  // Uint8Array(32768), installed at GENERATED
+     this.states = null;                  // Uint8Array(32768) per-voxel state nibble
+diff --git a/src/world/ChunkManager.js b/src/world/ChunkManager.js
+index a626301..70a68d9 100644
+--- a/src/world/ChunkManager.js
++++ b/src/world/ChunkManager.js
+@@ -8,6 +8,7 @@ import {
+   MAX_JOBS_IN_FLIGHT, WORKER_COUNT, REMESH_FRAME_BUDGET_MS, REMESH_FRAME_MAX,
+   INITIAL_MESH_PER_TICK, MAX_Y,
+ } from '../constants.js';
++import { saveKey } from './dimensions.js';
+ 
+ export class ChunkManager {
+   constructor(world, scene, materials, tileUV) {
+@@ -54,25 +55,34 @@ export class ChunkManager {
+       return;
+     }
+     if (msg.type === 'error') {
+-      const key = this.pending.get(msg.jobId);
++      const job = this.pending.get(msg.jobId);
+       this.pending.delete(msg.jobId);
+-      if (!key) return;
+-      const n = (this.retries.get(key) ?? 0) + 1;
+-      this.retries.set(key, n);
+-      const chunk = this.world.chunks.get(key);
++      if (!job) return;
++      // retries are dim-scoped: the same "cx,cz" exists in every dimension
++      const rk = saveKey(job.dim, job.key);
++      const n = (this.retries.get(rk) ?? 0) + 1;
++      this.retries.set(rk, n);
++      const chunk = this.world.dims.get(job.dim)?.chunks.get(job.key);
+       if (!chunk) return;
+       if (n <= 1) this.requestGenerate(chunk);
+       else {
+         chunk.state = ChunkState.FAILED;   // visible hole = loud bug signal (01 §9)
+-        console.error(`[terrainWorker] chunk ${key} failed twice: ${msg.message}`);
++        console.error(`[terrainWorker] chunk ${rk} failed twice: ${msg.message}`);
+       }
+       return;
+     }
+     if (msg.type === 'chunk') {
+-      const key = this.pending.get(msg.jobId);
++      const job = this.pending.get(msg.jobId);
+       this.pending.delete(msg.jobId);
+-      const chunk = this.world.chunks.get(chunkKey(msg.cx, msg.cz));
+-      if (!chunk || chunk.state !== ChunkState.REQUESTED || key !== chunk.key) return;   // stale
++      if (!job) return;
++      // 10 §2: resolve against the job's OWN dimension, never the active one. A
++      // job dispatched before a portal transit lands after the swap; without the
++      // dim in hand, `world.chunks` would resolve to the new dimension's map and
++      // install Overworld terrain into the Nether at the same (cx,cz).
++      const dimState = this.world.dims.get(job.dim);
++      const chunk = dimState?.chunks.get(job.key);
++      if (!chunk || chunk.state !== ChunkState.REQUESTED) return;   // stale
++      if (chunk.dim !== msg.dim || job.key !== chunk.key) return;   // stale across a swap
+       // transferred views are used as-is (zero-copy, 01 §9)
+       chunk.install(msg.blocks, msg.heightMap, msg.biomes);
+       chunk.pendingSpawns = msg.spawns?.length ? msg.spawns : null;
+@@ -82,10 +92,10 @@ export class ChunkManager {
+ 
+   requestGenerate(chunk) {
+     const jobId = this.nextJobId++;
+-    this.pending.set(jobId, chunk.key);
++    this.pending.set(jobId, { key: chunk.key, dim: chunk.dim });
+     const worker = this.workers[this.nextWorker];
+     this.nextWorker = (this.nextWorker + 1) % this.workers.length;
+-    worker.postMessage({ type: 'generate', cx: chunk.cx, cz: chunk.cz, jobId });
++    worker.postMessage({ type: 'generate', cx: chunk.cx, cz: chunk.cz, dim: chunk.dim, jobId });
+   }
+ 
+   async hydrate(chunk, record) {
+@@ -133,20 +143,22 @@ export class ChunkManager {
+     }
+ 
+     // dispatch generate/hydrate jobs
++    const dim = this.world.activeDim;
+     while (this.pending.size < MAX_JOBS_IN_FLIGHT && this.requestList.length > 0) {
+       const [key, cx, cz] = this.requestList.shift();
+       if (this.world.chunks.has(key)) continue;
+-      const chunk = new Chunk(cx, cz);
++      const chunk = new Chunk(cx, cz, dim);
+       this.world.chunks.set(key, chunk);
+       this.world.chunkVersion++;
+-      if (this.save?.hasChunk(key)) {
++      const sk = saveKey(dim, key);
++      if (this.save?.hasChunk(sk)) {
+         // saved chunks skip the worker entirely (01 §9)
+         const jobId = this.nextJobId++;
+-        this.pending.set(jobId, key);
+-        this.save.loadChunk(key).then(rec => {
++        this.pending.set(jobId, { key, dim });
++        this.save.loadChunk(sk).then(rec => {
+           this.pending.delete(jobId);
+           if (rec) this.hydrate(chunk, rec);
+-          else { chunk.state = ChunkState.FAILED; console.error(`[save] missing chunk ${key}`); }
++          else { chunk.state = ChunkState.FAILED; console.error(`[save] missing chunk ${sk}`); }
+         });
+       } else {
+         this.requestGenerate(chunk);
+@@ -231,6 +243,26 @@ export class ChunkManager {
+     }
+   }
+ 
++  /**
++   * 10 §2.3/§2.5 — the player is leaving `dim`. Its chunks stay RESIDENT (a
++   * returning player finds them instantly), but everything tying them to the
++   * live scene and the streaming queues is torn down:
++   *   - meshes leave the THREE scene (an inactive dimension does not render);
++   *   - the remesh queue, request list and last-player-chunk are cleared, since
++   *     they are position-derived and rebuild on the next tick of the new dim.
++   * In-flight worker jobs are deliberately NOT cancelled: they carry their own
++   * dim and are rejected by the stale guard in onWorkerMessage.
++   */
++  detachDimension(dim) {
++    const state = this.world.dims.get(dim);
++    if (!state) return;
++    for (const chunk of state.chunks.values()) this.disposeChunkMeshes(chunk);
++    this.remeshQueue.clear();
++    this.requestList.length = 0;
++    this.lastPlayerChunk = null;
++    state.chunkVersion++;
++  }
++
+   disposeChunkMeshes(chunk) {
+     if (!chunk.group) return;
+     for (const bucket of ['opaque', 'cutout', 'water']) {
+diff --git a/src/world/World.js b/src/world/World.js
+index 9cfa64a..2e938bd 100644
+--- a/src/world/World.js
++++ b/src/world/World.js
+@@ -1,45 +1,82 @@
+ // World facade: world-coords block/light API + block update fan-out (01 §4.6).
++//
++// 10 §2.3: World is a thin facade over a Map<dimId, DimensionState>. Exactly one
++// dimension is active; `chunks` / `light` / `scheduled` / `fluids` / `entities`
++// are GETTERS onto it, so every pre-existing `world.chunks` call site follows the
++// active dimension untouched. `world.activeDim` names the live one.
+ import { BLOCKS, B, WATERLOGGED, isWaterCellAt, isWaterSourceAt } from '../registry/blocks.js';
+-import { chunkKey, blockIndex, MAX_Y, SIM_RADIUS } from '../constants.js';
++import { chunkKey, MAX_Y, SIM_RADIUS } from '../constants.js';
+ import { ChunkState } from './Chunk.js';
+-import { LightEngine } from './LightEngine.js';
+-import { ScheduledTicks } from './scheduledTicks.js';
+-import { Fluids } from './fluids.js';
+ import { fireTick, canSurvive, lavaFireAttempt, forgetFire, removeFire } from './fire.js';
++import { DimensionState, getDimension, DIM_OVERWORLD } from './dimensions.js';
+ import { mulberry32, xmur3, hashString, mix32 } from '../math/rng.js';
+ 
+ const DIRS6 = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+ 
+ export class World {
+-  constructor(seedString) {
++  constructor(seedString, scene = null) {
+     this.seedString = seedString;
+     this.worldSeed = hashString(seedString);
+-    this.chunks = new Map();            // "cx,cz" → Chunk
+-    this.chunkVersion = 0;              // bumped on add/remove (cache invalidation)
+-    this.time = 0;                      // worldTime (persisted; DayNight advances)
++    this.scene = scene;
++    this.time = 0;                      // worldTime — GLOBAL (10 §2.6), DayNight advances
+     this.skyDarken = 0;                 // int 0–11, DayNight recomputes per tick
+-    this.playerChunk = null;            // {cx, cz}, Game sets each tick
+     this.game = null;                   // back-ref, set by Game
+     this.chunkManager = null;           // set by Game
+-    this.light = new LightEngine(this);
+-    this.scheduled = new ScheduledTicks(this);
+-    this.fluids = new Fluids(this);
++    this.dims = new Map();              // dimId → DimensionState (10 §2.3)
++    this.activeDim = DIM_OVERWORLD;
++    this.dimension = 'overworld';       // key string — music.js:129 reads this
+     const raw = mulberry32(xmur3('world:' + seedString)());
+     this.rng = () => raw();
++    this.ensureDim(DIM_OVERWORLD);
+   }
+ 
++  // ---------------------------------------------------------------- 10 §2.3 dims
++
++  /** Construct-or-resume a DimensionState. Idempotent. */
++  ensureDim(id) {
++    let d = this.dims.get(id);
++    if (!d) {
++      d = new DimensionState(this, this.scene, id);
++      this.dims.set(id, d);
++    }
++    return d;
++  }
++
++  get dim() { return this.dims.get(this.activeDim); }
++  /** The active dimension's descriptor (10 §2.1). Never null — falls back to dim 0. */
++  get dimDesc() { return getDimension(this.activeDim); }
++
++  get chunks() { return this.dims.get(this.activeDim).chunks; }
++  get light() { return this.dims.get(this.activeDim).light; }
++  get scheduled() { return this.dims.get(this.activeDim).scheduled; }
++  get fluids() { return this.dims.get(this.activeDim).fluids; }
++  get entities() { return this.dims.get(this.activeDim).entities; }
++
++  get playerChunk() { return this.dims.get(this.activeDim).playerChunk; }
++  set playerChunk(v) { this.dims.get(this.activeDim).playerChunk = v; }
++
++  // The 1-entry caches below key off chunkVersion; it must bump on a dim swap as
++  // well as on chunk add/remove, or a stale Overworld chunk answers a Nether read.
++  get chunkVersion() { return this.dims.get(this.activeDim).chunkVersion; }
++  set chunkVersion(v) { this.dims.get(this.activeDim).chunkVersion = v; }
++
+   // ---------------------------------------------------------------- reads
+   // chunkVersion bumps on chunk add/remove so 1-entry caches can invalidate.
+ 
+   getChunkAt(x, z) {
+     const cx = x >> 4, cz = z >> 4;
+-    if (this._cc && this._ccx === cx && this._ccz === cz && this._ccv === this.chunkVersion) {
++    // 10 §2.3: the cache MUST key on activeDim as well as chunkVersion. Each
++    // DimensionState owns its own chunkVersion counter, and both start at 0 and
++    // advance independently — so after a dim swap the version alone can collide
++    // and hand a Nether read a resident Overworld chunk.
++    if (this._cc && this._ccx === cx && this._ccz === cz &&
++        this._ccv === this.chunkVersion && this._ccd === this.activeDim) {
+       return this._cc;
+     }
+     const c = this.chunks.get(chunkKey(cx, cz));
+     const valid = c && c.state >= ChunkState.GENERATED ? c : null;
+     this._cc = valid;
+-    this._ccx = cx; this._ccz = cz; this._ccv = this.chunkVersion;
++    this._ccx = cx; this._ccz = cz; this._ccv = this.chunkVersion; this._ccd = this.activeDim;
+     return valid;
+   }
+ 
+@@ -127,7 +164,7 @@ export class World {
+     // chokepoint every write funnels through is the only way the origin map
+     // cannot leak — and a leaked map silently starves MAX_ACTIVE until no fire
+     // may spread at all.
+-    if (old === B.FIRE && id !== B.FIRE) forgetFire(x, y, z);
++    if (old === B.FIRE && id !== B.FIRE) forgetFire(this.activeDim, x, y, z);
+ 
+     // block-entity contents spill (chest/furnace)
+     if (oldBlock.blockEntity && oldBlock.blockEntity !== newBlock.blockEntity) {
+diff --git a/src/world/fire.js b/src/world/fire.js
+index 96f3ba3..237cac3 100644
+--- a/src/world/fire.js
++++ b/src/world/fire.js
+@@ -24,20 +24,33 @@ export const FIRE_SAFETY = { RADIUS_CAP: 24, MAX_ACTIVE: 512 };
+ // aliases distant fires onto each other. The map holds <= MAX_ACTIVE (512)
+ // entries and is touched once per fire tick (every 30-39 t) — the allocation is
+ // far below noise, and correctness is not negotiable in a safety valve.
++//
++// 10 §2: the key is DIM-NAMESPACED. Two dimensions have distinct blocks at the
++// same (x,y,z), and inactive dimensions stay resident (10 §2.3), so an
++// un-namespaced map would let an Overworld fire's leash anchor a Nether fire at
++// the same coords — and forgetFireInChunk would delete the wrong dimension's
++// entries on unload.
+ const fireOrigins = new Map();
+-const posKey = (x, y, z) => `${x},${y},${z}`;
++const posKey = (dim, x, y, z) => `${dim},${x},${y},${z}`;
+ 
+ export const fireCount = () => fireOrigins.size;
+ export function clearFireOrigins() { fireOrigins.clear(); }
+ 
+ /** §6.4 — any fire removal drops its entry. */
+-export function forgetFire(x, y, z) { fireOrigins.delete(posKey(x, y, z)); }
++export function forgetFire(dim, x, y, z) { fireOrigins.delete(posKey(dim, x, y, z)); }
+ 
+ /** §6.4 — chunk unload drops that chunk's entries. */
+-export function forgetFireInChunk(cx, cz) {
++export function forgetFireInChunk(dim, cx, cz) {
+   for (const key of fireOrigins.keys()) {
+     const c = key.split(',');
+-    if ((+c[0] >> 4) === cx && (+c[2] >> 4) === cz) fireOrigins.delete(key);
++    if (+c[0] === dim && (+c[1] >> 4) === cx && (+c[3] >> 4) === cz) fireOrigins.delete(key);
++  }
++}
++
++/** 10 §2 — disposing a dimension drops every fire it owned. */
++export function forgetFireInDim(dim) {
++  for (const key of fireOrigins.keys()) {
++    if (+key.slice(0, key.indexOf(',')) === dim) fireOrigins.delete(key);
+   }
+ }
+ 
+@@ -122,7 +135,7 @@ function withinLeash(x, z, origin) {
+ function underActiveCap() { return fireOrigins.size < FIRE_SAFETY.MAX_ACTIVE; }
+ 
+ /** The origin this fire cascade is leashed to; undefined if unregistered. */
+-function originOf(x, y, z) { return fireOrigins.get(posKey(x, y, z)); }
++function originOf(world, x, y, z) { return fireOrigins.get(posKey(world.activeDim, x, y, z)); }
+ 
+ /**
+  * §2 placeFire — id 65 + age, schedules the first tick, fires neighbor updates,
+@@ -134,7 +147,9 @@ function originOf(x, y, z) { return fireOrigins.get(posKey(x, y, z)); }
+ export function placeFire(world, x, y, z, age = 0, origin) {
+   if (y < 0 || y > 127) return false;
+   world.setBlock(x, y, z, B.FIRE, { state: Math.min(15, age) & STATE_NIBBLE });
+-  fireOrigins.set(posKey(x, y, z), origin ?? { ox: x, oz: z });
++  // AFTER setBlock: setBlock's own chokepoint calls forgetFire for the cell it
++  // overwrites (World.js:130), which would delete the entry we just wrote.
++  fireOrigins.set(posKey(world.activeDim, x, y, z), origin ?? { ox: x, oz: z });
+   return true;
+ }
+ 
+@@ -154,7 +169,7 @@ export function igniteAt(world, x, y, z) {
+  * failure and §2.2's rain douse are both audible.
+  */
+ export function removeFire(world, x, y, z, douse = false) {
+-  forgetFire(x, y, z);
++  forgetFire(world.activeDim, x, y, z);
+   world.setBlock(x, y, z, B.AIR);
+   if (douse) emitSound('block.extinguish', at(x + 0.5, y + 0.5, z + 0.5));
+ }
+@@ -198,10 +213,10 @@ export function fireTick(world, x, y, z, state) {
+ 
+   // §6.5 — a fire hydrated from a save has no entry; self-register so the leash
+   // re-anchors at the load position.
+-  let origin = originOf(x, y, z);
++  let origin = originOf(world, x, y, z);
+   if (origin === undefined) {
+     origin = { ox: x, oz: z };
+-    fireOrigins.set(posKey(x, y, z), origin);
++    fireOrigins.set(posKey(world.activeDim, x, y, z), origin);
+   }
+ 
+   // -- 2.1 survival --

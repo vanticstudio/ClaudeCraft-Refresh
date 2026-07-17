@@ -1,7 +1,5 @@
-// Title / loading / pause / death screens + F4 debug item palette (01 §15.3, 06 §15.4).
+// Title / loading / pause / death screens + Options sheet (01 §15.3).
 // Title screen = the desert/badlands sunset scene from 19-MAIN-MENU §3.
-import { ITEMS } from '../registry/items.js';
-import { iconCss, tileForItemId } from './hud.js';
 import { loadOptions, saveOptions } from './options.js';
 import { emitSound, audio } from '../audio/engine.js';
 
@@ -74,7 +72,7 @@ export class Menus {
         <button id="btn-resume">Resume</button>
         <button id="btn-pause-settings">Options…</button>
         <button id="btn-quit">Save &amp; Quit to Title</button>
-        <div style="opacity:0.6;font-size:14px">Sprint: double-tap W · Drop stack: Shift+Q · Debug: F3/F4</div>
+        <div style="opacity:0.6;font-size:14px">Sprint: double-tap W · Drop stack: Shift+Q · Debug: F3 · Game mode: F4</div>
       </div>
       <div id="screen-death" class="screen">
         <h1>You Died!</h1>
@@ -120,14 +118,10 @@ export class Menus {
             <button class="cc-textbtn danger" id="btn-delete" hidden>Delete World</button>
           </div>
         </div>
-      </div>
-      <div id="debug-palette" style="display:none; position:absolute; right:8px; top:8px; bottom:8px;
-           width:390px; overflow-y:auto; background:rgba(20,20,28,0.92); border:2px solid #555;
-           padding:6px; pointer-events:auto; z-index:30">
-        <input id="palette-filter" placeholder="filter…" style="width:100%;margin-bottom:6px;
-               background:#111;color:#eee;border:1px solid #555;font-family:inherit;padding:4px">
-        <div id="palette-grid" style="display:grid;grid-template-columns:repeat(7,48px);gap:3px"></div>
       </div>`);
+    // AMENDS 06 §15.4 — the F4 debug item palette (#debug-palette) is retired.
+    // 18 §6's creative inventory replaces it wholesale: tabs, search, a destroy
+    // slot and the real player slots, in containers.js.
 
     const $ = id => document.getElementById(id);
     this.el = {
@@ -136,8 +130,6 @@ export class Menus {
       bar: $('loading-bar'), label: $('loading-label'),
       score: $('death-score'), seed: $('seed-input'),
       btnContinue: $('btn-continue'), btnDelete: $('btn-delete'),
-      palette: $('debug-palette'), paletteGrid: $('palette-grid'),
-      paletteFilter: $('palette-filter'),
       logo: $('cc-logo'), wordmark: $('cc-wordmark'),
       start: $('cc-start'), menu: $('cc-menu'), settings: $('cc-settings'),
       stage: document.querySelector('#screen-title .cc-title'),
@@ -172,8 +164,6 @@ export class Menus {
     btn('btn-quit', () => hooks.onQuit());
     btn('btn-respawn', () => hooks.onRespawn());
     btn('btn-death-title', () => hooks.onQuit());
-    this.el.paletteFilter.addEventListener('input', () => this.fillPalette());
-    this.paletteBuilt = false;
     // scoped to the title screen, so it cannot swallow keys during play
     this.el.title.addEventListener('keydown', e => this._onTitleKey(e));
     // The panel is no longer inside #screen-title, so Escape and the focus trap
@@ -369,32 +359,4 @@ export class Menus {
     this.el.label.textContent = `${meshed} / ${needed} chunks`;
   }
 
-  // F4 debug palette (06 §15.4)
-  setPaletteVisible(on) {
-    this.el.palette.style.display = on ? 'block' : 'none';
-    if (on && !this.paletteBuilt) { this.fillPalette(); this.paletteBuilt = true; }
-  }
-
-  fillPalette() {
-    const filter = this.el.paletteFilter.value.toLowerCase();
-    this.el.paletteGrid.innerHTML = '';
-    for (const [id, item] of ITEMS) {
-      if (filter && !item.name.includes(filter)) continue;
-      const d = document.createElement('div');
-      d.style.cssText = 'width:48px;height:48px;background:#333;border:1px solid #555;display:flex;align-items:center;justify-content:center;cursor:pointer';
-      d.title = item.displayName;
-      const icon = document.createElement('div');
-      iconCss(icon, tileForItemId(this.game, id));
-      d.appendChild(icon);
-      d.addEventListener('mousedown', e => {
-        e.preventDefault();
-        const p = this.game.player;
-        if (!p || p.gameMode !== 'debugCreative') return;
-        const count = e.button === 2 ? 1 : (item.stack ?? 64);
-        p.give({ id, count });
-      });
-      d.addEventListener('contextmenu', e => e.preventDefault());
-      this.el.paletteGrid.appendChild(d);
-    }
-  }
 }

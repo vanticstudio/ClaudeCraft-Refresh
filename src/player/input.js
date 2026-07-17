@@ -3,7 +3,7 @@ import { KEYBINDS } from '../constants.js';
 
 const GAME_KEYS = new Set([
   'KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ShiftLeft', 'ControlLeft',
-  'KeyE', 'KeyQ', 'F3', 'F4', 'F5',
+  'KeyE', 'KeyQ', 'KeyF', 'F3', 'F4', 'F5',
   'Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5', 'Digit6', 'Digit7', 'Digit8', 'Digit9',
 ]);
 
@@ -81,6 +81,10 @@ export class Input {
       wheel: this.wheelBuf,
       hotbar: -1,
       shift: k.has('ShiftLeft') || k.has('ShiftRight'),
+      // 18 §5.4 — the Ctrl+pick-block modifier. Distinct from `sprintKey` even
+      // though both read ControlLeft today: rebinding sprint must not silently
+      // rebind pick-block's modifier.
+      ctrl: k.has('ControlLeft') || k.has('ControlRight'),
     };
     for (let i = 0; i < 9; i++) {
       if (this.pressedBuf.has(KEYBINDS.hotbar[i])) frame.hotbar = i;

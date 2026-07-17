@@ -63,7 +63,7 @@ export class Enderman extends Mob {
     const p = w.game?.player;
 
     // stare detection (05 §8.5) — run every tick within 64
-    if (p && !p.dead && p.gameMode !== 'debugCreative') {
+    if (p && !p.dead && !p.creative) {          // 18 §7.1 — no stare-aggro in creative
       const ex = this.pos.x, ey = this.pos.y + this.height * 0.9, ez = this.pos.z;
       const px = p.pos.x, py = p.pos.y + p.eyeHeight, pz = p.pos.z;
       const dx = ex - px, dy = ey - py, dz = ez - pz;
@@ -183,6 +183,11 @@ export class Enderman extends Mob {
 
   onHurt(dmg, source, opts) {
     super.onHurt(dmg, source, opts);
+    // 18 §7.1 — "enderman retaliation likewise does not latch onto a creative
+    // attacker". super.onHurt already refuses the target; without this the mob
+    // would still flip aggro and scream, then sit in aggro-with-no-target for
+    // the full 800-tick timeout — provoked in every way except the useful one.
+    if (opts?.attacker?.creative) return;
     // provocation 2 of 2 (05 §8.5 damaged). Unlike the stare path this has no
     // !aggro guard — aggro is set on EVERY hit — so without the edge check it
     // would scream on every hit rather than on provocation.
