@@ -4,10 +4,11 @@
 // other. Air-exposure discard uses posHash so both sides of a border agree.
 
 import { splitmix32, chunkSeed, posHash, triSample, rngInt, rngRange, tsin, tcos } from '../../math/rng.js';
-import { ID } from './biomes.js';
+import { ID, BIOMES } from './biomes.js';
 
-// [block, attempts, size, sampler-kind, p0, p1, p2, discard]
+// [block, attempts, size, sampler-kind, p0, p1, p2, discard, gateBiome?]
 // kind 'u' = uniform(p0, p1); kind 't' = tri(p0, p1, p2) clipped to 0..127.
+// gateBiome (12-VILLAGES §6.1): if set, a cell only places when biomeAt == it.
 const FEATURES = [
   [ID.dirt,          3, 18, 'u', 34, 88, 0, 0],
   [ID.gravel,        2, 18, 'u', 0, 88, 0, 0],
@@ -25,13 +26,15 @@ const FEATURES = [
   [ID.diamond_ore,   4, 4,  't', -40, 0, 40, 0.5],
   [ID.diamond_ore,   2, 8,  't', -40, 0, 40, 1.0],
   [ID.diamond_ore, -1 / 9, 12, 't', -40, 0, 40, 0.7], // 1 in 1/9 chunks
+  // 12-VILLAGES §6.1 row #15 — emerald: runs LAST, mountains-only, single blocks.
+  [ID.emerald_ore, 11, 3, 't', 56, 96, 127, 0.5, BIOMES.MOUNTAINS],
 ];
 
 export function placeOresAndPockets(ctx, blocks, cx, cz) {
   for (let ocx = cx - 1; ocx <= cx + 1; ocx++) {
     for (let ocz = cz - 1; ocz <= cz + 1; ocz++) {
       const rng = splitmix32(chunkSeed(ctx.seeds.ore, ocx, ocz));
-      for (const [block, attempts, size, kind, p0, p1, p2, discard] of FEATURES) {
+      for (const [block, attempts, size, kind, p0, p1, p2, discard, gateBiome] of FEATURES) {
         let n;
         if (attempts < 0) n = rng() < -attempts ? 1 : 0; // fractional-chance row
         else n = attempts;
@@ -40,7 +43,7 @@ export function placeOresAndPockets(ctx, blocks, cx, cz) {
           const oz = ocz * 16 + rngInt(rng, 16);
           const oy = kind === 'u' ? rngRange(rng, p0, p1) : triSample(rng, p0, p1, p2);
           if (oy < 0 || oy > 127) continue;          // clipped tail; draws consumed
-          placeVein(ctx, blocks, cx, cz, rng, ox, oy, oz, size, block, discard);
+          placeVein(ctx, blocks, cx, cz, rng, ox, oy, oz, size, block, discard, gateBiome);
         }
       }
     }
@@ -48,7 +51,7 @@ export function placeOresAndPockets(ctx, blocks, cx, cz) {
 }
 
 // 02 §9.2 — line of overlapping spheres with sinusoidal radius
-function placeVein(ctx, blocks, cx, cz, rng, ox, oy, oz, size, blockId, discard) {
+function placeVein(ctx, blocks, cx, cz, rng, ox, oy, oz, size, blockId, discard, gateBiome) {
   let x = ox, y = oy, z = oz;
   let yaw = rng() * Math.PI * 2;
   let pitch = (rng() - 0.5) * 0.9;
@@ -67,6 +70,8 @@ function placeVein(ctx, blocks, cx, cz, rng, ox, oy, oz, size, blockId, discard)
               by < 0 || by > 127) continue;          // clip (no rng consumed)
           const idx = (by << 8) | ((bz & 15) << 4) | (bx & 15);
           if (blocks[idx] !== ID.stone) continue;
+          // 12-VILLAGES §6.1 — biome gate (mountains); skip without consuming draws.
+          if (gateBiome !== undefined && ctx.biomeAt(bx, bz) !== gateBiome) continue;
           if (discard > 0 && touchesAir(ctx, blocks, wx0, wz0, bx, by, bz) &&
               posHash(ctx.seeds.detail, bx, by, bz) < discard) continue;
           blocks[idx] = blockId;

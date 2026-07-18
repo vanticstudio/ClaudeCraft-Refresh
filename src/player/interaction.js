@@ -713,7 +713,7 @@ export class Interaction {
     }
     if (!hit) return false;
     if (held.toolClass === 'hoe') return this.useHoe(hit);                    // 2a
-    // 2b: 12 §7.1's shovel → dirt_path inserts here.
+    if (held.toolClass === 'shovel') return this.useDirtPath(hit);            // 2b (12-VILLAGES §7.1)
     if (held.name === 'flint_and_steel') return this.useFlintSteel(hit);      // 2c
     if (held.plantsCrop != null) return this.plantSeed(held, hit);            // 2e
     if (held.name === 'bone_meal') return this.useBoneMeal(hit);              // 2e
@@ -818,6 +818,14 @@ export class Interaction {
       }
       case 'bed': g.trySleep(hit.x, hit.y, hit.z); break;
       case 'door': this.toggleDoor(hit.x, hit.y, hit.z); break;
+      // 12-VILLAGES §7.2 — ringing the bell; §7.4 barrel is a 27-slot chest.
+      case 'bell': emitSound('block.bell.use', at(hit.x + 0.5, hit.y + 0.5, hit.z + 0.5)); this.swing(); break;
+      case 'barrel':
+        g.openContainer('chest', hit.x, hit.y, hit.z);
+        emitSound('block.barrel.open', at(hit.x + 0.5, hit.y + 0.5, hit.z + 0.5));
+        break;
+      // §7.3/§7.5 — composter and lectern have no player UI in this build (see DEVIATIONS).
+      case 'composter': case 'lectern': break;
       // 07 §6-§12 — lever/button/repeater/comparator/note block: right-click is
       // the block's onUse (installed by redstone/components.js).
       case 'redstone': {
@@ -1058,6 +1066,22 @@ export class Interaction {
     if ((id === B.GRASS_BLOCK || id === B.DIRT) &&
         w.getBlock(hit.x, hit.y + 1, hit.z) === B.AIR) {
       w.setBlock(hit.x, hit.y, hit.z, B.FARMLAND, { byPlayer: true });
+      this.player.damageHeld(1);
+      this.swing();
+      return true;
+    }
+    return false;
+  }
+
+  // 12-VILLAGES §7.1 — a shovel turns grass/dirt into a dirt_path (air above,
+  // not the bottom face). The path has no block-item; it reverts to dirt under a
+  // placed block via its neighborUpdate.
+  useDirtPath(hit) {
+    const w = this.world;
+    const id = w.getBlock(hit.x, hit.y, hit.z);
+    if ((id === B.GRASS_BLOCK || id === B.DIRT) &&
+        w.getBlock(hit.x, hit.y + 1, hit.z) === B.AIR && hit.face[1] !== -1) {
+      w.setBlock(hit.x, hit.y, hit.z, B.DIRT_PATH, { byPlayer: true });
       this.player.damageHeld(1);
       this.swing();
       return true;

@@ -398,6 +398,58 @@ P.brewing_stand = (c, x, y, r) => {
   px(c, x, y, 8, 3, '#e0a040');                           // flame tip
 };
 
+// ============ 12-VILLAGES §7 village blocks ============
+P.dirt_path_top = (c, x, y, r) => {
+  noise(c, x, y, r, '#8f7d4e', 6);
+  rect(c, x, y, 1, 1, 14, 14, '#9a8956'); noise(c, x, y, r, '#9a8956', 4);
+  border(c, x, y, '#6b5c38');
+};
+P.emerald_ore = (c, x, y, r) => oreTile(c, x, y, r, '#17dd62');
+P.emerald_block = (c, x, y, r) => {
+  noise(c, x, y, r, '#17c957', 10);
+  rect(c, x, y, 2, 2, 5, 5, '#20e468'); rect(c, x, y, 9, 9, 5, 5, '#20e468');
+  rect(c, x, y, 9, 2, 5, 5, '#12a848'); rect(c, x, y, 2, 9, 5, 5, '#12a848');
+  border(c, x, y, '#0d8a3a');
+};
+P.bell = (c, x, y, r) => {
+  noise(c, x, y, r, '#8a6a2a', 6);
+  rect(c, x, y, 5, 3, 6, 7, '#f2c94c');                    // bell body
+  rect(c, x, y, 4, 10, 8, 2, '#f2c94c'); rect(c, x, y, 6, 12, 4, 2, '#c99a2a');  // rim + clapper
+  rect(c, x, y, 7, 1, 2, 2, '#7a5a20');                    // hanger
+};
+P.composter_top = (c, x, y, r) => { planks(c, x, y, r, '#8a6a3a'); rect(c, x, y, 3, 3, 10, 10, '#4a3320'); noise(c, x, y, r, '#3a2a15', 3); };
+P.composter_side = (c, x, y, r) => { planks(c, x, y, r, '#8a6a3a'); rect(c, x, y, 0, 5, 16, 2, '#6b4f2a'); rect(c, x, y, 0, 11, 16, 2, '#6b4f2a'); };
+P.barrel_top = (c, x, y, r) => { planks(c, x, y, r, '#9a7846'); border(c, x, y, '#5a5a5a'); rect(c, x, y, 6, 6, 4, 4, '#3a2a15'); };
+P.barrel_side = (c, x, y, r) => { planks(c, x, y, r, '#8a6a3a'); rect(c, x, y, 0, 2, 16, 2, '#4a4a4a'); rect(c, x, y, 0, 12, 16, 2, '#4a4a4a'); };
+P.lectern_top = (c, x, y, r) => { planks(c, x, y, r, '#a76e35'); rect(c, x, y, 3, 4, 5, 8, '#e8e0c8'); rect(c, x, y, 8, 4, 5, 8, '#d8d0b8'); px(c, x, y, 7, 4, '#6b4f2a'); };
+P.lectern_side = (c, x, y, r) => { planks(c, x, y, r, '#8a5a2a'); rect(c, x, y, 5, 0, 6, 6, '#a76e35'); };
+P.blast_furnace_top = (c, x, y, r) => { noise(c, x, y, r, '#6a6a6a', 8); border(c, x, y, '#4a4a4a'); };
+P.blast_furnace_side = (c, x, y, r) => { noise(c, x, y, r, '#6a6a6a', 8); border(c, x, y, '#4a4a4a'); };
+P.blast_furnace_front = (c, x, y, r) => {
+  noise(c, x, y, r, '#5f5f5f', 8); border(c, x, y, '#3a3a3a');
+  rect(c, x, y, 4, 8, 8, 5, '#1a1a1a');                    // hopper mouth
+  rect(c, x, y, 5, 5, 2, 2, '#2a2a2a'); rect(c, x, y, 9, 5, 2, 2, '#2a2a2a');  // nozzles
+};
+P.blast_furnace_front_lit = (c, x, y, r) => {
+  P.blast_furnace_front(c, x, y, r);
+  rect(c, x, y, 5, 9, 6, 3, '#ff8a1a'); rect(c, x, y, 6, 10, 4, 1, '#ffd23c');
+};
+P.smoker_top = (c, x, y, r) => { planks(c, x, y, r, '#7a5a34'); rect(c, x, y, 5, 5, 6, 6, '#2a2a2a'); border(c, x, y, '#4a3a22'); };
+P.smoker_side = (c, x, y, r) => { planks(c, x, y, r, '#7a5a34'); rect(c, x, y, 0, 11, 16, 5, '#6a6a6a'); };
+P.smoker_front = (c, x, y, r) => {
+  planks(c, x, y, r, '#7a5a34');
+  rect(c, x, y, 4, 7, 8, 6, '#1a1a1a');
+  rect(c, x, y, 3, 2, 10, 2, '#4a3a22');
+};
+P.smoker_front_lit = (c, x, y, r) => {
+  P.smoker_front(c, x, y, r);
+  rect(c, x, y, 5, 9, 6, 3, '#ff8a1a'); rect(c, x, y, 7, 10, 2, 1, '#ffd23c');
+};
+P.fletching_table_top = (c, x, y, r) => { planks(c, x, y, r, '#c8b070'); rect(c, x, y, 3, 3, 1, 10, '#3a3a3a'); rect(c, x, y, 3, 3, 8, 1, '#3a3a3a'); rect(c, x, y, 6, 6, 5, 5, '#5a5a5a'); };
+P.fletching_table_side = (c, x, y, r) => { planks(c, x, y, r, '#b89a5a'); rect(c, x, y, 4, 2, 1, 12, '#3a3a3a'); rect(c, x, y, 8, 4, 1, 8, '#3a3a3a'); };
+P.hay_bale_top = (c, x, y, r) => { noise(c, x, y, r, '#c8a828', 8); border(c, x, y, '#8a7018'); rect(c, x, y, 7, 0, 2, 16, '#8a7018'); rect(c, x, y, 0, 7, 16, 2, '#8a7018'); };
+P.hay_bale_side = (c, x, y, r) => { noise(c, x, y, r, '#d4b432', 6); for (let i = 2; i < 16; i += 4) rect(c, x, y, 0, i, 16, 1, '#a88a20'); rect(c, x, y, 3, 0, 2, 16, '#7a6414'); rect(c, x, y, 11, 0, 2, 16, '#7a6414'); };
+
 P.crafting_table_top = (c, x, y, r) => {
   planks(c, x, y, r, '#a76e35');
   for (let i = 0; i < 16; i++) {
@@ -1205,6 +1257,15 @@ P.item_diamond = (c, x, y) => {
   rect(c, x, y, 6, 9, 4, 1, s);
   rect(c, x, y, 7, 10, 2, 1, s);
   px(c, x, y, 6, 5, w); px(c, x, y, 5, 6, w);
+};
+// 12-VILLAGES §7 — emerald gem (village trade currency).
+P.item_emerald = (c, x, y) => {
+  const d = '#17dd62', s = '#0f9b45', w = '#b6ffcf';
+  rect(c, x, y, 6, 3, 4, 2, d);
+  rect(c, x, y, 5, 5, 6, 3, d);
+  rect(c, x, y, 4, 8, 8, 2, s);
+  rect(c, x, y, 6, 10, 4, 2, s);
+  px(c, x, y, 7, 4, w); px(c, x, y, 6, 6, w);
 };
 P.item_flint = (c, x, y) => {
   rect(c, x, y, 5, 5, 6, 2, '#565656');

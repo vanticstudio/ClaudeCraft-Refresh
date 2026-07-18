@@ -25,6 +25,7 @@ self.onmessage = (e) => {
           type: 'chunk', cx: msg.cx, cz: msg.cz, jobId: msg.jobId,
           blocks: r.blocks, heightMap: r.heightMap, biomes: r.biomes,
           spawns: r.spawns,
+          villageMeta: r.villageMeta ?? null,   // 12-VILLAGES §2.7 (structured-clone, not transferred)
         },
         [r.blocks.buffer, r.heightMap.buffer, r.biomes.buffer],
       );

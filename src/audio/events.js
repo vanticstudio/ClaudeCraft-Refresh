@@ -339,6 +339,30 @@ def('entity.lingering_potion.break', {
   bus: 'sfx', maxDist: 16, capKey: 'potion_break', priority: P.NEAR, replicate: true,
   recipe: (v, t, p, g) => { blip(v, t, { wave: 'square', freq: 1600, dur: 0.06, gain: 0.3 * g }); return hiss(v, t, { freq: 2600, dur: 0.28, gain: 0.35 * g, pitch: p }); },
 });
+// 12-VILLAGES §12.3 — village sound events.
+def('block.bell.use', {
+  bus: 'sfx', maxDist: 48, refDist: 4, capKey: 'bell', priority: P.NEAR, replicate: true,
+  recipe: (v, t, p, g) => {
+    chime(v, t, { freq: 660, ratio: 2.76, index: 4, dur: 1.6, gain: 0.5 * g, pitch: p });
+    return chime(v, t, { freq: 990, ratio: 2.76, index: 3, dur: 1.2, gain: 0.3 * g, pitch: p });
+  },
+});
+def('block.barrel.open', {
+  bus: 'sfx', maxDist: 16, capKey: 'barrel', priority: P.NEAR, replicate: true,
+  recipe: (v, t, p, g) => { sweep(v, t, { src: 'osc', wave: 'sawtooth', f0: 220, f1: 160, dur: 0.3, gain: 0.5 * g, pitch: p, filter: { type: 'lp', freq: 600, Q: 1 } }); return CORES.wood(v, t, p, 0.14 * g, STEP_DUR.wood); },
+});
+def('villager.trade', {
+  bus: 'sfx', maxDist: 16, capKey: 'villager_trade', priority: P.NEAR, replicate: true,
+  recipe: (v, t, p, g) => { pluck(v, t, { freq: 520, dur: 0.1, gain: 0.4 * g, pitch: p }); return chime(v, t + 0.04, { freq: 880, ratio: 2.0, index: 2, dur: 0.2, gain: 0.25 * g, pitch: p }); },
+});
+def('zombie_villager.converting', {
+  bus: 'sfx', maxDist: 16, capKey: 'zv_convert', priority: P.NEAR, replicate: true,
+  recipe: (v, t, p, g) => sweep(v, t, { src: 'osc', wave: 'sawtooth', f0: 180, f1: 90, dur: 0.5, gain: 0.4 * g, pitch: p, filter: { type: 'lp', freq: 500, Q: 2 } }),
+});
+def('zombie_villager.cure', {
+  bus: 'sfx', maxDist: 24, capKey: 'zv_cure', priority: P.NEAR, replicate: true,
+  recipe: (v, t, p, g) => { sweep(v, t, { src: 'osc', wave: 'triangle', f0: 300, f1: 700, dur: 0.6, gain: 0.4 * g, pitch: p }); return chime(v, t + 0.3, { freq: 1000, ratio: 2.0, index: 3, dur: 0.4, gain: 0.3 * g, pitch: p }); },
+});
 def('ui.click', {
   ...UI,
   recipe: (v, t, p, g) => blip(v, t, { wave: 'square', freq: 800, dur: 0.03, gain: 0.25 * g }),
@@ -562,6 +586,8 @@ const MOB_IDLE = {
     BREAK_LAYERS.metal(v, t, p, g * 1.4);
     return thud(v, t, { f0: 90, f1: 40, dur: 0.2 * s.dur, gain: g, pitch: p });
   },
+  // 12-VILLAGES — zombie villager reuses the zombie groan (resolved at call time).
+  zombie_villager: (v, t, p, g, s) => MOB_IDLE.zombie(v, t, p, g, s),
   ghast: (v, t, p, g, s) => {                    // FM wail
     const d = 1.8 * s.dur;
     const carrier = v.ctx.createOscillator();

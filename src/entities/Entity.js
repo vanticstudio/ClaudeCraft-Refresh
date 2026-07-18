@@ -290,7 +290,9 @@ export class LivingEntity extends Entity {
       if (this.fallDistance > 0) {
         // AMENDS 03 §12.1 — Jump Boost reduces fall damage 1 block per level.
         const jb = this.effects.get(EFFECT.JUMP_BOOST);
-        const dmg = Math.ceil(this.fallDistance - 3 - (jb ? jb.amplifier + 1 : 0));
+        let dmg = Math.ceil(this.fallDistance - 3 - (jb ? jb.amplifier + 1 : 0));
+        // 12-VILLAGES AMENDS 03 §12.2 — landing on a hay bale cuts fall damage to 20%.
+        if (dmg > 0 && this.world.getBlock(Math.floor(this.pos.x), Math.floor(this.pos.y - 0.5), Math.floor(this.pos.z)) === 180) dmg = Math.floor(dmg * 0.2);
         if (dmg > 0 && this.takesFallDamage !== false) this.hurt(dmg, 'fall');
       }
       this.fallDistance = 0;

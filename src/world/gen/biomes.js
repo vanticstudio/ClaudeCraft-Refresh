@@ -26,6 +26,7 @@ export const ID = {
   diamond_ore: 24,
   redstone_ore: 25,
   lapis_ore: 26,
+  emerald_ore: 181,   // 12-VILLAGES §6.2
   snow_layer: 40,
   ice: 42,
   cactus: 43,

@@ -52,6 +52,8 @@ const FUEL_BLOCKS = {
   [B.LADDER]: 300, [B.OAK_FENCE]: 300,
   [B.OAK_SAPLING]: 100, [B.BIRCH_SAPLING]: 100, [B.SPRUCE_SAPLING]: 100,
   [B.WOOL_WHITE]: 100, [B.WOOL_RED]: 100, [B.WOOL_BLUE]: 100, [B.WOOL_BLACK]: 100,
+  // 12-VILLAGES AMENDS 06 §11.3
+  [B.BARREL]: 300, [B.LECTERN]: 300, [B.FLETCHING_TABLE]: 300, [B.COMPOSTER]: 300,
 };
 
 // --- auto block-items (06 §1) ---
@@ -64,6 +66,8 @@ const NO_BLOCK_ITEM = new Set([
   B.REDSTONE_WIRE, B.REDSTONE_LAMP_LIT, B.PISTON_HEAD,
   // 10-NETHER §1.1 — no survival block-item.
   B.NETHER_PORTAL, B.SPAWNER, B.NETHER_WART,
+  // 12-VILLAGES §1.1 — dirt_path is shovel-created; lit variants place from base.
+  B.DIRT_PATH, B.BLAST_FURNACE_LIT, B.SMOKER_LIT,
 ]);
 const DEBUG_ONLY = new Set([B.BEDROCK, B.GLOWSTONE, B.WOOL_RED, B.WOOL_BLUE, B.WOOL_BLACK]);
 
@@ -223,6 +227,9 @@ defItem(396, 'gold_nugget', {});
 defItem(397, 'nether_quartz', {});
 defItem(409, 'nether_brick', {});                             // smelt netherrack; nether_bricks family
 
+// --- 12-VILLAGES §1.2 — emerald (435): trade currency, drops from emerald_ore ---
+defItem(435, 'emerald', {});
+
 // --- 10-NETHER §9 — netherite tier (398-408). Tools/armor come ONLY from the
 // smithing upgrade (§9.3), never a grid recipe. netherite_scrap (398) is a plain
 // smelting product; the ingot + all gear (399-408) are fire/lava-immune (§9.4). ---
@@ -332,6 +339,12 @@ shapeless(375, 1, [[374], [339], [110]]);                     // §11.3 spider_e
 shaped(376, 1, ['GGG', 'GAG', 'GGG'], { G: [324], A: [304] }); // §9.1 golden_apple (apple + 8 gold_ingot)
 shaped(377, 1, ['NNN', 'NCN', 'NNN'], { N: [396], C: [315] }); // §9.2 golden_carrot (carrot + 8 gold_nugget)
 shaped(378, 8, ['AAA', 'ALA', 'AAA'], { A: [282], L: [373] }); // §15.1 tipped_arrow (potionId copied on craft)
+
+// --- 12-VILLAGES §6.3 emerald + hay_bale storage recipes ---
+shaped(B.EMERALD_BLOCK, 1, ['EEE', 'EEE', 'EEE'], { E: [435] });   // 9 emerald → block
+shapeless(435, 9, [[B.EMERALD_BLOCK]]);                            // block → 9 emerald
+shaped(B.HAY_BALE, 1, ['WWW', 'WWW', 'WWW'], { W: [336] });        // 9 wheat → hay_bale
+shapeless(336, 9, [[B.HAY_BALE]]);                                 // hay_bale → 9 wheat
 
 // --- 10-NETHER §1.3 ---
 // §9: 4 netherite_scrap + 4 gold_ingot → 1 netherite_ingot (shapeless); block ↔ 9 ingot

@@ -75,6 +75,27 @@ autosaves to the browser's IndexedDB every 30 seconds — close the tab and
 
 *This section is updated as new features land.*
 
+- **2026-07-18** — **Villages, trading & iron golems (expansion phase E6, `12`)**:
+  the world now grows **villages** — clusters of houses, farms, paths, a central
+  well and a **meeting-point bell** — that generate **identically no matter which
+  chunk loads first** (the whole layout is a pure function of the village's seed).
+  **Villagers** wander, claim a job from an adjacent workstation, and **trade**:
+  right-click one to open its offer list and buy with **emeralds** (a new gem that
+  mines from **emerald ore** high in the **mountains**, or crafts to/from an emerald
+  block). A **librarian** at a **lectern** sells **enchanted books** — real ones,
+  rolled through the same enchanting system as the table, priced by enchant level
+  (treasure enchants cost double). Other pros come from the **composter** (farmer),
+  **brewing stand** (cleric), **blast furnace** (armorer), **smoker** (butcher),
+  **fletching table** (fletcher), **smithing table** and **grindstone** (tool/weapon
+  smiths). Every village with **five or more villagers** raises an **iron golem**
+  that patrols and **hammers hostile mobs** (7–21 damage and a launch into the air),
+  shrugging off knockback and fall damage; kill one and the village forges another
+  after a cooldown. **Zombie villagers** now spawn among the undead — splash one with
+  a **Weakness** potion, feed it a **golden apple**, and after a few minutes it
+  **converts back into a villager**, keeping its profession and giving you a standing
+  discount for the rescue. New blocks come with it: **dirt paths** (make them with a
+  shovel), **barrels** (portable chests), **hay bales** (break your fall), plus
+  bells, composters, lecterns, blast furnaces, smokers and fletching tables.
 - **2026-07-18** — **Potions & status effects (expansion phase E9, `09`)**: the
   full brewing and status-effect layer is in. Craft a **brewing stand** (blaze rod
   + cobblestone), fill glass **bottles** at any water, and brew: water + **nether

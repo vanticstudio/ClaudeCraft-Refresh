@@ -67,11 +67,12 @@ export function createGenerator(seed) {
     carveWorms(ctx, blocks, cx, cz);
     lavaFlood(blocks);
     placeOresAndPockets(ctx, blocks, cx, cz);
-    decorate(ctx, blocks, cx, cz, colD);
+    const village = decorate(ctx, blocks, cx, cz, colD);   // 12-VILLAGES: stamps + meta
     const heightMap = computeHeightMap(blocks);
     const biomes = Uint8Array.from(colD.biome);         // copy: cache stays live
     const spawns = rollHerd(ctx, cx, cz);
-    return { blocks, heightMap, biomes, spawns };
+    if (village?.spawns?.length) for (const s of village.spawns) spawns.push(s);
+    return { blocks, heightMap, biomes, spawns, villageMeta: village?.villageMeta ?? null };
   }
 
   // 02 §12 — world spawn: rings of 8-block steps out to radius 256
