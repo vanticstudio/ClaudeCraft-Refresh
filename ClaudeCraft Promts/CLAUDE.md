@@ -128,12 +128,14 @@ Rails & minecarts, raids/pillagers/patrols, fishing, ocean monuments & guardians
 
 Lock and freeze these interfaces **before any dependent phase starts**; no dependent phase runs against an unfrozen contract:
 
-- **08's `tags` object schema** (enchants / potionId / containerItems) — consumed by 09/10/11/12/13.
-- **09's status-effect API** (effect ids + application/tick surface) — consumed by 08/10/11/13.
+- **08's `tags` object schema** (enchants / name / anvilUses; `potionId` reserved for 09, `containerItems` reserved for **11-END**'s shulker box — both via 08 §1's forward-compat, *not* defined by 08) — consumed by 09/10/11/12/13. `src/items/tags.js` is this frozen module (landed at E3).
+- **09's status-effect API** (effect ids + application/tick surface) — its runtime behavior is invoked by 08/10/11/13, but see the build-time-vs-runtime note below: 09 need not precede them.
 - **10's dimension registry** + portal/teleport API + per-dim gen/sky/save keys — 11 builds on it.
 - **15's global `states` bit7** (waterlogged) allocation — globally reserved; every block-state consumer must honor it.
 
 Practically: build these CRITICAL contract phases early, run the §8.3 review pass on each until its interface is stable, then let consumers build against the frozen surface. E9(09) also depends on E7(10) ingredients, and E10/E11(11/13) depend on E7(10) — so 10's registry must freeze before them.
+
+**Build-time vs runtime contracts (resolves the apparent §4-order circularity).** Freeze-before-dependents applies only to contracts a consumer needs the *shape* of at build time — 08's `tags`, 10's dimension registry, 15's bit7. A contract a consumer only *invokes at runtime* — 09's effect application (e.g. an enchant that inflicts Slowness) — does **not** need to precede its consumers: the earlier phase guards the forward reference (a no-op until the owner lands) and wires it when 09 arrives. So 09 staying at E9 is correct even though 08/10/11 reference effects; each guards its effect touchpoints until E9. Only build-time-shape contracts gate the order.
 
 ### 8.3 Self-management rules
 
@@ -144,9 +146,18 @@ Practically: build these CRITICAL contract phases early, run the §8.3 review pa
 
 ### 8.4 Mechanism (wired for this environment)
 
-**Run the build in the Opus 4.8 Ultra Code session.** Since every phase is the same model, no model pinning is required. Subagents are still useful — for **independent/leaf phases run in parallel** and, importantly, for the **CRITICAL-tier review pass** (dispatch a separate review subagent so the check isn't done by the same context that wrote the code). The Task/Agent tool's `model` parameter still exists (`opus` | `sonnet` | `haiku`; `fable` currently unavailable), so pin review/build subagents to `opus` explicitly.
+**Run the build in the Opus 4.8 Ultra Code session.** Since every phase is the same model, no model pinning is required. Subagents are still useful — for **independent/leaf phases run in parallel (each in its own git worktree — §8.5)** and, importantly, for the **CRITICAL-tier review pass** (dispatch a separate review subagent so the check isn't done by the same context that wrote the code). The Task/Agent tool's `model` parameter still exists (`opus` | `sonnet` | `haiku`; `fable` currently unavailable), so pin review/build subagents to `opus` explicitly.
 
 **If Fable 5 usage returns:** restore the §8.1 model column (CRITICAL/HIGH → Fable 5, LEAF → Opus) and re-enable per-phase model pinning at the boundary; the risk tiers already encode the mapping.
+
+### 8.5 Parallelism & isolation (HARD RULE — learned the hard way)
+
+**One phase, one git worktree. Never run two phases (or two agents) against the same working tree.** Running E3 / EC / E7 concurrently in a single tree cost a full session: git stages whole files, so no agent could commit its half without sweeping in the others' unverified work; one agent's `SAVE_VERSION` bump silently broke another's saves; files changed under a running test. Rules:
+
+- Each phase/agent gets its own worktree: `git worktree add -b <phase> ../ClaudeCraft-<phase> main`. Build, verify, and review there.
+- **Merge to `main` only at the passing gate**, one phase at a time (fast-forward or a reviewed merge), then remove the worktree. `main` is the *only* place phases combine, and only after each is green.
+- **Commit at every gate.** A phase is not "done" until it's committed to `main` and green there — an uncommitted verified phase is one `git checkout`/prune away from gone (E7a's ~40% dimension engine was lost exactly this way).
+- **`SAVE_VERSION` is a shared singleton.** Any phase that changes the save format coordinates a *single* v→v+1 migration folded into `saveManager.open()`; two phases must never both bump it. Known blocker: `open()` currently nulls `meta` on a version mismatch *before* any migration hook could run — fix that migration path **before** the first bump, or dim/multiplayer saves are silently rejected (affects E7 and E12).
 
 ---
 

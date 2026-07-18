@@ -3,9 +3,18 @@
 **Date:** 2026-07-17
 **Agent:** one of three (Opus 4.8, Ultra Code)
 **Assigned:** E6 — `12-VILLAGES.md` (HIGH tier) → **stopped, reassigned** → E3 — `08-ENCHANTING.md` part 1 (CRITICAL tier)
-**Net result:** **E3 built and fully verified (117/117 browser assertions, 0 console errors), including
-a CRITICAL-tier adversarial review that found 6 defects — all fixed. Not committed**, because the
-working tree holds two other agents' in-progress phases and git cannot stage my half of a shared file.
+**Net result:** **E3 built and fully verified (117/117 E3-scoped browser assertions, 140/141 including
+the E2 regression suite, 0 console errors), including a CRITICAL-tier adversarial review that found
+6 defects — all fixed. Not committed by me**, because the working tree holds two other agents'
+in-progress phases and git cannot stage my half of a shared file.
+
+> **Post-hand-off update (added after this report was written and fact-checked).** The user has since
+> committed the whole tree as `07d9919` ("v1.0.6", 2026-07-17 20:22) — 44 files, +9567/−379 — which
+> includes E3, EC/18-CREATIVE, E7's WIP and this report itself. E3 is in history under that message,
+> fused with the other agents' work exactly as §7/§8.1 predicted, and is **not separable by revert**.
+> The code is byte-identical to what was verified here (`git diff 9a953c8 07d9919` over the E3 files
+> matches the audited working-tree diffs), so every technical finding below still stands. §7's
+> ownership map is now the **only** record of which lines in `07d9919` belong to which agent.
 
 ---
 
@@ -16,10 +25,10 @@ working tree holds two other agents' in-progress phases and git cannot stage my 
 | Phase delivered | **E3 — 08-ENCHANTING part 1** (§1 `tags`, §6 sweep, §7 offhand, §12 hook, §13) |
 | Phase refused | **E6 — 12-VILLAGES** — two of its four gate clauses depend on unbuilt phases (see §2) |
 | Implementation | **complete** for E3's scope; §2–§5 and §8–§11 are E4's and deliberately absent |
-| Verification | **117/117 assertions, 0 console errors** (59 new E3 + 35 audio + 16 RMB + 7 in-game) |
+| Verification | **117/117 E3-scoped assertions, 140/141 overall, 0 console errors** (59 new E3 + 35 audio + 16 RMB + 7 in-game; + E2 regression 23/24, pre-existing flake, §8) |
 | Acceptance gate | **passes** — all four clauses of the assigned gate (see §5) |
 | Review pass | **6 defects found by a separate Opus reviewer, all fixed + regression-tested** |
-| Commits made | **none** (`main` still at `9a953c8` E2) — see §7 |
+| Commits made | **none by me** — `main` was at `9a953c8` (E2) at hand-off; the user has since squashed E3 into `07d9919` (v1.0.6) together with EC and E7 — see §4.2, §7 |
 | Registry footprint | **zero** — blocks 105–109 and items 346–369 verified still empty |
 | Deviations logged | 9 + 6 review findings + 3 carried to E4, in `DEVIATIONS.md` |
 | Contract frozen | **yes** — `src/items/tags.js`, consumed by 09/10/11/12/13 |
@@ -181,9 +190,15 @@ Consequences that follow, stated plainly:
   formula's *shape* is correct and the bonus slots in after the crit multiply, where it belongs.
 - Fire Aspect igniting sweep victims and Looting applying to sweep kills (§6.4) need E4's catalog.
 
-### 4.2 Not committed
+### 4.2 Not committed at hand-off
 
-`main` is still at `9a953c8` (E2). See §7 — this was the user's explicit decision, not an oversight.
+At hand-off, `main` was still at `9a953c8` (E2). See §7 — this was the user's explicit decision, not
+an oversight.
+
+**Update:** E3 was subsequently committed by the user in `07d9919` ("v1.0.6", 2026-07-17 20:22). As
+§7/§8.1 anticipated, that commit fuses E3 with the other agents' work — `src/items/tags.js` (+230)
+lands alongside `src/ui/creativeTabs.js` (+155), `Mob.js`, `Enderman.js`, `main.js`, `menus.js` and
+`debug.js`. E3 is not separable by revert.
 
 ### 4.3 Not fixed — deliberately out of scope, handed on
 
@@ -211,7 +226,7 @@ E4's and E9's respectively, and were the reason E6 was stopped.
 
 ---
 
-## 5. Verification — 117/117, zero console errors
+## 5. Verification — 140/141, zero console errors
 
 Headless Chromium (playwright-core + swiftshader) against the dev server, driving `window.game`.
 
@@ -223,6 +238,11 @@ Headless Chromium (playwright-core + swiftshader) against the dev server, drivin
 | RMB fix (`verify-rmb.cjs`) | 16 / 16 |
 | In-game (`verify-ingame.cjs`) | 7 / 7 |
 | `npx vite build` | passes |
+
+The **117/117** figure quoted in §1 covers the four E3-scoped suites (59 E3 + 35 audio + 16 RMB +
+7 in-game). Counting the E2 regression suite as well, the measured total is **140/141** — the single
+failure is E2's seed-flaky `peakFire >= 3` wool-catches assertion, which is pre-existing and not an
+E3 regression (see §8 item 2).
 
 **The assigned gate, measured:**
 
@@ -274,7 +294,14 @@ cancels *and* swaps. Java would swap in both cases. Revisit if E4 finds a third 
 
 ---
 
-## 7. Why nothing was committed
+## 7. Why E3 was not committed separately — and what happened after
+
+> **Superseded — E3 is now committed.** After this report was written, the user committed everything
+> in the tree as `07d9919` ("v1.0.6", 44 files, +9567/−379), including this report. E3's work is in
+> history under that message, alongside EC/18-CREATIVE, E7's WIP and the user's `CC-assets/CC-menu-logo/`
+> deletions — the single fused commit §8.1 predicted. The content is unchanged, so the ownership map
+> below still stands and is now the only record of which lines in `07d9919` are E3's. The reasoning
+> that follows is retained as the **rationale** for not self-committing, not as a current status.
 
 **All three agents are building different phases in one working tree.** My E3 edits are layered on top
 of EC/18-CREATIVE's uncommitted work inside the same files. Committing "E3: sweep + offhand" would
@@ -291,10 +318,13 @@ My first pass at this was **wrong** and I am correcting it here: I initially rep
 
 | Scope | Files |
 |---|---|
-| **Exclusively mine** | `src/items/tags.js` (new), `src/render/Particles.js`, `src/entities/ItemEntity.js` |
+| **Exclusively mine** | `src/items/tags.js` (new), `src/render/Particles.js`, `src/entities/ItemEntity.js`, `CC-assets/E3-SESSION-REPORT.md` (this file) |
 | **Shared with EC** | `src/player/interaction.js`, `src/entities/Player.js`, `src/ui/containers.js`, `src/ui/hud.js`, `src/ui/style.css`, `src/Game.js`, `src/audio/events.js`, `src/constants.js`, `src/player/input.js` |
 | **Docs (shared)** | `DEVIATIONS.md` (E3 section at top), `README.md` (Additions log) |
-| **Not mine — do not attribute to E3** | `src/entities/mobs/Mob.js`, `src/entities/mobs/Enderman.js`, `src/main.js`, `src/ui/menus.js`, `src/ui/debug.js`, `src/ui/creativeTabs.js`, `src/audio/themeManifest.js`, `CC-assets/*-SESSION-REPORT.md`, `ClaudeCraft Promts/UPDATE-build-state-audit.md` |
+| **Not mine — do not attribute to E3** | `src/entities/mobs/Mob.js`, `src/entities/mobs/Enderman.js`, `src/main.js`, `src/ui/menus.js`, `src/ui/debug.js`, `src/ui/creativeTabs.js`, `src/audio/themeManifest.js`, `CC-assets/E7-SESSION-REPORT.md`, `CC-assets/EC-CREATIVE-SESSION-REPORT.md`, `ClaudeCraft Promts/UPDATE-build-state-audit.md`, **`.claude/`** (E7's WIP: `E7-codebase-map.md`, `E7-integration-ref.md`, `E7a-wip/` — untracked and *not* gitignored, so exposed to `git add -A`; it duly rode into `07d9919`) |
+
+> **The deletions were not mine either:** the user's removal of `CC-assets/CC-menu-logo/` (17 files)
+> was pending in the working tree and rode along with the same broad `git add`.
 
 ---
 
@@ -334,16 +364,21 @@ My first pass at this was **wrong** and I am correcting it here: I initially rep
 ## 9. State of the tree at hand-off
 
 ```
-branch:      main, 1 ahead of origin
-last commit: 9a953c8  E2: fire + waterlogging
-E3 status:   complete, verified, UNCOMMITTED
+branch:      main
+last commit: 07d9919  v1.0.6
+E3 status:   complete, verified, COMMITTED in 07d9919 (fused with EC + E7)
 build:       passes (npx vite build)
 dev server:  running on :5173
 ```
 
-Also uncommitted and **not mine**: EC/18-CREATIVE (agent two, complete per its own report), E7 work in
-progress (agent three), and the user's own deletions of `CC-assets/CC-menu-logo/`.
+*At hand-off this block read `last commit: 9a953c8` / `E3 status: UNCOMMITTED`. The user committed the
+tree as `07d9919` shortly afterwards — in the same operation that first put this report into history,
+which is how it came to describe a state it had already left.*
 
-**Nothing of E3's is lost if this session ends** — the code is in the tree, `DEVIATIONS.md` carries the
-rulings and the review findings, `README.md` has the Additions-log entry, and `scratchpad/e3.cjs`
-re-runs the whole 59-assertion suite against a dev server.
+Also inside `07d9919` and **not mine**: EC/18-CREATIVE (agent two, complete per its own report), E7
+work in progress (agent three), and the user's own deletions of `CC-assets/CC-menu-logo/`. **The commit
+message attributes none of it** — §7's ownership map is the only attribution record.
+
+**Nothing of E3's is lost** — the code is committed in `07d9919`, `DEVIATIONS.md` carries the rulings
+and the review findings, `README.md` has the Additions-log entry, and `scratchpad/e3.cjs` re-runs the
+whole 59-assertion suite against a dev server.
