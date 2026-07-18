@@ -31,6 +31,9 @@ import { AABB } from './math/aabb.js';
 import { createMob, MobSpawner, HOSTILE_TYPES } from './entities/mobs/index.js';
 import { emitSound, startLoop, at } from './audio/engine.js';
 import { forgetFireInChunk } from './world/fire.js';
+import { RedstoneEngine } from './redstone/RedstoneEngine.js';
+import { RedstoneComponents, installComponentHooks } from './redstone/components.js';
+import { RedstoneContainers } from './redstone/containersRedstone.js';
 
 const NEUTRAL_FRAME = {
   forward: 0, strafe: 0, jump: false, sneak: false, sprintKey: false,
@@ -102,6 +105,13 @@ export class Game {
     this.dayNight = new DayNight(this);
     this.particles = new Particles(this.scene);
     this.mobSpawner = new MobSpawner(this);
+    // 07-REDSTONE §5 — the circuit engine + component/container logic. Hooks are
+    // attached to block defs once (idempotent across worlds).
+    this.redstone = new RedstoneEngine(this.world);
+    this.redstone.game = this;
+    this.redstoneComponents = new RedstoneComponents(this);
+    this.redstoneContainers = new RedstoneContainers(this);
+    installComponentHooks();
 
     if (savedMeta) {
       this.world.time = savedMeta.worldTime ?? 0;
@@ -195,9 +205,16 @@ export class Game {
     const frame = playing && !this.sleeping ? this.input.snapshot() : (this.input.snapshot(), NEUTRAL_FRAME);
 
     if (this.state !== STATE.LOADING) {
+      // 07 §5.2 — process any dust-solve seeds carried over from last tick,
+      // before this tick's player/entity edits queue more.
+      this.redstoneContainers?.clearTickGuards();
+      this.redstone?.drainAtTickStart();
       this.player.tick(frame);
       this.interaction.tick(frame);
       this.entities.tick(this.player);
+      // 07 §6.3 — pressure-plate presses are entity-driven; scan after entities
+      // move (the player is in the manager, so this covers them too).
+      this.redstoneComponents?.tickPlates(this.entities.entities.values());
       this.world.scheduled.run();
       this.world.randomTicks();
       this.dayNight.tick();
@@ -462,8 +479,11 @@ export class Game {
     if (!be) {
       const kind = BLOCKS[chunk.blocks[i]].blockEntity;
       if (!kind) return null;
-      be = kind === 'chest'
-        ? { type: 'chest', data: { slots: new Array(27).fill(null) } }
+      // 07 §17 — dispenser/dropper are 9 slots; hopper is 5 slots + cooldown.
+      be = kind === 'chest' ? { type: 'chest', data: { slots: new Array(27).fill(null) } }
+        : kind === 'dispenser' ? { type: 'dispenser', data: { slots: new Array(9).fill(null) } }
+        : kind === 'dropper' ? { type: 'dropper', data: { slots: new Array(9).fill(null) } }
+        : kind === 'hopper' ? { type: 'hopper', data: { slots: new Array(5).fill(null), cooldown: 0 } }
         : { type: 'furnace', data: { slots: new Array(3).fill(null), burn: 0, fuelTotal: 0, cook: 0, xpBank: 0 } };
       chunk.blockEntities.set(i, be);
       chunk.modified = true;
@@ -479,9 +499,9 @@ export class Game {
         const chunk = this.world.chunks.get(chunkKey(p.cx + dcx, p.cz + dcz));
         if (!chunk || chunk.state < ChunkState.GENERATED || chunk.blockEntities.size === 0) continue;
         for (const [i, be] of chunk.blockEntities) {
-          if (be.type !== 'furnace') continue;
           const x = chunk.cx * 16 + (i & 15), y = i >> 8, z = chunk.cz * 16 + ((i >> 4) & 15);
-          this.tickFurnace(be.data, x, y, z, chunk);
+          if (be.type === 'furnace') this.tickFurnace(be.data, x, y, z, chunk);
+          else if (be.type === 'hopper') this.redstoneContainers.tickHopper(be, x, y, z);   // 07 §11.3
         }
       }
     }

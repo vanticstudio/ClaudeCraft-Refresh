@@ -56,6 +56,9 @@ const NO_BLOCK_ITEM = new Set([
   B.AIR, B.WATER, B.LAVA, B.FIRE, B.FURNACE_LIT,
   B.WHEAT_CROP, B.CARROT_CROP, B.POTATO_CROP,
   B.BED_BLOCK, B.OAK_DOOR, B.FARMLAND,
+  // 07 §2: wire places from item 342; the lit lamp/piston head place from their
+  // base ids, never as their own block-item.
+  B.REDSTONE_WIRE, B.REDSTONE_LAMP_LIT, B.PISTON_HEAD,
 ]);
 const DEBUG_ONLY = new Set([B.BEDROCK, B.GLOWSTONE, B.WOOL_RED, B.WOOL_BLUE, B.WOOL_BLACK]);
 
@@ -174,7 +177,9 @@ defItem(338, 'sugar_cane', { place: B.SUGAR_CANE_BLOCK });
 defItem(339, 'sugar', {});
 defItem(340, 'paper', {});
 defItem(341, 'book', {});
-defItem(342, 'redstone', {});
+// AMENDS 06 §7.4 (07 §4.1): redstone dust places wire (block 70) on the top face
+// of a supporting block; still a crafting ingredient.
+defItem(342, 'redstone', { place: B.REDSTONE_WIRE });
 defItem(343, 'lapis_lazuli', {});
 defItem(344, 'bed', { kind: 'bed', stack: 1, placesAs: 'bed' });
 defItem(345, 'oak_door', { kind: 'door', placesAs: 'door' });
@@ -267,6 +272,31 @@ shapeless(332, 3, [[331]]);
 shapeless(339, 1, [[338]]);
 shaped(340, 3, ['CCC'], { C: [338] });
 shapeless(341, 1, [[340], [340], [340], [330]]);
+
+// ========================= 07-REDSTONE §15 =========================
+// Adaptation: nether quartz → lapis_lazuli (343); slimeball → sugar (339); until
+// 10-NETHER supplies the originals (logged in DEVIATIONS). Glowstone (32) is
+// debug-palette-only until 10 generates it, but the lamp recipe ships now.
+const STICK = 318, RS = 342, LAPIS = 343, SUGAR = 339;
+const STONE = B.STONE, COBBLE = B.COBBLESTONE, IRON = 322, GLOW = B.GLOWSTONE;
+shaped(B.REDSTONE_TORCH, 1, ['R', 'S'], { R: [RS], S: [STICK] });
+shaped(B.LEVER, 1, ['S', 'C'], { S: [STICK], C: [COBBLE] });
+shapeless(B.STONE_BUTTON, 1, [[STONE]]);
+shapeless(B.WOODEN_BUTTON, 1, [PLANKS]);
+shaped(B.STONE_PRESSURE_PLATE, 1, ['AA'], { A: [STONE] });
+shaped(B.WOODEN_PRESSURE_PLATE, 1, ['PP'], { P: PLANKS });
+shaped(B.REPEATER, 1, ['TRT', 'AAA'], { T: [B.REDSTONE_TORCH], R: [RS], A: [STONE] });
+shaped(B.COMPARATOR, 1, ['.T.', 'TLT', 'AAA'], { T: [B.REDSTONE_TORCH], L: [LAPIS], A: [STONE] });
+shaped(B.PISTON, 1, ['PPP', 'CIC', 'CRC'], { P: PLANKS, C: [COBBLE], I: [IRON], R: [RS] });
+shapeless(B.STICKY_PISTON, 1, [[B.PISTON], [SUGAR]]);
+shaped(B.OBSERVER, 1, ['CCC', 'RRL', 'CCC'], { C: [COBBLE], R: [RS], L: [LAPIS] });
+shaped(B.DISPENSER, 1, ['CCC', 'CBC', 'CRC'], { C: [COBBLE], B: [281], R: [RS] });   // B = bow (281)
+shaped(B.DROPPER, 1, ['CCC', 'C.C', 'CRC'], { C: [COBBLE], R: [RS] });
+shaped(B.HOPPER, 1, ['I.I', 'ICI', '.I.'], { I: [IRON], C: [B.CHEST] });
+shaped(B.REDSTONE_LAMP, 1, ['.R.', 'RGR', '.R.'], { R: [RS], G: [GLOW] });
+shaped(B.NOTE_BLOCK, 1, ['PPP', 'PRP', 'PPP'], { P: PLANKS, R: [RS] });
+shaped(B.REDSTONE_BLOCK, 1, ['RRR', 'RRR', 'RRR'], { R: [RS] });
+shapeless(RS, 9, [[B.REDSTONE_BLOCK]]);
 
 // ========================= SMELTING (06 §11.2) =========================
 export const SMELTING = new Map([

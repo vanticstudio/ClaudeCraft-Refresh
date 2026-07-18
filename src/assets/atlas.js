@@ -35,6 +35,14 @@ const BLOCK_TILES = [
   'potato_0', 'potato_1', 'potato_2', 'potato_3',
   'sugar_cane', 'short_grass', 'dandelion', 'poppy',
   'water', 'lava', 'fire', 'dead_bush',
+  // 07-REDSTONE §14
+  'dust_line_0', 'redstone_torch', 'redstone_torch_off', 'lever', 'stone_button', 'wooden_button',
+  'repeater_top', 'comparator_top', 'smooth_stone_side', 'smooth_stone_bottom',
+  'piston_side', 'piston_face', 'piston_face_sticky', 'piston_inner',
+  'observer_side', 'observer_face', 'observer_back',
+  'dispenser_side', 'dispenser_front', 'dropper_front',
+  'hopper_top', 'hopper_side', 'redstone_lamp', 'redstone_lamp_lit',
+  'note_block', 'redstone_block',
 ];
 const DESTROY_TILES = Array.from({ length: 10 }, (_, i) => 'destroy_' + i);
 const ITEM_TILES = Object.keys(PAINTERS).filter(n => n.startsWith('item_')).sort();

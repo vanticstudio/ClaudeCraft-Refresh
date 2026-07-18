@@ -75,6 +75,21 @@ autosaves to the browser's IndexedDB every 30 seconds — close the tab and
 
 *This section is updated as new features land.*
 
+- **2026-07-18** — **Redstone (expansion phase E5, `07`)**: the full circuit
+  layer is in. **Redstone dust** carries a 0–15 signal that fades one level per
+  block and auto-shapes to its neighbours; **redstone torches** invert and burn
+  out if you flick them too fast; **levers, buttons, and pressure plates** are
+  the inputs (wooden plates trip on any entity, stone only on the living).
+  **Repeaters** delay and lock; **comparators** compare/subtract and read how
+  full a container is. **Pistons and sticky pistons** shove up to 12 blocks (and
+  pull one back); **observers** pulse on any change they watch. **Dispensers**
+  fire arrows, place water, and prime TNT; **droppers** and **hoppers** move
+  items — a hopper chain fills a chest, and powering a hopper locks it.
+  **Redstone lamps** light instantly, **note blocks** play by the block beneath
+  them, and redstone now triggers **TNT** and opens **doors**. The whole thing is
+  event-driven and stays well under a millisecond a tick even with dozens of live
+  circuits. Save format unchanged — component state rides in the block bytes.
+
 - **2026-07-17** — **Sweep attack + offhand slot (expansion phase E3, `08` part 1)**:
   a full-charge sword swing while standing now **sweeps** — every mob in the halo
   around the one you hit takes damage, gets shoved the way you're looking, and the

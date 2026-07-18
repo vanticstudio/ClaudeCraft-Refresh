@@ -4,6 +4,138 @@ Deviations and ambiguity rulings. (The base-spec `.md` files were removed from
 the working tree during repo cleanup; the pre-UPDATE deviation log for the
 initial build lives in git history — `git show 8441ac9:DEVIATIONS.md`.)
 
+## E5 — 07-REDSTONE: power, components, automation (2026-07-18)
+
+Built in an isolated worktree per CLAUDE.md §8.5, branched from `main` (07d9919).
+The full redstone layer: the 0–15 power model (§3), dust with the vanilla
+connection graph (§4), the event-driven dust solver + delayed-component scheduler
+(§5), every component (torch/lever/buttons/plates/repeater/comparator/observer,
+§6–§8), pistons (§9), dispenser/dropper/hopper (§10–§11), lamp/note block, and
+redstone control of base TNT and doors (§12). Blocks 70–89 (90–104 reserved);
+item 342 places wire; no new item ids. New module dir `src/redstone/`.
+
+**Note on branch base:** E5 branched from `main`, which contains E3 but NOT E4
+(08-ENCHANTING, on `e4-enchanting`, unmerged). E5 and E4 both touch shared files
+(`registry/blocks.js`, `items.js`, `ui/containers.js`, `player/interaction.js`,
+`Game.js`, `World.js`, `LightEngine.js`) in different regions; they must be
+sequenced at merge time.
+
+### Reused existing hooks instead of adding new callback names (AMENDS 01 §5)
+
+The spec's AMENDS asks for new block callbacks `onNeighborChanged` /
+`onScheduledTick`. The codebase already has `neighborUpdate` and `scheduledTick`
+serving exactly that dispatch (from `World.neighborUpdates` and `blockTick`), so
+redstone components attach to those rather than adding parallel names. New fields
+added: `conductive` (§3.2), `onUse` (§6–§12 right-click), `onMoved` (§6.6/§9),
+`emissionFor` (state-dependent torch light). Handlers are attached at runtime by
+`installComponentHooks()` so `registry/blocks.js` stays a dependency-free leaf.
+
+### Deviations
+
+1. **§4.5 dust rendering — one tinted tile, not 16 power variants.** §4.5 bakes
+   16 pre-tinted dust tiles into the atlas. This build ships a single grayscale
+   dust tile; the power gradient is not rendered as 16 discrete brightnesses. The
+   stored power (states bits0–3) and all LOGIC are exact — only the visual ramp
+   is simplified. The custom wire/lever/button/plate/repeater/comparator/piston-
+   head/hopper meshes are likewise **approximate boxes** (the logic reads state,
+   never the mesh); wall levers/torches render floor-style.
+2. **§9.2 piston render — instant move (as the spec's own adaptation allows).**
+   No moving-block entity or animation; blocks teleport one cell on the
+   completion tick. The spec explicitly rejects animated interpolation.
+3. **§6.6 observer state-change detection is scoped.** §6.6 lists observers
+   triggering on "any states[] byte change" including crop stage/fluid level.
+   `World.setState → onStateChanged → notifyObservers` covers every state change,
+   so this is honored — but a state change made by a raw `chunk.states[]` write
+   that bypasses `setState` would be missed. All engine paths use `setState`.
+4. **§3.2 conductivity defaults from the opaque flag.** As §3.2's own adaptation
+   notes, glowstone and redstone lamps conduct here (they are opaque cubes),
+   unlike vanilla's transparent classification. Difference visible only in exotic
+   builds. Pistons/observer/redstone_block/hopper/glass/leaves opt out explicitly.
+5. **§15 recipe substitutions (spec-directed).** Nether quartz → `lapis_lazuli`
+   (comparator, observer); slimeball → `sugar` (sticky piston); per §15's
+   adaptation, until 10-NETHER supplies the originals. The lamp recipe ships now
+   though glowstone is debug-palette-only until 10.
+6. **§8 comparator worked-example labels.** The checklist's "6,7,4 → 0" (compare)
+   and "5,2,9 → 4" (subtract) are verified as formulas: compare
+   `(max(A,C)≤R)?R:0` and subtract `max(R−max(A,C),0)`. For "→4" the subtract
+   inputs are (R=9, A=5, C=2). Both formulas are asserted exactly.
+7. **Approximate hopper / piston-head collision = full cube**, per §13.2's own
+   `(approx)` notes.
+
+### Bugs found by the acceptance harness (all fixed)
+
+The engine test (`scratchpad/e5.cjs`, 37/37) surfaced five real defects during
+development, each fixed:
+
+1. **Dust line power output.** A straight-line dust must weakly power the block
+   it *points at* (both axis ends), not only its graph connections — else Case A's
+   lamp and the block past a diode never powered. `dustOutputDirs` now extends a
+   single connection to the full axis (§4.2's "line" rendering).
+2. **Fan-out didn't re-solve dust past a conductive block.** When a block's
+   strong power changed, adjacent dust wasn't re-solved (the fan-out ran the
+   wire's support-check, not a network re-solve). `poke` now queues wire cells
+   for re-solve. This was the Case-B failure.
+3. **Torch light not seeded on placement.** The torch shares one id for lit/unlit
+   with state-dependent emission; `LightEngine.onBlockChanged` read the static
+   `emission` (0). Now it consults `emissionFor`, so placing a lit torch lights.
+4. **Sticky retract destroyed its own base.** `tryRetract` removes the head via
+   `setBlock(air)`, which fired the head's `onBroken` → `headBroken` → broke the
+   base. Guarded with a `game.pistonMoving` flag.
+5. **Stale per-cell transient state.** `repPending` / `torchOff` / `burnedOut`
+   are keyed by cell and were never cleared on break, so a new repeater/torch at
+   the same cell inherited a stale latch (a stuck `repPending` suppressed all
+   future scheduling). Cleared in the components' `onBroken`. **A genuine engine
+   bug, not just a test artifact.**
+
+### The CRITICAL-tier review pass (CLAUDE.md §8.3) — 8 findings, all fixed
+
+A separate Opus subagent audited the tick scheduler and component interactions.
+It verified the core (power model, dust solver, re-entrancy/termination, repeater
+latch, comparator, piston move transaction, burnout, observer geometry, tick
+order) CORRECT by trace, and found 8 defects — all in placement geometry and
+container/piston edge cases the state-driven suite didn't reach:
+
+- **HIGH — east/west wall components attached to the wrong cell.** The X-axis
+  ATTACH mapping in `redstonePlaceState` was swapped: a lever/torch/button on a
+  ±X block face strong-powered the air behind it and popped on the next update.
+  (Z-faces, floor, ceiling were fine — a confusing "half my walls don't work".)
+- **HIGH — a hopper above a furnace loaded the FUEL slot.** `pushRule` tested
+  `hopperFace === 1` for input, but a downward-facing hopper is FACE6 0, so the
+  input branch was dead and ore jammed the fuel slot — breaking the canonical
+  auto-smelter. Now `=== 0`.
+- **MEDIUM — observer double-pulsed.** The "drop triggers while the on-pulse is
+  pending" guard was an empty `if`; a trigger on the next tick scheduled a
+  duplicate. Now guarded with `hasScheduled`.
+- **MEDIUM — breaking an extended piston base orphaned its head.** The base had
+  no `onBroken`; mining it left a floating immovable head that survived
+  save/reload (violating §9.1/§17). Added a base `onBroken` that removes the head.
+- **LOW ×4:** hopper interval was 9 gt not the stated 8 (cooldown 8→7); a
+  dispensed TNT deleted whatever block was in the front cell (removed the erase);
+  the solver budget was per-call not per-tick (now accumulated across the tick);
+  the wooden-button arrow re-poll was 10 gt (tightened to 2).
+
+All four substantive fixes are pinned by regressions in `e5.cjs` (h1_attachX +
+h1_powersBlock, h2_hopperToInput, m2_noOrphanHead).
+
+### Verified
+
+**41/41 browser assertions, 0 console errors** (`scratchpad/e5.cjs`): registry +
+conductivity (3); §4.3 dust falloff 15→0 (3); §3.6 Case A (weak stops dust, lamp
+still lights) + Case B (strong conducts through) (4); §6.4 torch inversion +
+light 7 (3); §7 repeater delays 2/8 gt (2); §8 comparator compare/subtract +
+live compare + furnace fullness 32→3 / 64→5 (5); §9 piston push-12 / refuse-13 /
+immovable / sticky-pull (4); plus the gate circuits — T1 torch light, T3 2×2
+sticky door open+close, T4 hopper chain into a chest + lock, T5 comparator
+gradient 3→2→1→0, dispenser fires one arrow per edge, note-block 25-click wrap +
+instrument-below table, observer pulse.
+
+Gate items measured: a repeater clock's delay is exactly 8 gt; a 2×2 sticky-piston
+door seals and re-opens with no lost blocks; a two-hopper chain drains 5 items
+into a chest and a powered middle hopper locks; a comparator reads furnace
+fullness (32/64 cobble → signal 3). Performance: steady-state tick with 20
+redstone circuits ≈ **0.73 ms** total (redstone's share a fraction of that),
+inside the §5.5 ≤1 ms budget. `npx vite build` clean.
+
 ## E3 — 08-ENCHANTING part 1: the `tags` contract, sweep attack, offhand (2026-07-17)
 
 Built to `08-ENCHANTING.md` §1, §6, §7, §12 (the sweep hook), §13. **§2–§5 and

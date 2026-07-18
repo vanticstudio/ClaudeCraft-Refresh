@@ -284,6 +284,11 @@ function defBlock(id, name, opts = {}) {
     canPlaceAt: null,
     species: null,
     mat: 'none',                 // material class (16 §3.1); assigned below
+    // --- 07-REDSTONE (AMENDS 01 §5) ---
+    conductive: null,            // §3.2 — conducts power; null → default opaque&&cube (resolved below)
+    onUse: null,                 // §6-§12 right-click handler (world,x,y,z,state,player,hit)
+    onMoved: null,               // §6.6/§9 — fired when a piston moves this block
+    emissionFor: null,           // state-dependent light (redstone_torch): (state) → 0..15
     // --- 15-FIRE-WATERLOGGING (AMENDS 01 §5) ---
     fireEnc: 0,                  // encouragement / ignite odds (15 §3, feeds §2.6)
     fireBurn: 0,                 // flammability / burn odds   (15 §3, feeds §2.5)
@@ -292,6 +297,10 @@ function defBlock(id, name, opts = {}) {
     infiniteBurn: false,         // eternal fire below (declared by 10, consumed 15 §2)
     ...opts,
   };
+  // 07 §3.2 — default conductivity: a full opaque cube conducts unless the row
+  // overrides. (Pistons/observer/redstone_block/hopper/glass/leaves opt out;
+  // dispenser/dropper/note_block/lamp keep the default true.)
+  if (block.conductive === null) block.conductive = block.opaque && block.shape === 'cube';
   BLOCKS[id] = block;
   B[name.toUpperCase()] = id;
   return block;
@@ -691,6 +700,145 @@ defBlock(66, 'dead_bush', {
   canPlaceAt: (world, x, y, z) => [B.SAND, B.DIRT].includes(world.getBlock(x, y - 1, z)),
 });
 
+// =========================================================================
+// 07-REDSTONE §13 — blocks 70–89. (90–104 reserved, unused.)
+//
+// Logic handlers (neighborUpdate / scheduledTick / onUse / onPlaced / onBroken /
+// onMoved) are attached at runtime by src/redstone/components.js via
+// installComponentHooks(), so this file stays a leaf. Here we declare only the
+// static shape/render/physics/registry data (§13.1/§13.2) and the `conductive`
+// overrides (§3.2). Non-cube shapes join the mesher's custom-shape list.
+// =========================================================================
+
+// A supported, non-collidable, cutout component (torch/lever/button/plate/wire).
+const RS_ATTACH = { bucket: 'cutout', opaque: false, opacity: 0, collidable: false, hardness: 0, blast: 0 };
+
+defBlock(70, 'redstone_wire', {
+  ...RS_ATTACH, shape: 'wire', needsSupport: 'below',
+  drops: () => [{ name: 'redstone', count: 1 }],
+  tiles: all('dust_line_0'),
+});
+
+defBlock(71, 'redstone_torch', {
+  ...RS_ATTACH, shape: 'torch', needsSupport: 'attach',
+  emissionFor: st => ((st & 0x08) ? 7 : 0),      // §6.4 light 7 while lit
+  tiles: all('redstone_torch'),
+  tilesFor: st => ((st & 0x08) ? 'redstone_torch' : 'redstone_torch_off'),
+});
+
+defBlock(72, 'lever', {
+  ...RS_ATTACH, hardness: 0.5, blast: 0.5, shape: 'lever', needsSupport: 'attach',
+  interactable: 'redstone', tiles: all('lever'),
+});
+
+defBlock(73, 'stone_button', {
+  ...RS_ATTACH, hardness: 0.5, blast: 0.5, shape: 'button', needsSupport: 'attach',
+  interactable: 'redstone', tiles: all('stone_button'),
+});
+defBlock(74, 'wooden_button', {
+  ...RS_ATTACH, hardness: 0.5, blast: 0.5, tool: 'axe', shape: 'button', needsSupport: 'attach',
+  interactable: 'redstone', tiles: all('wooden_button'),
+});
+
+defBlock(75, 'stone_pressure_plate', {
+  ...RS_ATTACH, hardness: 0.5, blast: 0.5, tool: 'pickaxe', tier: 0,
+  shape: 'plate', needsSupport: 'below', tiles: all('stone'),
+});
+defBlock(76, 'wooden_pressure_plate', {
+  ...RS_ATTACH, hardness: 0.5, blast: 0.5, tool: 'axe',
+  shape: 'plate', needsSupport: 'below', tiles: all('oak_planks'),
+});
+
+defBlock(77, 'repeater', {
+  ...RS_ATTACH, shape: 'repeater', needsSupport: 'below',
+  collidable: true, collisionBox: [0, 0, 0, 1, 2 / 16, 1],
+  interactable: 'redstone',
+  tiles: all('repeater_top'),
+  tilesFor: (st, face) => (face === 2 ? 'repeater_top' : face === 3 ? 'smooth_stone_bottom' : 'smooth_stone_side'),
+});
+defBlock(78, 'comparator', {
+  ...RS_ATTACH, shape: 'comparator', needsSupport: 'below',
+  collidable: true, collisionBox: [0, 0, 0, 1, 2 / 16, 1],
+  interactable: 'redstone',
+  tiles: all('comparator_top'),
+  tilesFor: (st, face) => (face === 2 ? 'comparator_top' : face === 3 ? 'smooth_stone_bottom' : 'smooth_stone_side'),
+});
+
+// Pistons (79/80): full-cube render, NOT conductive (§3.2). Face set by state.
+const PISTON_TILES = (front) => (st, face) => {
+  const f = st & 0x07;                                   // FACE6 head direction
+  const FACE_TO_IDX = [3, 2, 5, 4, 1, 0];                // FACE6 → tile-array face index
+  if (face === FACE_TO_IDX[f]) return (st & 0x08) ? 'piston_inner' : front;
+  return 'piston_side';
+};
+defBlock(79, 'piston', {
+  hardness: 1.5, blast: 1.5, tool: 'pickaxe', conductive: false,
+  tiles: all('piston_side'), tilesFor: PISTON_TILES('piston_face'),
+});
+defBlock(80, 'sticky_piston', {
+  hardness: 1.5, blast: 1.5, tool: 'pickaxe', conductive: false,
+  tiles: all('piston_side'), tilesFor: PISTON_TILES('piston_face_sticky'),
+});
+defBlock(81, 'piston_head', {
+  hardness: 1.5, blast: 1.5, tool: 'pickaxe', conductive: false,
+  shape: 'piston_head', opaque: false, opacity: 0,
+  drops: noDrop,                                          // §9.1 — breaking drops the base's item
+  tiles: all('piston_face'),
+  tilesFor: st => ((st & 0x08) ? 'piston_face_sticky' : 'piston_face'),
+});
+
+defBlock(82, 'observer', {
+  hardness: 3.0, blast: 3.0, tool: 'pickaxe', tier: 0, conductive: false,
+  tiles: all('observer_side'),
+  tilesFor: (st, face) => {
+    const f = st & 0x07;                                  // watched face
+    const FACE_TO_IDX = [3, 2, 5, 4, 1, 0];
+    if (face === FACE_TO_IDX[f]) return 'observer_face';
+    if (face === FACE_TO_IDX[f ^ 1]) return 'observer_back';
+    return 'observer_side';
+  },
+});
+
+const CONTAINER_FACE = [3, 2, 5, 4, 1, 0];               // FACE6 → tile face index
+defBlock(83, 'dispenser', {
+  hardness: 3.5, blast: 3.5, tool: 'pickaxe', tier: 0,
+  blockEntity: 'dispenser', interactable: 'container',
+  tiles: all('dispenser_side'),
+  tilesFor: (st, face) => (face === CONTAINER_FACE[st & 0x07] ? 'dispenser_front' : (face === 2 || face === 3 ? 'furnace_top' : 'dispenser_side')),
+});
+defBlock(84, 'dropper', {
+  hardness: 3.5, blast: 3.5, tool: 'pickaxe', tier: 0,
+  blockEntity: 'dropper', interactable: 'container',
+  tiles: all('dispenser_side'),
+  tilesFor: (st, face) => (face === CONTAINER_FACE[st & 0x07] ? 'dropper_front' : (face === 2 || face === 3 ? 'furnace_top' : 'dispenser_side')),
+});
+
+defBlock(85, 'hopper', {
+  hardness: 3.0, blast: 4.8, tool: 'pickaxe', tier: 0, conductive: false,
+  shape: 'hopper', opaque: false, opacity: 0,
+  blockEntity: 'hopper', interactable: 'container',
+  tiles: column('hopper_top', 'hopper_side', 'hopper_side'),
+});
+
+defBlock(86, 'redstone_lamp', {
+  hardness: 0.3, blast: 0.3, tiles: all('redstone_lamp'),
+});
+defBlock(87, 'redstone_lamp_lit', {
+  displayName: 'Redstone Lamp', hardness: 0.3, blast: 0.3, emission: 15,
+  drops: () => [{ name: 'redstone_lamp', count: 1 }],
+  tiles: all('redstone_lamp_lit'),
+});
+
+defBlock(88, 'note_block', {
+  hardness: 0.8, blast: 0.8, tool: 'axe', interactable: 'redstone',
+  tiles: all('note_block'),
+});
+
+defBlock(89, 'redstone_block', {
+  hardness: 5.0, blast: 6.0, tool: 'pickaxe', tier: 0, conductive: false,
+  tiles: all('redstone_block'),
+});
+
 // =======================================================================
 // Material classes — the `Mat` column (16-AUDIO AMENDS 06 §2, table 16 §3.1).
 //
@@ -705,12 +853,18 @@ defBlock(66, 'dead_bush', {
 // cactus→wool, glowstone→glass, ice→glass, coal_block→stone (unlike the other
 // metal blocks), dirt/farmland→gravel, sandstone→stone, dead_bush→grass.
 const MAT = {
-  stone: ['stone', 'cobblestone', 'sandstone', 'bedrock', 'obsidian', 'furnace', 'furnace_lit', 'coal_block'],
+  // 07-REDSTONE §13: stone-material components + the metal-ish machines. Wire and
+  // torch are non-solid but still emit break voices, so they get a class too.
+  stone: ['stone', 'cobblestone', 'sandstone', 'bedrock', 'obsidian', 'furnace', 'furnace_lit', 'coal_block',
+    'redstone_wire', 'redstone_torch', 'lever', 'stone_button', 'stone_pressure_plate',
+    'repeater', 'comparator', 'piston', 'sticky_piston', 'piston_head', 'observer',
+    'dispenser', 'dropper', 'hopper', 'redstone_lamp', 'redstone_lamp_lit', 'redstone_block'],
   ore: ['coal_ore', 'iron_ore', 'gold_ore', 'diamond_ore', 'redstone_ore', 'lapis_ore'],
   metal: ['iron_block', 'gold_block', 'diamond_block'],
   wood: ['oak_planks', 'birch_planks', 'spruce_planks', 'oak_log', 'birch_log', 'spruce_log',
     'crafting_table', 'chest', 'bookshelf', 'ladder', 'oak_fence', 'oak_door', 'bed_block',
-    'torch', 'pumpkin', 'jack_o_lantern'],
+    'torch', 'pumpkin', 'jack_o_lantern',
+    'wooden_button', 'wooden_pressure_plate', 'note_block'],
   gravel: ['gravel', 'dirt', 'farmland'],
   sand: ['sand'],
   grass: ['grass_block', 'oak_leaves', 'birch_leaves', 'spruce_leaves', 'oak_sapling',

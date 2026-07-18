@@ -689,6 +689,19 @@ export class Interaction {
       }
       case 'bed': g.trySleep(hit.x, hit.y, hit.z); break;
       case 'door': this.toggleDoor(hit.x, hit.y, hit.z); break;
+      // 07 §6-§12 — lever/button/repeater/comparator/note block: right-click is
+      // the block's onUse (installed by redstone/components.js).
+      case 'redstone': {
+        const st = this.world.getState(hit.x, hit.y, hit.z);
+        block.onUse?.(this.world, hit.x, hit.y, hit.z, st, this.player, hit);
+        break;
+      }
+      // 07 §10-§11 — dispenser/dropper (3×3) and hopper (1×5) open a UI screen.
+      case 'container': {
+        const kind = block.id === B.HOPPER ? 'hopper' : block.id === B.DROPPER ? 'dropper' : 'dispenser';
+        g.openContainer(kind, hit.x, hit.y, hit.z);
+        break;
+      }
     }
   }
 
@@ -732,6 +745,66 @@ export class Interaction {
 
   // `hand` (08 §7.3): the offhand reruns step 3, so the block must come out of
   // the hand that placed it — not always the main one.
+  /**
+   * 07 §6-§11 — the state byte for a redstone block on placement. Returns -1 to
+   * reject the placement (e.g. a redstone torch has no ceiling variant).
+   */
+  redstonePlaceState(blockId, hit) {
+    // ATTACH from the clicked face: the support is opposite the face normal.
+    // face → ATTACH: [0,1,0]→0 floor, [0,0,1]→1, [1,0,0]→2, [0,0,-1]→3, [-1,0,0]→4, [0,-1,0]→5 ceiling.
+    // ATTACH = the enum whose ATTACH_DIR equals −faceNormal (the support is on
+    // the far side of the clicked face). The two X faces were swapped: clicking
+    // +X puts support at −X (ATTACH 4 west), clicking −X puts it at +X (ATTACH 2).
+    const attachFromFace = f => (
+      f[1] === 1 ? 0 : f[2] === 1 ? 1 : f[0] === 1 ? 4 : f[2] === -1 ? 3 : f[0] === -1 ? 2 : 5);
+    // FACE6 of the player's dominant look axis.
+    const d = this.lookDir();
+    const ax = Math.abs(d.x), ay = Math.abs(d.y), az = Math.abs(d.z);
+    let look6;
+    if (ay >= ax && ay >= az) look6 = d.y > 0 ? 1 : 0;
+    else if (ax >= az) look6 = d.x > 0 ? 5 : 4;
+    else look6 = d.z > 0 ? 3 : 2;
+    const opp6 = [1, 0, 3, 2, 5, 4][look6];
+    const FACING_TO_HFACE = [2, 3, 0, 1];             // FACING enum → HFACE (output = look dir)
+
+    switch (blockId) {
+      case B.REDSTONE_WIRE:
+      case B.STONE_PRESSURE_PLATE:
+      case B.WOODEN_PRESSURE_PLATE:
+      case B.REDSTONE_LAMP:
+      case B.NOTE_BLOCK:
+      case B.REDSTONE_BLOCK:
+        return 0;
+      case B.REDSTONE_TORCH: {
+        const a = attachFromFace(hit.face);
+        return a === 5 ? -1 : (a | 0x08);             // no ceiling; placed lit
+      }
+      case B.LEVER:
+      case B.STONE_BUTTON:
+      case B.WOODEN_BUTTON:
+        return attachFromFace(hit.face);              // ATTACH 0-5, off/unpressed
+      case B.REPEATER:
+      case B.COMPARATOR:
+        return FACING_TO_HFACE[this.playerFacing()];  // output faces away from player
+      case B.PISTON:
+      case B.STICKY_PISTON:
+      case B.DISPENSER:
+      case B.DROPPER:
+        return opp6;                                  // front faces the player (like furnace, 6-dir)
+      case B.OBSERVER:
+        return look6;                                 // face (eye) watches where you look
+      case B.HOPPER: {
+        // §11.1 — output points INTO the clicked block (= −face as FACE6); down
+        // when placed on a top face; never up.
+        const f = hit.face;
+        const face6 = f[1] === 1 ? 0 : f[1] === -1 ? 1 : f[2] === 1 ? 2 : f[2] === -1 ? 3 : f[0] === 1 ? 4 : 5;
+        return face6 === 1 ? 0 : face6;               // up → down
+      }
+      default:
+        return 0;
+    }
+  }
+
   tryPlace(held, hit, hand = 'main') {
     const p = this.player;
     const w = this.world;
@@ -761,6 +834,10 @@ export class Interaction {
       state = (this.playerFacing() + 2) % 4;
     } else if (BLOCKS[blockId].tilesFor && (blockId === B.PUMPKIN || blockId === B.JACK_O_LANTERN)) {
       state = (this.playerFacing() + 2) % 4;
+    } else if (blockId >= B.REDSTONE_WIRE && blockId <= B.REDSTONE_BLOCK) {
+      const rs = this.redstonePlaceState(blockId, hit);
+      if (rs < 0) return false;                       // e.g. a torch on a ceiling
+      state = rs;
     }
 
     if (block.canPlaceAt && !block.canPlaceAt(w, x, y, z, state)) return false;
