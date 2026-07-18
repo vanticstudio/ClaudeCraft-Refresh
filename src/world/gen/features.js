@@ -201,6 +201,19 @@ export function decorate(ctx, blocks, cx, cz, colD) {
     }
   }
 
+  // 3.5 cave mushrooms (09-POTIONS §7.4 / AMENDS 02 §10.2) — drawn from the plant
+  // stream AFTER flowers so prior features stay byte-identical. Sparse, on solid
+  // cave floors in the Y 8–47 band; the runtime light gate pops any lit too bright.
+  for (let a = 0; a < 3; a++) {
+    if (rng() > 0.3) continue;
+    const x = rngInt(rng, 16), z = rngInt(rng, 16);
+    const y = 8 + rngInt(rng, 40);
+    const floor = at(x, y - 1, z);
+    if (at(x, y, z) === ID.air && at(x, y + 1, z) === ID.air && (floor === ID.stone || floor === ID.dirt)) {
+      set(x, y, z, rng() < 0.6 ? 110 : 111);   // brown 60% / red 40%
+    }
+  }
+
   // 4. Snow & ice — climate rule (02 §10.6)
   for (let z = 0; z < 16; z++) {
     for (let x = 0; x < 16; x++) {

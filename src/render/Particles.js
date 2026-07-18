@@ -2,6 +2,8 @@
 // explosion puffs, hearts, teleport motes.
 import * as THREE from 'three';
 import { BLOCKS } from '../registry/blocks.js';
+import { EFFECT_META } from '../status/effects.js';
+const EFFECT_META_COLOR = id => EFFECT_META[id]?.color ?? 0xffffff;
 import { blockCubeGeometry, makeAtlasMaterial } from '../entities/ItemEntity.js';
 
 const MAX = 256;
@@ -157,6 +159,41 @@ export class Particles {
         z + (Math.random() - 0.5) * 0.8,
         (Math.random() - 0.5) * 0.03, -0.01, (Math.random() - 0.5) * 0.03,
         14 + (Math.random() * 8) | 0, 0.001);
+    }
+  }
+
+  // 09-POTIONS §6.4 — effect swirls around an entity, tinted per active effect.
+  // Skipped for the local player's first-person body (no visible model).
+  emitEffectSwirls(entity) {
+    if (entity.type === 'player') return;
+    if ((entity.age ?? 0) % 8 !== 0) return;                 // throttle
+    for (const fx of entity.effects.values()) {
+      if (fx.ambient && Math.random() < 0.5) continue;       // dimmer for ambient (beacon)
+      const m = this.colored(EFFECT_META_COLOR(fx.id), 0.05);
+      this.spawn(m, entity.pos.x + (Math.random() - 0.5) * entity.width,
+        entity.pos.y + entity.height * (0.4 + Math.random() * 0.6),
+        entity.pos.z + (Math.random() - 0.5) * entity.width,
+        (Math.random() - 0.5) * 0.02, 0.02, (Math.random() - 0.5) * 0.02, 12, 0);
+    }
+  }
+
+  // §13.2 — splash break: swirl + shard burst at the impact point.
+  splashPotion(x, y, z, color, count = 30) {
+    for (let i = 0; i < count; i++) {
+      const m = this.colored(color, 0.06);
+      this.spawn(m, x, y + 0.1, z,
+        (Math.random() - 0.5) * 0.3, Math.random() * 0.2, (Math.random() - 0.5) * 0.3, 10 + (Math.random() * 6 | 0), 0.03);
+    }
+  }
+
+  // §14.3 — area-effect cloud swirls across the disc.
+  effectCloud(x, y, z, radius, color) {
+    const n = Math.ceil(Math.PI * radius * radius / 3);
+    for (let i = 0; i < Math.min(n, 10); i++) {
+      const a = Math.random() * Math.PI * 2, r = Math.random() * radius;
+      const m = this.colored(color, 0.06);
+      this.spawn(m, x + Math.cos(a) * r, y + (Math.random() - 0.5) * 0.4, z + Math.sin(a) * r,
+        0, 0.02 + Math.random() * 0.02, 0, 10 + (Math.random() * 6 | 0), 0);
     }
   }
 

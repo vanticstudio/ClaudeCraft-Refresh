@@ -199,6 +199,18 @@ defItem(345, 'oak_door', { kind: 'door', placesAs: 'door' });
 // action for it and passes to the offhand (08 §7.3).
 defItem(346, 'enchanted_book', { stack: 1 });
 
+// --- 09-POTIONS §1.2 — items 370-378. Potion FORM is the item id (371 drink /
+// 372 splash / 373 lingering / 378 tipped); the variant lives in tags.potionId. ---
+defItem(370, 'glass_bottle', { kind: 'bottle' });                    // §11.1 RMB fills from water
+defItem(371, 'potion', { kind: 'potion', stack: 1 });                // §11.2 drinkable (32-t channel)
+defItem(372, 'splash_potion', { kind: 'splash_potion', stack: 1 });  // §13 thrown
+defItem(373, 'lingering_potion', { kind: 'lingering_potion', stack: 1 }); // §14 thrown
+defItem(374, 'spider_eye', { kind: 'food', hunger: 2, saturation: 3.2 });  // §8; eaten → Poison I 0:05
+defItem(375, 'fermented_spider_eye', {});                            // §11.3 corruption modifier
+defItem(376, 'golden_apple', { kind: 'food', hunger: 4, saturation: 9.6, alwaysEdible: true });  // §9.1 Absorption I + Regen II, edible at full hunger
+defItem(377, 'golden_carrot', { kind: 'food', hunger: 6, saturation: 14.4 }); // §9.2
+defItem(378, 'tipped_arrow', {});                                    // §15 ammo (uses tags.potionId)
+
 // --- 10-NETHER §1.2 — brewing ingredients + materials (390-419). Netherite
 // tier (398-408) is E8; only the non-tier items are defined here now. ---
 defItem(390, 'nether_wart', { plantsCrop: B.NETHER_WART });   // plants crop 138 on soul_sand
@@ -312,6 +324,14 @@ shaped(B.SNOW_LAYER, 6, ['SSS'], { S: [B.SNOW_BLOCK] });
 shaped(B.WOOL_WHITE, 1, ['SS', 'SS'], { S: [327] });
 shaped(B.COAL_BLOCK, 1, ['CCC', 'CCC', 'CCC'], { C: [319] });   // coal only, NOT charcoal
 shaped(B.IRON_BLOCK, 1, ['III', 'III', 'III'], { I: [322] });
+
+// --- 09-POTIONS recipes (§7.2, §9, §11) ---
+shaped(370, 3, ['G.G', '.G.'], { G: [B.GLASS] });              // §11.1 glass → 3 glass_bottle
+shaped(B.BREWING_STAND, 1, ['.B.', 'CCC'], { B: [391], C: [B.COBBLESTONE] });  // §7.2 blaze_rod + cobble
+shapeless(375, 1, [[374], [339], [110]]);                     // §11.3 spider_eye + sugar + brown_mushroom
+shaped(376, 1, ['GGG', 'GAG', 'GGG'], { G: [324], A: [304] }); // §9.1 golden_apple (apple + 8 gold_ingot)
+shaped(377, 1, ['NNN', 'NCN', 'NNN'], { N: [396], C: [315] }); // §9.2 golden_carrot (carrot + 8 gold_nugget)
+shaped(378, 8, ['AAA', 'ALA', 'AAA'], { A: [282], L: [373] }); // §15.1 tipped_arrow (potionId copied on craft)
 
 // --- 10-NETHER §1.3 ---
 // §9: 4 netherite_scrap + 4 gold_ingot → 1 netherite_ingot (shapeless); block ↔ 9 ingot

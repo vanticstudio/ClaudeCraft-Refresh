@@ -906,6 +906,44 @@ defBlock(107, 'grindstone', {
   tiles: ['grindstone_side', 'grindstone_side', 'grindstone_tread', 'grindstone_tread',
     'grindstone_side', 'grindstone_side'],
 });
+
+// ===================== 09-POTIONS §7 — mushrooms + brewing stand =====================
+// Mushrooms: CROSS plants that live on solid blocks in dark cave air (internalLight
+// < 13), pop in bright light, and spread ~1/25 random tick under a 5-in-9×9×3 cap.
+const mushroomSupport = (world, x, y, z) => isSolidSupport(world.getBlock(x, y - 1, z));
+const mushroomCanPlace = (world, x, y, z) =>
+  mushroomSupport(world, x, y, z) && world.internalLight(x, y, z) < 13;
+const mushroomNeighbor = id => (world, x, y, z) => {
+  if (!mushroomSupport(world, x, y, z) || world.internalLight(x, y, z) >= 13) world.popBlock(x, y, z);
+};
+const mushroomTick = id => (world, x, y, z) => {
+  if (world.internalLight(x, y, z) >= 13) { world.popBlock(x, y, z); return; }
+  if (world.rng() >= 1 / 25) return;                       // §7.4 slow spread
+  let count = 0;                                            // 5-in-9×9×3 cap
+  for (let dx = -4; dx <= 4; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -4; dz <= 4; dz++)
+    if (world.getBlock(x + dx, y + dy, z + dz) === id && ++count >= 5) return;
+  const tx = x + (world.rng() * 3 | 0) - 1, ty = y + (world.rng() * 3 | 0) - 1, tz = z + (world.rng() * 3 | 0) - 1;
+  if (world.getBlock(tx, ty, tz) === B.AIR && mushroomCanPlace(world, tx, ty, tz)) world.setBlock(tx, ty, tz, id);
+};
+for (const [id, name, emission] of [[110, 'brown_mushroom', 1], [111, 'red_mushroom', 0]]) {
+  defBlock(id, name, {
+    ...CROSS, emission, needsSupport: 'below',
+    drops: () => [{ name, count: 1 }],
+    canPlaceAt: (world, x, y, z) => mushroomCanPlace(world, x, y, z),
+    neighborUpdate: mushroomNeighbor(id),
+    randomTick: mushroomTick(id),
+    tiles: all(name),
+  });
+}
+defBlock(112, 'brewing_stand', {
+  hardness: 0.5, blast: 0.5, tool: 'pickaxe', tier: 0, emission: 1,
+  shape: 'brewing_stand', bucket: 'cutout', opaque: false, opacity: 0,
+  collisionBox: [0, 0, 0, 1, 2 / 16, 1],           // low base only
+  blockEntity: 'brewing', interactable: 'brewing',
+  drops: gated(dropSelf('brewing_stand')),
+  tiles: all('brewing_stand'),
+});
+
 // 10-NETHER §1.1 — blocks 115–143 (144–149 reserved). Behaviors (portal, crop,
 // spawner, magma damage) are attached at runtime by world/nether.js so this
 // file stays a leaf; here we declare static registry/render/physics data.
@@ -1014,7 +1052,7 @@ const MAT = {
   // the nether stone/brick family + machines join 'stone' (nyliums/wart → 'grass',
   // stems/planks → 'wood').
   stone: ['stone', 'cobblestone', 'sandstone', 'bedrock', 'obsidian', 'furnace', 'furnace_lit', 'coal_block',
-    'enchanting_table', 'grindstone',
+    'enchanting_table', 'grindstone', 'brewing_stand',
     'redstone_wire', 'redstone_torch', 'lever', 'stone_button', 'stone_pressure_plate',
     'repeater', 'comparator', 'piston', 'sticky_piston', 'piston_head', 'observer',
     'dispenser', 'dropper', 'hopper', 'redstone_lamp', 'redstone_lamp_lit', 'redstone_block',
@@ -1034,7 +1072,8 @@ const MAT = {
     'birch_sapling', 'spruce_sapling', 'wheat_crop', 'carrot_crop', 'potato_crop',
     'sugar_cane_block', 'short_grass', 'dandelion', 'poppy', 'dead_bush', 'tnt',
     'soul_sand', 'soul_soil', 'nether_wart_block', 'warped_wart_block', 'shroomlight',
-    'crimson_fungus', 'warped_fungus', 'crimson_roots', 'warped_roots', 'nether_wart'],
+    'crimson_fungus', 'warped_fungus', 'crimson_roots', 'warped_roots', 'nether_wart',
+    'brown_mushroom', 'red_mushroom'],   // 09-POTIONS §7.1
   glass: ['glass', 'ice', 'glowstone'],
   wool: ['wool_white', 'wool_red', 'wool_blue', 'wool_black', 'cactus'],
   snow: ['snow_layer', 'snow_block'],

@@ -2,6 +2,7 @@
 import { AABB } from '../math/aabb.js';
 import { moveEntity, overlapsFluid, overlapsClimbable } from '../physics/collision.js';
 import { AMBIENT_FLOOR, WORLD_BORDER } from '../constants.js';
+import { EFFECT, clearEffects } from '../status/effects.js';   // 09-POTIONS §2
 
 // 04 §11.1 brightness curve (JS mirror of the shader)
 export function brightness(l) {
@@ -159,6 +160,16 @@ export class LivingEntity extends Entity {
     this.deathTime = 0;
     this.fallDistance = 0;
     this.fireTicks = 0;
+    // 09-POTIONS §2.1 — status effects + absorption pool (all living entities).
+    this.effects = new Map();     // effectId → {amplifier, duration, ambient}
+    this.absorption = 0;
+    this.effectImmune = false;    // 13 sets this on the ender dragon (§4.3)
+  }
+
+  // 09-POTIONS §2.5 — float heal, no i-frames (used by applyInstant + Regeneration).
+  heal(amount) {
+    if (amount <= 0 || this.dead) return;
+    this.health = Math.min(this.maxHealth, this.health + amount);
   }
 
   /**
@@ -202,16 +213,30 @@ export class LivingEntity extends Entity {
   }
 
   applyDamage(dmg, source, opts, noNewWindow) {
+    // 09-POTIONS §3 / AMENDS 03 §11 — Fire Resistance zeroes FIRE/LAVA/BURNING
+    // damage (fireTicks + overlay are set elsewhere and stay).
+    if ((source === 'fire' || source === 'lava' || source === 'burn') &&
+        this.effects.has(EFFECT.FIRE_RESISTANCE)) dmg = 0;
+    // STAGE 1 — armor (existing; magic/poison/wither are absent from ARMOR_SOURCES).
     if (LivingEntity.ARMOR_SOURCES.has(source)) {
       dmg = this.armorReduce(dmg);
       this.damageArmor?.(dmg);
     }
-    // 08 §5.2.1 — the EPF reduction runs AFTER the armor-points step, and for
-    // the sources armor does NOT reduce (fall, fire, lava, drown, suffocate) it
-    // runs "directly on the raw amount" — which is why it sits outside the
-    // branch above rather than inside it. Only Player implements the hook; mobs
-    // wear no armor and leave dmg untouched.
+    // STAGE 2 (09 §4.2) — Resistance ×(1−0.2L) after armor; floored 0; L≥5 = immune.
+    // Never reduces VOID or STARVATION.
+    if (source !== 'void' && source !== 'starve') {
+      const res = this.effects.get(EFFECT.RESISTANCE);
+      if (res) dmg = Math.max(0, dmg * (1 - 0.2 * (res.amplifier + 1)));
+    }
+    // STAGE 3 — 08 §5.2.1 EPF (Protection) reduction. Runs AFTER armor points and
+    // (for fall/fire/lava/drown) on the raw amount. Only Player implements it.
     dmg = this.reduceByEnchants?.(dmg, source, opts) ?? dmg;
+    // STAGE 4 (09 §4.2) — Absorption pool eats damage before health.
+    if (this.absorption > 0 && dmg > 0) {
+      const absorbed = Math.min(this.absorption, dmg);
+      this.absorption -= absorbed;
+      dmg -= absorbed;
+    }
     this.health -= dmg;
     this.hurtTime = 10;
     if (!noNewWindow && opts.dirX !== undefined) {
@@ -243,6 +268,7 @@ export class LivingEntity extends Entity {
   die(source, opts) {
     this.health = 0;
     this.dead = true;
+    clearEffects(this);           // 09-POTIONS §4.3 — full effect + absorption wipe on death
     this.onDeath?.(source, opts);
   }
 
@@ -253,6 +279,8 @@ export class LivingEntity extends Entity {
 
   // Fall damage tracking (03 §12); call after move() with pre-move vel.y
   trackFall(velYBeforeMove, actualDy) {
+    // 09-POTIONS §3.8/AMENDS 03 §12.1 — Slow Falling keeps fall distance at 0.
+    if (this.effects.has(EFFECT.SLOW_FALLING)) { this.fallDistance = 0; return; }
     if (this.onLadder || this.inWater) { this.fallDistance = 0; return; }
     if (this.inLava) { this.fallDistance *= 0.5; return; }
     if (velYBeforeMove < 0 && !this.onGround && actualDy < 0) {
@@ -260,7 +288,9 @@ export class LivingEntity extends Entity {
     }
     if (this.onGround) {
       if (this.fallDistance > 0) {
-        const dmg = Math.ceil(this.fallDistance - 3);
+        // AMENDS 03 §12.1 — Jump Boost reduces fall damage 1 block per level.
+        const jb = this.effects.get(EFFECT.JUMP_BOOST);
+        const dmg = Math.ceil(this.fallDistance - 3 - (jb ? jb.amplifier + 1 : 0));
         if (dmg > 0 && this.takesFallDamage !== false) this.hurt(dmg, 'fall');
       }
       this.fallDistance = 0;

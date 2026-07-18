@@ -5,8 +5,21 @@ import { BLOCKS, B, matOf } from '../../registry/blocks.js';
 import { hasLineOfSight } from '../../world/raycast.js';
 import { findPath, astarBudgetOk, MOVE, LOOK } from './ai.js';
 import { emitSound, at } from '../../audio/engine.js';
+import { EFFECT, tickEffects, effectLevel, serializeEffects, applyEffectsData } from '../../status/effects.js';
+import { lootingLevelOf } from '../../items/effects.js';   // 08 §5.5 — Looting level of the killing blow
 
 const TURN_RATE = 30 * Math.PI / 180;   // 30°/tick
+
+// 09-POTIONS §3.9 — how visible a player is to hostile detection. Sneak ×0.8;
+// Invisibility ×0.07 unarmored, else ×0.175 per worn armor piece.
+export function visibilityFactor(player) {
+  let f = player.sneaking ? 0.8 : 1.0;
+  if (player.effects?.has(EFFECT.INVISIBILITY)) {
+    const pieces = player.armor.filter(Boolean).length;
+    f *= (pieces === 0) ? 0.07 : 0.175 * pieces;
+  }
+  return f;
+}
 
 export class Mob extends LivingEntity {
   constructor(world, x, y, z) {
@@ -108,6 +121,10 @@ export class Mob extends LivingEntity {
     if (this.loveTicks > 0 && this.age % 10 === 0) {
       this.world.game?.particles?.hearts?.(this.pos.x, this.pos.y + this.height + 0.3, this.pos.z);
     }
+
+    // 1.5 status effects (09-POTIONS AMENDS 05 §1) — after timers, before environment.
+    tickEffects(this);
+    if (this.dead) return;   // a Wither/Poison tick may have killed the mob
 
     // 2. environment
     this.updateMedium();
@@ -241,7 +258,8 @@ export class Mob extends LivingEntity {
     }
     if (!this.hostile || !player || player.dead || player.creative) return;   // 18 §7.1
     if (this.age % 10 !== 0) return;
-    const range = this.detectionRange * (player.sneaking ? 0.8 : 1);
+    // 09-POTIONS §3.9 / AMENDS 05 §6 — sneak ×0.8 AND Invisibility shrink detection.
+    const range = Math.max(2, this.detectionRange * visibilityFactor(player));
     if (this.distTo(player) <= range && this.acquireGate(player) && this.canSee(player)) {
       this.target = player;
       this.idleTime = 0;
@@ -285,8 +303,9 @@ export class Mob extends LivingEntity {
     // level is threaded into dropTable so each table can widen its own ranges —
     // the §2 tables are the L=0 column and stay correct when it is 0.
     const looting = lootingLevelOf(source, opts?.attacker);
+    const byPlayer = opts?.attacker === game.player;   // 09-POTIONS §11.4 — player-kill drops
     if (!this.isBaby || this.type === 'zombie') {
-      for (const d of this.dropTable?.(looting) ?? []) {
+      for (const d of this.dropTable?.(looting, byPlayer) ?? []) {
         if (d.count > 0) game.spawnItemByName(d.name, d.count,
           this.pos.x, this.pos.y + this.height / 2, this.pos.z);
       }
@@ -320,7 +339,9 @@ export class Mob extends LivingEntity {
   // ------------------------------------------------------------ locomotion (05 §1)
 
   applyLocomotion() {
-    const dir = this.moveIntent, speed = this.moveSpeed;
+    // 09-POTIONS AMENDS 03 §5.3 (mobs) — Speed/Slowness scale locomotion.
+    const effMove = Math.max(0, (1 + 0.2 * effectLevel(this, EFFECT.SPEED)) * (1 - 0.15 * effectLevel(this, EFFECT.SLOWNESS)));
+    const dir = this.moveIntent, speed = this.moveSpeed * effMove;
     if (dir && speed > 0) {
       if (this.onGround) {
         this.vel.x = this.vel.x * 0.5 + dir.x * speed * 0.5;
@@ -455,7 +476,10 @@ export class Mob extends LivingEntity {
   doMeleeAttack(t) {
     const dx = t.pos.x - this.pos.x, dz = t.pos.z - this.pos.z;
     const h = Math.hypot(dx, dz) || 1;
-    t.hurt(this.attackDamage, 'melee', {
+    // 09-POTIONS AMENDS 05 §13.1 — Strength/Weakness apply to mob melee too.
+    const dmg = Math.max(0, this.attackDamage
+      + 3 * effectLevel(this, EFFECT.STRENGTH) - 4 * effectLevel(this, EFFECT.WEAKNESS));
+    t.hurt(dmg, 'melee', {
       dirX: dx / h, dirZ: dz / h, knockback: 0.4, attacker: this,
     });
     this.attackAnim = 0;
@@ -546,6 +570,7 @@ export class Mob extends LivingEntity {
       breedCooldown: this.breedCooldown, loveTicks: this.loveTicks,
       sheared: this.sheared, woolTint: this.woolTint,
       eggTimer: this.eggTimer, swell: this.swell, aggro: this.aggro,
+      effects: serializeEffects(this), absorption: this.absorption,   // 09-POTIONS §16
     };
   }
 
@@ -561,6 +586,8 @@ export class Mob extends LivingEntity {
     }
     this.breedCooldown = rec.breedCooldown ?? 0;
     this.loveTicks = rec.loveTicks ?? 0;
+    applyEffectsData(this, rec.effects);          // 09-POTIONS §16
+    this.absorption = rec.absorption ?? 0;
     if (rec.sheared !== undefined) this.sheared = rec.sheared;
     if (rec.woolTint !== undefined) this.woolTint = rec.woolTint;
     if (rec.eggTimer !== undefined) this.eggTimer = rec.eggTimer;

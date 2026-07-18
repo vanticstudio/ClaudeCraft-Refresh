@@ -13,7 +13,7 @@
 //     enchants?:   Array<{ id: uint8, lvl: uint8 }>,  // sorted ascending by id
 //     name?:       string,                            // anvil rename, <= 50 chars (§8.4)
 //     anvilUses?:  uint8,                             // prior work n; penalty 2^n - 1 (§8.2)
-//     potionId?:   uint8,                             // DEFINED & OWNED BY 09-POTIONS
+//     potionId?:   string,                            // OWNED BY 09-POTIONS (§12.1 registry key, e.g. "speed")
 //   }
 //
 // Reserved key, not defined by 08 §1:

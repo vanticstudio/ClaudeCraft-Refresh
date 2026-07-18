@@ -22,6 +22,8 @@ import { XpOrb } from './entities/XpOrb.js';
 import { PrimedTnt } from './entities/PrimedTnt.js';
 import { ThrownProjectile } from './entities/ThrownProjectile.js';
 import { Arrow } from './entities/Arrow.js';
+import { ThrownPotion } from './entities/ThrownPotion.js';
+import { AreaEffectCloud, spawnEffectCloud } from './entities/AreaEffectCloud.js';
 import { LivingEntity, lerp, lerpAngle } from './entities/Entity.js';
 import { Interaction } from './player/interaction.js';
 import { placeTree } from './world/gen/features.js';
@@ -39,6 +41,8 @@ import { RedstoneContainers } from './redstone/containersRedstone.js';
 import { getDimension } from './world/dimensions.js';
 import { findOrCreatePortal } from './world/Portal.js';
 import { installNetherBehaviors, tickSpawner } from './world/nether.js';
+import { tickBrewing } from './world/brewing.js';
+import { addEffect as engineAddEffect, applyInstant as engineApplyInstant } from './status/effects.js';
 
 const NEUTRAL_FRAME = {
   forward: 0, strafe: 0, jump: false, sneak: false, sprintKey: false,
@@ -572,6 +576,8 @@ export class Game {
         : kind === 'dispenser' ? { type: 'dispenser', data: { slots: new Array(9).fill(null) } }
         : kind === 'dropper' ? { type: 'dropper', data: { slots: new Array(9).fill(null) } }
         : kind === 'hopper' ? { type: 'hopper', data: { slots: new Array(5).fill(null), cooldown: 0 } }
+        // 09-POTIONS §10 — brewing stand: 3 bottles + ingredient + fuel.
+        : kind === 'brewing' ? { type: 'brewing', data: { slots: new Array(5).fill(null), brewTime: 0, fuel: 0 } }
         // 10-NETHER §6.1 — spawner block-entity defaults.
         : kind === 'spawner' ? { type: 'spawner', data: {
           mobType: 'blaze', delay: 20, minDelay: 200, maxDelay: 800,
@@ -595,6 +601,7 @@ export class Game {
           if (be.type === 'furnace') this.tickFurnace(be.data, x, y, z, chunk);
           else if (be.type === 'hopper') this.redstoneContainers.tickHopper(be, x, y, z);   // 07 §11.3
           else if (be.type === 'spawner') tickSpawner(this, be, x, y, z);   // 10-NETHER §6.2
+          else if (be.type === 'brewing') tickBrewing(this, be.data, x, y, z, chunk);        // 09-POTIONS §10.2
         }
       }
     }
@@ -801,6 +808,23 @@ export class Game {
 
   spawnThrown(kind, x, y, z, vx, vy, vz, owner) {
     return this.entities.add(new ThrownProjectile(this.world, kind, x, y, z, vx, vy, vz, owner));
+  }
+
+  // 09-POTIONS §2 — the frozen effect entry points (10/11/13 call these on game).
+  addEffect(entity, id, amplifier, duration, ambient = false) {
+    return engineAddEffect(entity, id, amplifier, duration, ambient);
+  }
+  applyInstant(target, effectId, amplifier, potency, source = null) {
+    engineApplyInstant(target, effectId, amplifier, potency, source);
+  }
+
+  // 09-POTIONS §13/§14 — spawn a thrown splash/lingering potion.
+  spawnPotion(potionId, form, x, y, z, vx, vy, vz, owner) {
+    return this.entities.add(new ThrownPotion(this.world, potionId, form, x, y, z, vx, vy, vz, owner));
+  }
+  // §14.2 factory (13-BOSSES injects dragon-breath params through this).
+  spawnAreaEffectCloud(params) {
+    return this.entities.add(spawnEffectCloud(this.world, params));
   }
 
   spawnFallingBlock(id, x, y, z, state = 0) {

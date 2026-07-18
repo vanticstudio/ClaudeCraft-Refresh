@@ -57,6 +57,8 @@ const BLOCK_TILES = [
   'nether_wart_0', 'nether_wart_1', 'nether_wart_2',
   'bone_block_top', 'bone_block_side', 'nether_portal', 'spawner',
   'netherite_block', 'smithing_table_top', 'smithing_table_side',
+  // 09-POTIONS §7
+  'brown_mushroom', 'red_mushroom', 'brewing_stand',
 ];
 const DESTROY_TILES = Array.from({ length: 10 }, (_, i) => 'destroy_' + i);
 const ITEM_TILES = Object.keys(PAINTERS).filter(n => n.startsWith('item_')).sort();

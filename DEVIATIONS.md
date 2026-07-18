@@ -4,6 +4,133 @@ Deviations and ambiguity rulings. (The base-spec `.md` files were removed from
 the working tree during repo cleanup; the pre-UPDATE deviation log for the
 initial build lives in git history — `git show 8441ac9:DEVIATIONS.md`.)
 
+## E9 — 09-POTIONS: status effects + brewing (2026-07-18)
+
+Built to `09-POTIONS.md` in full: the status-effect engine, the effect catalog,
+the damage-pipeline integration, brewing (stand + block-entity + the whole recipe
+graph), splash/lingering potions + the area-effect cloud, tipped arrows, mushrooms,
+golden foods, and the HUD/night-vision/particle surface. This file OWNS the
+status-effect API — it is FROZEN here for 08/10/11/13.
+
+### THE STATUS-EFFECT CONTRACT (frozen — read before any 10/11/13 effect work)
+
+`src/status/effects.js` is the single definition. Consumers call these and never
+redefine the effect ids or the surface:
+
+| Symbol | Contract |
+|---|---|
+| `addEffect(entity, id, amplifier, duration, ambient=false) → bool` | §2.2 stacking: higher amp replaces; equal-amp-longer wins; weaker/shorter no-op; instants + immunity rejected |
+| `removeEffect(entity, id)` / `clearEffects(entity)` | fire onEffectRemoved per entry (absorption→0, mesh restore); clear runs on death/respawn |
+| `applyInstant(target, effectId, amp, potency, source)` | §2.5 undead-inverted instant heal / MAGIC damage |
+| `tickEffects(entity)` | call at player/mob tick step 1.5 |
+| `hasEffect` / `effectLevel` (L=amp+1) / `getAmplifier` / `isImmuneTo` | live reads (no attribute cache) |
+| `EFFECT` ids + `EFFECT_META` (color/display) | the numeric contract §1.3 |
+| `spawnEffectCloud({pos,radius,radiusPerTick,durationTicks,effect,reapplyDelay})` | §14.2 factory (13 injects dragon-breath params) |
+| `entity.effects: Map<id,{amplifier,duration,ambient}>` + `entity.absorption` | on LivingEntity; Player + Mob serialize both |
+| entity flags `undead` / `poisonImmune` / `witherImmune` / `effectImmune` | consumers set them; read by `isImmuneTo` |
+| `tags.potionId: string` | §12.1 registry key ("speed", "long_slowness", …) — see deviation 1 |
+
+The existing guarded touchpoints were wired to it: 10's wither-skeleton
+`game.addEffect(target, 20, 0, 200)` now resolves; the undead/poisonImmune flags
+are set on zombie/skeleton/wither-skeleton/spider; and 06's `foodPoisonTicks`
+timer was deleted and migrated to a Hunger effect (AMENDS 06 §12.4).
+
+### Amendments applied (base specs stay frozen)
+
+- **Damage pipeline** (`Entity.applyDamage`, §4.2): inserted the Resistance stage
+  (id 11, ×(1−0.2L), skips void/starve) BEFORE the 08 EPF hook, and the Absorption
+  drain (id 22) AFTER it; Fire Resistance (id 12) zeroes fire/lava/burn damage. E8's
+  knockback-resistance + toughness behavior is untouched.
+- **Movement** (`Player.landMove`/`trackFall`, AMENDS 03): Speed/Slowness `effMove`
+  on ground move only (air accel unchanged), Jump Boost `0.42+0.1L`, Levitation
+  replaces gravity, Slow Falling `g=0.01`, fall damage `−L_jumpBoost` + slow-falling
+  zeroes fall distance, Water Breathing skips the air decrement, FOV `±0.05L`.
+- **Mining/combat**: Haste ×(1+0.2L) + Mining-Fatigue `FATIGUE_MULT` (mining),
+  Strength/Weakness `max(0, dmg+3L−4L)` (player AND mob melee), Haste attack-speed.
+- **Mobs**: `tickEffects` at step 1.5, `effMove` locomotion, Invisibility shrinks
+  detection via `visibilityFactor` (§3.9), effects+absorption persisted.
+- **Rendering**: `uNightVision` shared uniform (mirrors E8's `uDimAmbient`), written
+  per frame by DayNight, floors the sky channel to 15; effect swirls / splash /
+  cloud particle helpers; the effect-icon HUD, heart recolors (Poison green / Wither
+  black), absorption yellow hearts, green hunger bar.
+- **Registry**: blocks 110–112, items 370–378, six recipes, mushroom worldgen (cave
+  scatter), spider `spider_eye` drop (1/3 on a player kill).
+
+### Deviations / decisions
+
+1. **`tags.potionId` is a STRING, not the `uint8` E3 guessed.** 08's frozen tags
+   contract declared `potionId?: uint8` but noted it OWNED BY 09. 09's §12.1 keys
+   the potion registry by string ("speed", "long_slowness", …), and AMENDS 06 §18
+   says string. Since 09 owns the key and the tags contract preserves unknown keys
+   opaquely (rule 3, clone/merge/save all pass a string through), I updated the
+   comment to `string`. No behavior of 08's clone/merge/equal changes.
+2. **Bottle icons are generic, not per-potionId tinted.** §12.3's lazy per-(form,
+   potionId) tinted CanvasTexture pipeline is simplified: the atlas holds one neutral
+   bottle per form (potion/splash/lingering) + a tipped-arrow sprite. The thrown
+   potion entity IS tinted by potionId; the inventory/HUD icon is not. Mechanics,
+   tooltips and effects are unaffected.
+3. **In-flight thrown potions + area-effect clouds drop on save.** §16 explicitly
+   allows dropping in-flight potions ("either acceptable, state in DEVIATIONS"). The
+   engine's own arrows already drop on save the same way; clouds/thrown-potions join
+   them. Effects on entities, brewing-stand slots/fuel/progress, and `tags.potionId`
+   all persist.
+4. **Mushroom worldgen is a light cave scatter.** Rather than the full 02 §10.5
+   feature grammar, `features.decorate` draws (from the plant stream, AFTER flowers
+   so prior features stay byte-identical) a sparse mushroom on solid cave floors in
+   the Y 8–47 band; the runtime light gate (< 13) + spread random-tick + 5-in-9×9×3
+   cap are exact.
+5. **Water Breathing / Slow Falling / Mining Fatigue are engine-complete but have no
+   survival source** (per §5/§12.4 — pufferfish/phantom/etc. are out of scope). They
+   work via the debug palette and 11/13 hooks. Nausea/Blindness/Health-Boost/etc.
+   are cut (ids reserved, never registered), per §1.3.
+
+### Defects found and fixed before landing
+
+- **Latent E4 bug — `lootingLevelOf` used without import (crashed every mob death
+  with drops).** `Mob.onDeath` calls `lootingLevelOf(source, opts?.attacker)` (added
+  by 08) but the module never imported it from `items/effects.js`. It stayed latent
+  because no prior phase's tests killed a mob through code that reached the drop
+  loop; E9's Poison/Wither DoT test is the first, and it threw a `ReferenceError`.
+  Fixed by adding the import. **This bug is also present in the merged `main`** (it
+  merged with E4) and rides in with E9's merge.
+
+### Defects found by the CRITICAL-tier review pass and fixed
+
+A five-dimension adversarial Opus review (each finding independently
+verify-or-refuted) audited the effect engine, brew graph, damage/movement
+integration, throwables, and registry/persistence. The engine, the full brew
+graph, the damage pipeline, and the throwables came back **clean**; three
+CONFIRMED defects (all in the registry/HUD/persistence surface) were fixed:
+
+- **MED — golden apple was not edible at full hunger (§9.1).** It registered as
+  plain `kind:'food'`, so `useSelf`'s `foodLevel < 20` gate blocked the eat channel
+  when fed — making its Absorption + Regeneration unreachable in exactly the
+  hurt-but-fed scenario it exists for. Fixed: golden_apple carries `alwaysEdible`
+  and the gate is `(held.alwaysEdible || foodLevel < 20)`.
+- **MED — absorption hearts overwrote the health row.** The yellow pips were drawn
+  over the leftmost health pips of the single 10-pip row, dropping the highest
+  health hearts and under-reporting HP. Fixed: absorption renders in its own row
+  above the hearts (half-heart support), and the health loop draws all 10 red pips
+  unmodified.
+- **LOW — an invisible mob reloaded visible.** `applyEffectsData` restores effects
+  raw (correct — it must not re-run `onEffectAdded`), so invisibility's mesh-hide
+  was never replayed on load. Fixed: `tickEffects` reconciles `object3d.visible`
+  against the invisibility state each tick, self-correcting once the mesh exists.
+
+### Verified
+
+- **e9 suite 32/32** (the 29 above + the three review fixes: golden apple edible +
+  buffs when fed, absorption row separate with full HP intact): addEffect stacking (§2.2 all four cases), instant health/
+  damage + undead inversion + immunity (undead refuse regen/poison, spider refuses
+  poison), Resistance→Absorption stage order, Poison floors at 1 HP / Wither kills /
+  Regen heals, Fire Resistance zeroes lava, the full brew graph (base/effect/redstone/
+  glowstone/all corruptions incl. strong_speed→nothing), registry ids, splash AoE,
+  lingering cloud apply+shrink, tipped-arrow carry+apply, effects+absorption
+  save/round-trip.
+- **Regressions clean**: verify-ingame 7/7, e4-gate 25/25, e7gate 13/13, e8 33/33,
+  audio 35/35, `npm run build` green — the deep player/mob/damage integration did
+  not regress enchanting, redstone, the Nether, or netherite.
+
 ## E8 — 10-NETHER §9: the netherite tier (smithing upgrade + gear) (2026-07-18)
 
 Built to `10-NETHER.md` §9 (netherite tier) + its AMENDS to 06 (tool/armor rows,

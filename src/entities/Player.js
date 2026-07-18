@@ -17,6 +17,8 @@ import {
 } from '../items/xp.js';
 import { epfMultiplier, rollThorns, fireTicksAfterProtection } from '../items/effects.js';
 import { tickPortal } from '../world/Portal.js';
+import { EFFECT, tickEffects, effectLevel, addEffect, applyInstant, clearEffects, serializeEffects, applyEffectsData } from '../status/effects.js';
+import { POTIONS } from '../status/potions.js';
 
 const DEG = Math.PI / 180;
 
@@ -55,7 +57,8 @@ export class Player extends LivingEntity {
     this.saturation = 5.0;
     this.exhaustion = 0;
     this.foodTickTimer = 0;
-    this.foodPoisonTicks = 0;
+    // (09-POTIONS AMENDS 06 §12.4 — foodPoisonTicks removed; food poisoning is now
+    // the Hunger effect. effects Map + absorption live on LivingEntity.)
 
     // XP (06 §13). xpTotal is the LIFETIME counter (08 §3.2's xpEarnedTotal):
     // increment-only, never touched by spending, and what Score renders.
@@ -343,10 +346,8 @@ export class Player extends LivingEntity {
 
   tickHunger() {
     if (this.creative) return;
-    if (this.foodPoisonTicks > 0) {
-      this.foodPoisonTicks--;
-      this.exhaustion += 0.005;
-    }
+    // (09-POTIONS AMENDS 06 §12.4 — food poisoning is now the Hunger effect; its
+    // 0.005·L/tick exhaustion is applied by tickEffects' periodicAction.)
     while (this.exhaustion >= 4.0) {
       this.exhaustion -= 4.0;
       if (this.saturation > 0) this.saturation = Math.max(0, this.saturation - 1.0);
@@ -379,8 +380,15 @@ export class Player extends LivingEntity {
   eat(item) {
     this.foodLevel = Math.min(20, this.foodLevel + item.hunger);
     this.saturation = Math.min(this.foodLevel, this.saturation + item.saturation);
+    // AMENDS 06 §12.4 — rotten flesh / raw chicken poison chance → Hunger I 0:30.
     if (item.poisonChance && this.world.rng() < item.poisonChance) {
-      this.foodPoisonTicks = 600;
+      addEffect(this, EFFECT.HUNGER, 0, 600);
+    }
+    // 09-POTIONS §8/§9 — food-borne effects.
+    if (item.name === 'spider_eye') addEffect(this, EFFECT.POISON, 0, 100);        // Poison I 0:05
+    else if (item.name === 'golden_apple') {
+      addEffect(this, EFFECT.ABSORPTION, 0, 2400);                                 // Absorption I 2:00
+      addEffect(this, EFFECT.REGENERATION, 1, 100);                               // Regeneration II 0:05
     }
   }
 
@@ -435,6 +443,10 @@ export class Player extends LivingEntity {
       this.pendingGameMode = null;
     }
 
+    // 1.5 status effects (09-POTIONS §2.4 / AMENDS 03 §4) — MUST run before the
+    // movement branch so Speed/Slowness/Jump apply the same tick.
+    tickEffects(this);
+
     // 3–4. sneak + sprint state
     this.updateSneak(input);
     this.updateSprint(input);
@@ -485,7 +497,7 @@ export class Player extends LivingEntity {
     // a stale fdBefore and fake a landing on a submerged floor.
     if (!this.flying && this.onGround && fdBefore > 0 &&
         !this.inWater && !this.inLava && !this.onLadder) {
-      const dmg = Math.ceil(fdBefore - 3);
+      const dmg = Math.ceil(fdBefore - 3 - effectLevel(this, EFFECT.JUMP_BOOST));
       if (dmg > 0) {
         // player.hurt suppresses source 'fall' so this doesn't double up
         emitSound('player.fall.big', null, 1, (0.6 + 0.1 * Math.min(dmg, 10)) / 0.6);
@@ -536,9 +548,11 @@ export class Player extends LivingEntity {
     // FOV effect (03 §18.3 sprint; 18 §2.3 flight). Flying is +10% on its own
     // and "increased further when holding sprint" — the old expression made
     // flight FOV identical to walking, since both its arms reduced to `sprinting`.
+    // 09-POTIONS AMENDS 03 §18.3 — Speed/Slowness shift FOV ±0.05·L, clamped.
+    const fovFx = 0.05 * effectLevel(this, EFFECT.SPEED) - 0.05 * effectLevel(this, EFFECT.SLOWNESS);
     const targetFov = this.flying
       ? (this.sprinting ? 1.21 : 1.10)          // 1.10² for sprint-fly (approx)
-      : (this.sprinting ? 1.10 : 1.0);
+      : Math.max(0.85, Math.min(1.30, (this.sprinting ? 1.10 : 1.0) + fovFx));
     this.fovScale += (targetFov - this.fovScale) * 0.5;
 
     // 10-NETHER §3.4 — the portal transfer timer (standing in a portal for 80 t
@@ -581,13 +595,17 @@ export class Player extends LivingEntity {
     const { strafe, forward } = this.moveInputs(input);
     const slip = this.groundSlip();
     const mult = this.sprinting ? 1.3 : 1.0;
+    // 09-POTIONS AMENDS 03 §5.3 — Speed/Slowness scale ground move only; air accel
+    // is Java-unaffected. effMove = (1+0.2·L_speed)(1−0.15·L_slowness), floor 0.
+    const L = id => effectLevel(this, id);
+    const effMove = Math.max(0, (1 + 0.2 * L(EFFECT.SPEED)) * (1 - 0.15 * L(EFFECT.SLOWNESS)));
     const speed = this.onGround
-      ? 0.1 * mult * Math.pow(0.6 / slip, 3)
+      ? 0.1 * mult * effMove * Math.pow(0.6 / slip, 3)
       : 0.02 * mult;
 
-    // jump BEFORE the move (03 §6.2)
+    // jump BEFORE the move (03 §6.2); Jump Boost adds 0.1 per level (09 AMENDS 03 §6.2)
     if (input.jump && this.onGround && this.jumpCooldown === 0) {
-      this.vel.y = 0.42;
+      this.vel.y = 0.42 + 0.1 * L(EFFECT.JUMP_BOOST);
       if (this.sprinting) {
         const fwd = this.facingXZ();
         this.vel.x += 0.2 * fwd.x;
@@ -619,7 +637,17 @@ export class Player extends LivingEntity {
 
     const friction = this.onGround ? slip * 0.91 : 0.91;
     this.vel.x *= friction; this.vel.z *= friction;
-    this.vel.y = (this.vel.y - 0.08) * 0.98;
+    // 09-POTIONS §3.8 Levitation replaces gravity; §3.6/AMENDS 03 §6.1 Slow Falling
+    // softens it to 0.01 while descending. Drag ×0.98 unchanged.
+    const lev = L(EFFECT.LEVITATION);
+    if (lev > 0) {
+      this.vel.y += (0.05 * lev - this.vel.y) * 0.2;
+      if (this.vel.y >= 0) this.fallDistance = 0;
+      this.vel.y *= 0.98;
+    } else {
+      const g = (L(EFFECT.SLOW_FALLING) > 0 && this.vel.y <= 0) ? 0.01 : 0.08;
+      this.vel.y = (this.vel.y - g) * 0.98;
+    }
     this.snapTinyVel();
   }
 
@@ -755,7 +783,10 @@ export class Player extends LivingEntity {
       // 2 HP), and §5.3 says that cadence is unchanged — gating the whole
       // decrement would have slowed drowning damage by ×(L+1) too.
       const resp = getEnchantLvl(this.armor[0], ENCH.RESPIRATION);
-      if (this.air > 0 && resp > 0) {
+      // 09-POTIONS AMENDS 03 §10.2 — Water Breathing skips the breath decrement.
+      if (this.effects.has(EFFECT.WATER_BREATHING)) {
+        // air never depletes; drowning-damage cadence below never triggers.
+      } else if (this.air > 0 && resp > 0) {
         if (Math.floor(this.world.rng() * (resp + 1)) === 0) this.air -= 1;
       } else {
         this.air -= 1;
@@ -900,7 +931,7 @@ export class Player extends LivingEntity {
     this.prevPos.x = pos.x; this.prevPos.y = pos.y; this.prevPos.z = pos.z;
     this.health = 20;
     this.foodLevel = 20; this.saturation = 5.0; this.exhaustion = 0;
-    this.foodTickTimer = 0; this.foodPoisonTicks = 0;
+    this.foodTickTimer = 0; clearEffects(this);   // §4.3 — respawn full effect + absorption wipe
     this.air = 300;
     this.vel.x = this.vel.y = this.vel.z = 0;
     this.fireTicks = 0; this.fallDistance = 0; this.invulnTicks = 0;
@@ -924,7 +955,7 @@ export class Player extends LivingEntity {
       dimension: this.dim,        // 10-NETHER §2.4 — restore the active dim on load
       health: this.health,
       hunger: this.foodLevel, saturation: this.saturation, exhaustion: this.exhaustion,
-      foodPoisonTicks: this.foodPoisonTicks,
+      effects: serializeEffects(this), absorption: this.absorption,   // 09-POTIONS §16
       // 08 §13 — `xp` is CURRENT total points (spend-sensitive); `xpEarnedTotal`
       // is the lifetime Score counter (§3.2). Before E4 this field wrote
       // xpTotal (lifetime) and deserialize replayed it as current — harmless
@@ -952,7 +983,13 @@ export class Player extends LivingEntity {
     this.foodLevel = rec.hunger ?? 20;
     this.saturation = rec.saturation ?? 5;
     this.exhaustion = rec.exhaustion ?? 0;
-    this.foodPoisonTicks = rec.foodPoisonTicks ?? 0;
+    // 09-POTIONS §16 — restore effects + absorption; migrate a legacy
+    // foodPoisonTicks timer into a Hunger effect entry (AMENDS 06 §12.4).
+    applyEffectsData(this, rec.effects);
+    if (rec.foodPoisonTicks > 0 && !this.effects.has(EFFECT.HUNGER)) {
+      this.effects.set(EFFECT.HUNGER, { amplifier: 0, duration: rec.foodPoisonTicks, ambient: false });
+    }
+    this.absorption = rec.absorption ?? 0;
     this.air = rec.air ?? 300;
     this.fireTicks = rec.fireTicks ?? 0;
     this.fallDistance = rec.fallDistance ?? 0;

@@ -28,6 +28,7 @@ export class Spider extends Mob {
     this.type = 'spider';
     this.hostile = true;
     this.arthropod = true;       // 08 §5.1 — Bane of Arthropods target
+    this.poisonImmune = true;    // 09-POTIONS §4.3 — spiders resist Poison (Java parity)
     this.width = 1.4; this.height = 0.9;
     this.wide3 = true;
     this.health = this.maxHealth = 16;
@@ -77,9 +78,12 @@ export class Spider extends Mob {
     }
   }
 
-  // 08 §5.5 — string 0–(2+L).
-  dropTable(looting = 0) {
-    return [{ name: 'string', count: lootedRange(this.world.rng, 0, 2, looting) }];
+  // 08 §5.5 — string 0–(2+L). 09-POTIONS §11.4 — 1/3 chance of a spider_eye on a
+  // player-caused death.
+  dropTable(looting = 0, byPlayer = false) {
+    const out = [{ name: 'string', count: lootedRange(this.world.rng, 0, 2, looting) }];
+    if (byPlayer && this.world.rng() < 1 / 3) out.push({ name: 'spider_eye', count: 1 });
+    return out;
   }
 
   buildModel() { return spiderModel(); }

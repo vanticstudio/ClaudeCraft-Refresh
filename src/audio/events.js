@@ -318,6 +318,27 @@ def('block.extinguish', {
     return gulp(v, t, { dur: 0.12, gain: 0.3 * g, pitch: p });
   },
 });
+// 09-POTIONS §17 — brewing + potion sound events (synthesis reuses 16 helpers).
+def('block.brewing.done', {
+  bus: 'sfx', maxDist: 16, capKey: 'brewing', priority: P.NEAR, replicate: true,
+  recipe: (v, t, p, g) => { gulp(v, t, { dur: 0.18, gain: 0.35 * g, pitch: 1.2 }); return blip(v, t + 0.1, { wave: 'sine', freq: 900, dur: 0.08, gain: 0.2 * g }); },
+});
+def('item.bottle.fill', {
+  bus: 'sfx', maxDist: 12, capKey: 'bottle_fill', priority: P.NEAR, replicate: true,
+  recipe: (v, t, p, g) => gulp(v, t, { dur: 0.2, gain: 0.4 * g, pitch: p }),
+});
+def('entity.splash_potion.throw', {
+  bus: 'sfx', maxDist: 16, capKey: 'potion_throw', priority: P.NEAR, replicate: true,
+  recipe: (v, t, p, g) => hiss(v, t, { freq: 2200, dur: 0.12, gain: 0.3 * g, pitch: p }),
+});
+def('entity.splash_potion.break', {
+  bus: 'sfx', maxDist: 16, capKey: 'potion_break', priority: P.NEAR, replicate: true,
+  recipe: (v, t, p, g) => { blip(v, t, { wave: 'square', freq: 2600, dur: 0.04, gain: 0.3 * g }); return hiss(v, t, { freq: 4000, dur: 0.2, gain: 0.35 * g, pitch: p }); },
+});
+def('entity.lingering_potion.break', {
+  bus: 'sfx', maxDist: 16, capKey: 'potion_break', priority: P.NEAR, replicate: true,
+  recipe: (v, t, p, g) => { blip(v, t, { wave: 'square', freq: 1600, dur: 0.06, gain: 0.3 * g }); return hiss(v, t, { freq: 2600, dur: 0.28, gain: 0.35 * g, pitch: p }); },
+});
 def('ui.click', {
   ...UI,
   recipe: (v, t, p, g) => blip(v, t, { wave: 'square', freq: 800, dur: 0.03, gain: 0.25 * g }),

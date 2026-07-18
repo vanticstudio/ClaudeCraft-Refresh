@@ -3,6 +3,8 @@
 import { ITEMS } from '../registry/items.js';
 import { BLOCKS } from '../registry/blocks.js';
 import { isGlinted, paintGlintIcon } from '../render/glint.js';
+import { EFFECT, EFFECT_META } from '../status/effects.js';
+const ROMAN = ['', 'I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII'];
 
 export function iconCss(el, tile) {
   const col = tile & 31, row = tile >> 5;
@@ -69,12 +71,14 @@ export class Hud {
             <div id="armor-row" class="row-half"></div>
             <div id="air-row" class="row-half"></div>
           </div>
+          <div id="absorption-row" class="row-half"></div>
           <div class="row-pair">
             <div id="hearts-row" class="row-half"></div>
             <div id="hunger-row" class="row-half"></div>
           </div>
           <div id="xp-bar"><div id="xp-fill"></div><div id="xp-level"></div></div>
         </div>
+        <div id="effect-stack"></div>
         <div id="offhand-slot"></div>
         <div id="hotbar"></div>
         <div id="item-name"></div>
@@ -83,6 +87,8 @@ export class Hud {
         <div id="mode-badge">CREATIVE</div>
       </div>`;
     this.el = {
+      effectStack: document.getElementById('effect-stack'),
+      absorption: document.getElementById('absorption-row'),
       hearts: document.getElementById('hearts-row'),
       hunger: document.getElementById('hunger-row'),
       armor: document.getElementById('armor-row'),
@@ -120,6 +126,7 @@ export class Hud {
     this.pips(this.el.hearts, 10);
     this.pips(this.el.hunger, 10);
     this.pips(this.el.armor, 10);
+    this.pips(this.el.absorption, 10);   // 09-POTIONS §3.7 — yellow row above hearts
     this.pips(this.el.air, 10);
     this.damageFlash = 0;
     this.nameFlash = 0;
@@ -188,6 +195,32 @@ export class Hud {
     return true;
   }
 
+  // 09-POTIONS §6.1 — active-effect icon stack (top-right, mm:ss, blink < 10 s,
+  // blue frame for ambient/beacon effects). Max 8 shown, newest below.
+  updateEffects(p) {
+    const el = this.el.effectStack;
+    if (!el) return;
+    const active = [...p.effects.entries()].slice(0, 8);
+    const t = this.game.world?.time ?? 0;
+    const key = active.map(([id, fx]) => id + ':' + Math.ceil(fx.duration / 20) + ':' + fx.ambient).join('|')
+      + '|' + (Math.floor(t / 5) & 1);
+    if (!this.setDirty('effects', key)) return;
+    el.innerHTML = '';
+    for (const [id, fx] of active) {
+      const meta = EFFECT_META[id];
+      const secs = Math.ceil(fx.duration / 20);
+      const mm = Math.floor(secs / 60), ss = secs % 60;
+      const blink = secs < 10 && (Math.floor(t / 5) & 1) ? 0.35 : 1;
+      const d = document.createElement('div');
+      d.className = 'effect-icon' + (fx.ambient ? ' ambient' : '');
+      d.style.opacity = blink;
+      d.style.borderLeftColor = '#' + ((meta?.color ?? 0xffffff) >>> 0).toString(16).padStart(6, '0');
+      d.innerHTML = `<span class="ei-name">${meta?.display ?? id}${fx.amplifier ? ' ' + ROMAN[fx.amplifier + 1] : ''}</span>`
+        + `<span class="ei-time">${mm}:${ss.toString().padStart(2, '0')}</span>`;
+      el.appendChild(d);
+    }
+  }
+
   update() {
     const p = this.game.player;
     if (!p) return;
@@ -200,30 +233,48 @@ export class Hud {
     // (the air row in particular sets its own display every frame).
     if (this.creative) { this.updateHotbar(p); this.updateOverlays(p); return; }
 
-    // hearts (2 HP per heart)
+    // hearts (2 HP per heart) — 09-POTIONS §6.3 recolors: Wither black, Poison green.
     const hp = Math.ceil(p.health);
-    if (this.setDirty('hp', hp + '|' + p.hurtTime)) {
+    const wither = p.effects.has(EFFECT.WITHER), poison = p.effects.has(EFFECT.POISON);
+    const full = wither ? '#4a4a4a' : poison ? '#7aa060' : '#e0241c';
+    if (this.setDirty('hp', hp + '|' + p.hurtTime + '|' + full)) {
       const pips = this.el.hearts.children;
       for (let i = 0; i < 10; i++) {
         const v = hp - i * 2;
         pips[i].textContent = v >= 2 ? '❤' : v === 1 ? '❥' : '❤';
-        pips[i].style.color = v >= 2 ? '#e0241c' : v === 1 ? '#e0241c' : '#3a0d0d';
+        pips[i].style.color = v >= 1 ? full : '#3a0d0d';
       }
       this.el.hearts.style.transform = p.hurtTime > 0
         ? `translateX(${(p.hurtTime % 2 ? 1 : -1) * 2}px)` : '';
     }
 
-    // hunger
+    // 09-POTIONS §3.7 — absorption: a separate yellow-heart row above the red
+    // hearts, half-heart support, hidden when the pool is empty.
+    const abs = p.absorption;
+    if (this.setDirty('absorption', Math.round(abs * 2))) {
+      this.el.absorption.style.display = abs > 0 ? 'flex' : 'none';
+      const pips = this.el.absorption.children;
+      for (let i = 0; i < 10; i++) {
+        const v = abs - i * 2;
+        pips[i].textContent = v >= 2 ? '❤' : v >= 1 ? '❥' : '';
+        pips[i].style.color = '#F5C51E';
+      }
+    }
+
+    // hunger — green while the Hunger effect (§6.3) is active.
     const food = p.foodLevel;
-    if (this.setDirty('food', food + '|' + (p.foodPoisonTicks > 0))) {
+    const hungerFx = p.effects.has(EFFECT.HUNGER);
+    if (this.setDirty('food', food + '|' + hungerFx)) {
       const pips = this.el.hunger.children;
       for (let i = 0; i < 10; i++) {
         const v = food - i * 2;
         pips[i].textContent = v >= 2 ? '🍗' : v === 1 ? '🍖' : '·';
-        pips[i].style.filter = p.foodPoisonTicks > 0
+        pips[i].style.filter = hungerFx
           ? 'hue-rotate(90deg)' : v >= 1 ? 'none' : 'grayscale(1) brightness(0.4)';
       }
     }
+
+    this.updateEffects(p);
 
     // armor
     const ap = p.armorPoints();
