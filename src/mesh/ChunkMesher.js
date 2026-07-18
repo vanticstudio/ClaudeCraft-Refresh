@@ -174,6 +174,16 @@ export class ChunkMesher {
           this.emitBox(x, y, z, blk, st, [2 / 16, 0, 6 / 16, 4 / 16, 7 / 16, 8 / 16], true);
           this.emitBox(x, y, z, blk, st, [12 / 16, 0, 6 / 16, 14 / 16, 7 / 16, 8 / 16], true);
           break;
+        // 07-REDSTONE §13.2 — approximate custom shapes (orientation is cosmetic;
+        // the logic reads state, not the mesh). See DEVIATIONS.
+        case 'wire': this.emitBox(x, y, z, blk, st, [0, 0, 0, 1, 1 / 64, 1], false); break;
+        case 'lever': this.emitBox(x, y, z, blk, st, [5 / 16, 0, 5 / 16, 11 / 16, 6 / 16, 11 / 16], false); break;
+        case 'button': this.emitBox(x, y, z, blk, st, [5 / 16, 0, 6 / 16, 11 / 16, 2 / 16, 10 / 16], false); break;
+        case 'plate': this.emitBox(x, y, z, blk, st, [1 / 16, 0, 1 / 16, 15 / 16, 1 / 16, 15 / 16], false); break;
+        case 'repeater':
+        case 'comparator': this.emitBox(x, y, z, blk, st, [0, 0, 0, 1, 2 / 16, 1], false); break;
+        case 'piston_head': this.emitBox(x, y, z, blk, st, [0, 0, 0, 1, 1, 1], true); break;
+        case 'hopper': this.emitBox(x, y, z, blk, st, [0, 0, 0, 1, 1, 1], true); break;
         default: break;   // 'none'
       }
       // 15 §12 — the SECOND contribution. The block mesh above is emitted

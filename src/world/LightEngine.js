@@ -220,7 +220,9 @@ export class LightEngine {
 
     // 3. emitters
     for (let i = 0; i < 32768; i++) {
-      const em = BLOCKS[blocks[i]].emission;
+      const b = BLOCKS[blocks[i]];
+      // 07 §6.4 — a redstone torch's emission depends on its lit bit (one id).
+      const em = b.emissionFor ? b.emissionFor(chunk.states[i]) : b.emission;
       if (em > 0) {
         chunk.blockLight[i] = em;
         pqBlock.push(baseX + (i & 15), i >> 8, baseZ + ((i >> 4) & 15), em);
@@ -287,13 +289,17 @@ export class LightEngine {
     chunk.heightMap[col] = newH;
 
     // --- BLOCK channel ---
-    if (oldB.emission > 0 || (newO > 0 && this.light(BLOCK, x, y, z) > 0)) {
+    // 07 §6.4 — a redstone torch's emission is state-dependent (one id), so read
+    // it through emissionFor when present.
+    const oldEmit = oldB.emissionFor ? oldB.emissionFor(oldState) : oldB.emission;
+    const newEmit = newB.emissionFor ? newB.emissionFor(newState) : newB.emission;
+    if (oldEmit > 0 || (newO > 0 && this.light(BLOCK, x, y, z) > 0)) {
       this.removeLight(BLOCK, x, y, z);
     }
-    if (newB.emission > 0) {
-      if (newB.emission > this.light(BLOCK, x, y, z)) {
-        this.setLight(BLOCK, x, y, z, newB.emission);
-        this.propQ[BLOCK].push(x, y, z, newB.emission);
+    if (newEmit > 0) {
+      if (newEmit > this.light(BLOCK, x, y, z)) {
+        this.setLight(BLOCK, x, y, z, newEmit);
+        this.propQ[BLOCK].push(x, y, z, newEmit);
       }
     }
     if (newO < oldO) {
@@ -328,6 +334,24 @@ export class LightEngine {
 
   getLight(x, y, z) {
     return { sky: this.light(SKY, x, y, z), block: this.light(BLOCK, x, y, z) };
+  }
+
+  /**
+   * 07 §6.4 — apply a state-driven emission change at a single cell (no id
+   * change). Mirrors onBlockChanged's BLOCK channel: tear down the old emitter,
+   * seed the new one, propagate. Returns the set of dirtied chunk keys.
+   */
+  setBlockEmission(x, y, z, oldEmit, newEmit) {
+    this.dirtied.clear();
+    if (oldEmit > 0 || (this.opacity(x, y, z) > 0 && this.light(BLOCK, x, y, z) > 0)) {
+      this.removeLight(BLOCK, x, y, z);
+    }
+    if (newEmit > 0 && newEmit > this.light(BLOCK, x, y, z)) {
+      this.setLight(BLOCK, x, y, z, newEmit);
+      this.propQ[BLOCK].push(x, y, z, newEmit);
+    }
+    this.propagate(BLOCK);
+    return this.dirtied;
   }
 }
 

@@ -168,8 +168,32 @@ export class World {
       if (state & WATERLOGGED) this.fluids.schedule(x, y, z, 'water');
       if (newBlock.gravity) this.checkFall(x, y, z);
       this.neighborUpdates(x, y, z);
+      // AMENDS 01 §4.6 step 8 (07 §5) — redstone: pulse observers watching this
+      // cell, re-solve adjacent dust networks, second-order component fan-out.
+      if (old !== id) this.game?.redstone?.onCellChanged(x, y, z, old, id);
     }
     return true;
+  }
+
+  /**
+   * 07 §6.4 — apply a state-dependent light emission change (the redstone torch
+   * shares one id for lit/unlit, so setBlock's id-based relight never fires).
+   * Delegates to the light engine, then remeshes the touched chunks.
+   */
+  updateEmission(x, y, z, oldEmit, newEmit) {
+    if (oldEmit === newEmit) return;
+    const dirtied = this.light.setBlockEmission(x, y, z, oldEmit, newEmit);
+    const chunk = this.getChunkAt(x, z);
+    if (chunk && this.chunkManager) {
+      for (const k of this.collectDirtyKeys(chunk, x, z, dirtied)) this.chunkManager.markDirty(k);
+    }
+  }
+
+  /** Is a scheduled tick already pending for this cell in any bucket? */
+  hasScheduled(x, y, z) {
+    const k = x + ',' + y + ',' + z;
+    for (const b of this.scheduled.buckets.values()) if (b.keys.has(k)) return true;
+    return false;
   }
 
   /**
@@ -198,6 +222,9 @@ export class World {
     if (this.chunkManager && !opts?.noRemesh) {
       for (const k of this.collectDirtyKeys(chunk, x, z, null)) this.chunkManager.markDirty(k);
     }
+    // 07 §6.6 — a state-byte change is an observer trigger (dust power, repeater
+    // delay, door open, crop stage). The single chokepoint for non-id changes.
+    this.game?.redstone?.onStateChanged(x, y, z);
     return true;
   }
 

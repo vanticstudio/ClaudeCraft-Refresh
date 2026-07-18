@@ -364,6 +364,55 @@ P.furnace_front = (c, x, y, r) => {
 };
 P.furnace_side = (c, x, y, r) => { noise(c, x, y, r, '#7f7f7f', 8); border(c, x, y, '#565656'); };
 P.furnace_top = (c, x, y, r) => { noise(c, x, y, r, '#7f7f7f', 8); border(c, x, y, '#565656'); };
+
+// ============ 07-REDSTONE §14 textures ============
+// Wire tile: a grayscale dust line (power-tint applied per-cell by the mesher via
+// own-cell light in this build; §4.5's per-power atlas variants are simplified to
+// one tinted tile — see DEVIATIONS).
+P.dust_line_0 = (c, x, y, r) => { noise(c, x, y, r, '#b0b0b0', 12); rect(c, x, y, 0, 6, 16, 4, '#c02020'); };
+P.redstone_torch = (c, x, y) => {
+  rect(c, x, y, 7, 6, 2, 10, '#6b4f2a');            // stick
+  rect(c, x, y, 6, 3, 4, 3, '#ff3b3b'); rect(c, x, y, 6, 5, 4, 1, '#7a1010');   // lit tip
+};
+P.redstone_torch_off = (c, x, y) => {
+  rect(c, x, y, 7, 6, 2, 10, '#6b4f2a');
+  rect(c, x, y, 6, 3, 4, 3, '#4a0d0d');
+};
+P.lever = (c, x, y) => {
+  rect(c, x, y, 5, 10, 6, 3, '#7f7f7f');            // cobble base
+  rect(c, x, y, 7, 3, 2, 8, '#6b4f2a'); px(c, x, y, 7, 2, '#d0d0d0');   // stick + tip
+};
+P.stone_button = (c, x, y, r) => { rect(c, x, y, 5, 6, 6, 4, '#7f7f7f'); border(c, x, y, '#565656'); };
+P.wooden_button = (c, x, y, r) => { rect(c, x, y, 5, 6, 6, 4, '#b8945f'); };
+P.smooth_stone_side = (c, x, y, r) => { noise(c, x, y, r, '#9a9a9a', 4); rect(c, x, y, 0, 0, 16, 2, '#8a8a8a'); };
+P.smooth_stone_bottom = (c, x, y, r) => noise(c, x, y, r, '#9a9a9a', 4);
+P.repeater_top = (c, x, y, r) => {
+  noise(c, x, y, r, '#9a9a9a', 6);
+  rect(c, x, y, 7, 3, 2, 10, '#3a3a3a');           // arrow shaft toward output
+  rect(c, x, y, 5, 4, 6, 2, '#3a3a3a');
+  rect(c, x, y, 6, 12, 2, 2, '#c02020'); rect(c, x, y, 8, 12, 2, 2, '#c02020');   // 2 torch dots
+};
+P.comparator_top = (c, x, y, r) => {
+  noise(c, x, y, r, '#9a9a9a', 6);
+  rect(c, x, y, 7, 2, 2, 2, '#c02020');            // 3 torch dots in a triangle
+  rect(c, x, y, 4, 12, 2, 2, '#c02020'); rect(c, x, y, 10, 12, 2, 2, '#c02020');
+};
+P.piston_side = (c, x, y, r) => { rect(c, x, y, 0, 0, 16, 4, '#b8945f'); noise(c, x, y + 4, r, '#6f6f6f', 8); };
+P.piston_face = (c, x, y, r) => { planks(c, x, y, r, '#b8945f'); border(c, x, y, '#6e4f24'); };
+P.piston_face_sticky = (c, x, y, r) => { P.piston_face(c, x, y, r); rect(c, x, y, 4, 4, 8, 8, '#5a8f3c'); };
+P.piston_inner = (c, x, y, r) => { noise(c, x, y, r, '#6f6f6f', 8); rect(c, x, y, 6, 6, 4, 4, '#4a4a4a'); };
+P.observer_side = (c, x, y, r) => { noise(c, x, y, r, '#5f5f5f', 6); rect(c, x, y, 4, 7, 8, 2, '#8a8a8a'); };
+P.observer_face = (c, x, y, r) => { noise(c, x, y, r, '#5f5f5f', 6); rect(c, x, y, 6, 6, 4, 4, '#d90000'); };
+P.observer_back = (c, x, y, r) => { noise(c, x, y, r, '#5f5f5f', 6); rect(c, x, y, 6, 6, 4, 4, '#7a1010'); };
+P.dispenser_side = (c, x, y, r) => { noise(c, x, y, r, '#7f7f7f', 8); border(c, x, y, '#565656'); };
+P.dispenser_front = (c, x, y, r) => { noise(c, x, y, r, '#7f7f7f', 8); rect(c, x, y, 5, 5, 6, 6, '#000'); rect(c, x, y, 6, 4, 4, 1, '#2a2a2a'); };
+P.dropper_front = (c, x, y, r) => { noise(c, x, y, r, '#7f7f7f', 8); rect(c, x, y, 5, 5, 6, 6, '#000'); };
+P.hopper_side = (c, x, y, r) => { noise(c, x, y, r, '#3a3a3a', 5); border(c, x, y, '#565656'); };
+P.hopper_top = (c, x, y, r) => { noise(c, x, y, r, '#3a3a3a', 5); rect(c, x, y, 2, 2, 12, 12, '#1a1a1a'); };
+P.redstone_lamp = (c, x, y, r) => { blotch(c, x, y, r, '#5a2d0c', '#3a1c06', 8); for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) rect(c, x, y, 3 + i * 5, 3 + j * 5, 2, 2, '#7a4a1a'); };
+P.redstone_lamp_lit = (c, x, y, r) => { blotch(c, x, y, r, '#a86a2a', '#8a5620', 8); for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) rect(c, x, y, 3 + i * 5, 3 + j * 5, 2, 2, '#ffd97a'); };
+P.note_block = (c, x, y, r) => { planks(c, x, y, r, '#8a5f35'); rect(c, x, y, 6, 6, 4, 4, '#2a1a0e'); };
+P.redstone_block = (c, x, y, r) => { noise(c, x, y, r, '#aa0f01', 7); border(c, x, y, '#7a0b01'); };
 P.chest_front = (c, x, y, r) => {
   planks(c, x, y, r, '#a0793c'); border(c, x, y, '#6e4f24');
   rect(c, x, y, 7, 6, 2, 3, '#8a8a8a');

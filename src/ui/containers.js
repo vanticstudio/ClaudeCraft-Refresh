@@ -592,6 +592,7 @@ export class Containers {
     const title = {
       inventory: 'Inventory', crafting: 'Crafting', furnace: 'Furnace', chest: 'Chest',
       enchanting: 'Enchant', anvil: 'Repair & Name', grindstone: 'Repair & Disenchant',
+      dispenser: 'Dispenser', dropper: 'Dropper', hopper: 'Hopper',
     }[this.kind];
     panel.innerHTML = `<div class="panel-title">${title}</div>`;
     this.panel = panel;
@@ -741,6 +742,29 @@ export class Containers {
         get: () => this.grindPreview()?.result ?? null,
         onCraft: () => this.takeGrindOutput(),   // §9.1 — never costs XP, always takeable
       });
+      defs.push(...this.playerStorageDefs());
+    } else if (this.kind === 'dispenser' || this.kind === 'dropper') {
+      // 07 §10.1 — 3×3 grid of 9 slots.
+      const be = this.be.data;
+      for (let row = 0; row < 3; row++) {
+        for (let col = 0; col < 3; col++) {
+          const i = row * 3 + col;
+          defs.push({
+            x: 62 + col * 18, y: 17 + row * 18, region: 'container',
+            get: () => be.slots[i], set: v => { be.slots[i] = v; this.markBeDirty(); this.notifyContainer(); },
+          });
+        }
+      }
+      defs.push(...this.playerStorageDefs());
+    } else if (this.kind === 'hopper') {
+      // 07 §11.1 — a single row of 5 slots.
+      const be = this.be.data;
+      for (let i = 0; i < 5; i++) {
+        defs.push({
+          x: 44 + i * 18, y: 20, region: 'container',
+          get: () => be.slots[i], set: v => { be.slots[i] = v; this.markBeDirty(); this.notifyContainer(); },
+        });
+      }
       defs.push(...this.playerStorageDefs());
     }
 
@@ -1086,6 +1110,12 @@ export class Containers {
     if (chunk) chunk.modified = true;
   }
 
+  // 07 §8 — a UI edit to a dispenser/dropper/hopper is a container mutation;
+  // re-evaluate any comparator reading it.
+  notifyContainer() {
+    if (this.pos) this.game.redstone?.containerChanged(this.pos.x, this.pos.y, this.pos.z);
+  }
+
   // ---------------------------------------------------- interaction (06 §14.2)
 
   onSlotClick(index, e) {
@@ -1236,7 +1266,8 @@ export class Containers {
       return bySel(['hotbar', 'main']);
     }
     // from player storage:
-    if (this.kind === 'chest') return bySel(['container']);
+    if (this.kind === 'chest' || this.kind === 'dispenser' || this.kind === 'dropper' || this.kind === 'hopper')
+      return bySel(['container']);
     // 08 §4.2 — lapis goes to the lapis slot, an enchantable item to the item slot.
     if (this.kind === 'enchanting') {
       if (stack.id === LAPIS_ID) return bySel(['enchantLapis']);
@@ -1400,12 +1431,14 @@ export class Containers {
       const p = this.game.player;
       const d = Math.hypot(this.pos.x + 0.5 - p.pos.x, this.pos.y + 0.5 - (p.pos.y + 1), this.pos.z + 0.5 - p.pos.z);
       const id = this.game.world.getBlock(this.pos.x, this.pos.y, this.pos.z);
-      // 08 §8.1 — a degrading anvil that destroys itself must close its own
-      // UI; the same check covers all three blocks being mined out from under
-      // an open screen. close() returns the transient inputs.
+      // 08 §8.1 — a degrading anvil that destroys itself must close its own UI;
+      // the same check closes any of these machines mined out from under an open
+      // screen (07 §10-§11 for the redstone containers). close() returns the
+      // transient inputs.
       const EXPECT = {
         furnace: [35, 36], chest: [37],
         enchanting: [B.ENCHANTING_TABLE], anvil: [B.ANVIL], grindstone: [B.GRINDSTONE],
+        dispenser: [83], dropper: [84], hopper: [85],
       }[this.kind];
       const stillThere = EXPECT ? EXPECT.includes(id) : true;
       if (d > 8 || !stillThere) { this.game.closeContainerScreen?.(); return; }
