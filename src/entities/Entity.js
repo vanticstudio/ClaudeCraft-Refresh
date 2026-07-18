@@ -173,6 +173,7 @@ export class LivingEntity extends Entity {
 
   armorPoints() { return 0; }
   armorToughness() { return 0; }
+  knockbackResistance() { return 0; }   // 10-NETHER §9.2 — netherite armor grants it (Player override)
 
   // Armor applicability by damage source (05 §14.2)
   // 08 §8.6 adds 'anvil': the falling anvil's damage is armor-applicable (and
@@ -231,6 +232,9 @@ export class LivingEntity extends Entity {
 
   // 05 §14.3 (dir = attacker→target, normalized)
   applyKnockback(strength, dirX, dirZ) {
+    // 10-NETHER §9.2 — worn kbResist scales the applied knockback (0.4 → −40%).
+    strength *= 1 - Math.max(0, Math.min(1, this.knockbackResistance()));
+    if (strength <= 0) return;
     this.vel.x = this.vel.x / 2 + dirX * strength;
     this.vel.z = this.vel.z / 2 + dirZ * strength;
     if (this.onGround) this.vel.y = Math.min(0.4, this.vel.y / 2 + strength);

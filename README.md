@@ -75,6 +75,22 @@ autosaves to the browser's IndexedDB every 30 seconds — close the tab and
 
 *This section is updated as new features land.*
 
+- **2026-07-18** — **Netherite: the endgame gear tier (expansion phase E8, `10` §9)**:
+  the full progression is now live. Mine **ancient debris** with a diamond (or
+  better) pickaxe deep in the Nether, **smelt** it into netherite scrap, combine
+  **4 scrap + 4 gold ingots** into a **netherite ingot**, then take a diamond tool
+  or armor piece to a **smithing table** — [gear] + [ingot] → its netherite
+  counterpart. The upgrade **keeps every enchantment, the item's anvil name, and
+  its used durability** (a worn Efficiency-V diamond pickaxe becomes an
+  Efficiency-V netherite pickaxe with the same wear and a bigger bar). Netherite
+  tools have **2031 durability**, mine at **×9 speed** (faster than diamond), and
+  hit for **+1 damage**; netherite armor keeps diamond's 20 armor points but adds
+  **toughness** (soaks big hits better) and **knockback resistance** (a full set
+  shrugs off 40% of melee knockback). And the signature perk: **netherite items
+  float on lava and survive fire** — drop your gear in a lava lake and you can fish
+  it back out instead of losing it. *(Pre-1.20 smithing: no upgrade template
+  needed, just the ingot.)*
+
 - **2026-07-17** — **Enchanting: table, anvil, grindstone (expansion phase E4, `08` part 2)**:
   the whole enchanting stack is in. Ring an **enchanting table** with bookshelves
   (keep the gaps clear — a torch in one blocks the shelves behind it) and spend

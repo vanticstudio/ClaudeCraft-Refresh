@@ -233,6 +233,13 @@ export class Player extends LivingEntity {
     return t;
   }
 
+  // 10-NETHER §9.2 — sum of worn pieces' kbResist (full netherite = 0.4).
+  knockbackResistance() {
+    let r = 0;
+    for (const s of this.armor) if (s) r += ITEMS.get(s.id)?.knockbackResistance ?? 0;
+    return Math.min(1, r);
+  }
+
   damageArmor(dmg) {
     if (dmg < 1) return;
     const loss = Math.max(1, Math.floor(dmg / 4));
