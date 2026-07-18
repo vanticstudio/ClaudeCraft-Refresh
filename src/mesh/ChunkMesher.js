@@ -191,6 +191,10 @@ export class ChunkMesher {
         case 'chorus_flower': this.emitBox(x, y, z, blk, st, [1 / 16, 0, 1 / 16, 15 / 16, 14 / 16, 15 / 16], true); break;
         case 'end_portal': this.emitEndPortal(x, y, z, blk, st, false); break;
         case 'end_gateway': this.emitEndPortal(x, y, z, blk, st, true); break;
+        // 13-BOSSES §2.2 — dragon egg (stacked centered tiers), skull box, beacon.
+        case 'dragon_egg': this.emitDragonEgg(x, y, z, blk, st); break;
+        case 'wither_skull_block': this.emitBox(x, y, z, blk, st, [4 / 16, 0, 4 / 16, 12 / 16, 8 / 16, 12 / 16], false); break;
+        case 'beacon': this.emitBeacon(x, y, z, blk, st); break;
         // 09-POTIONS §7.2 — brewing stand: a low base + a central post.
         case 'brewing_stand':
           this.emitBox(x, y, z, blk, st, [1 / 16, 0, 1 / 16, 15 / 16, 2 / 16, 15 / 16], true);
@@ -550,6 +554,52 @@ export class ChunkMesher {
     } else {
       this.emitFlatFace(builders.water, x, y, z, 2, tile, 12 / 16, sky, bl, 220);
     }
+  }
+
+  // 13-BOSSES §2.2 — dragon egg: 8 stacked centered box tiers (px widths
+  // 2,6,10,14,16,14,10,6 bottom→top over heights 1,1,2,3,4,2,2,1).
+  emitDragonEgg(x, y, z, blk, st) {
+    const tiers = [[2, 1], [6, 1], [10, 2], [14, 3], [16, 4], [14, 2], [10, 2], [6, 1]];
+    let yy = 0;
+    for (const [w, h] of tiers) {
+      const o = (16 - w) / 2 / 16, w16 = w / 16;
+      this.emitBox(x, y, z, blk, st, [o, yy / 16, o, o + w16, (yy + h) / 16, o + w16], false);
+      yy += h;
+    }
+  }
+
+  // 13-BOSSES §2.2 — beacon: 2px obsidian base (cutout) + full glass shell +
+  // floating emissive core (both translucent via the water builder).
+  emitBeacon(x, y, z, blk, st) {
+    this.emitBox(x, y, z, blk, st, [0, 0, 0, 1, 2 / 16, 1], false);   // obsidian base slab (beacon_base = face 3)
+    const [sky, bl] = this.ownLight(x, y, z);
+    this.emitWaterCube(x, y, z, this.tileFor(blk, st, 4), sky, bl);   // glass shell (beacon_shell, side faces)
+    // floating 10³ emissive core
+    this.emitWaterBox(x, y, z, [3 / 16, 3 / 16, 3 / 16, 13 / 16, 13 / 16, 13 / 16], this.tileFor(blk, st, 2), sky, bl);
+  }
+
+  // A sub-cube box into the translucent water builder (beacon core).
+  emitWaterBox(x, y, z, box, tile, skyV, blkV) {
+    const bld = builders.water;
+    const [x0, y0, z0, x1, y1, z1] = box;
+    const uvr = this.tileUV, t4 = tile * 4;
+    const U0 = uvr[t4], V0 = uvr[t4 + 1], U1 = uvr[t4 + 2], V1 = uvr[t4 + 3];
+    const r = Math.round(skyV * 17), g = Math.round(blkV * 17);
+    for (let f = 0; f < 6; f++) {
+      const n = FACE_NORMALS[f];
+      const bcol = Math.round(255 * FACE_SHADE[f]);
+      bld.ensure(4, 6);
+      const verts = V4;
+      for (let c = 0; c < 4; c++) {
+        const co = FACE_CORNERS[f][c];
+        const px = co[0] ? x1 : x0, py = co[1] ? y1 : y0, pz = co[2] ? z1 : z0;
+        const uu = FACE_UVS[f][c][0], vv = FACE_UVS[f][c][1];
+        verts[c] = bld.vertex(x + px, y + py, z + pz, n[0], n[1], n[2],
+          U0 + (U1 - U0) * uu, V0 + (V1 - V0) * vv, r, g, bcol, 255);
+      }
+      bld.quad(verts[0], verts[1], verts[2], verts[3], false);
+    }
+    this.trackY(y + y0, y + y1);
   }
 
   // Full cube into the translucent water builder (end_gateway core).

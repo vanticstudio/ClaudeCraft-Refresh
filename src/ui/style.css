@@ -583,3 +583,34 @@ html, body {
 }
 #effect-stack .effect-icon.ambient { outline: 1px solid #6a9cff; }
 #effect-stack .ei-time { color: #b8b8b8; }
+
+/* 13-BOSSES §1 — boss-bar HUD (top-center, up to 3 stacked, sized in --px) */
+#boss-bars {
+  position: absolute;
+  left: 50%; top: calc(12 * var(--px));
+  transform: translateX(-50%);
+  display: flex; flex-direction: column; align-items: center;
+  gap: calc(6 * var(--px));
+  pointer-events: none;
+}
+.boss-bar { display: flex; flex-direction: column; align-items: center; transition: opacity 0.1s linear; }
+.boss-bar .bb-name {
+  color: #ffffff; text-shadow: 1px 1px 0 #000;
+  font-size: calc(6 * var(--px)); margin-bottom: calc(1 * var(--px));
+}
+.boss-bar .bb-track {
+  width: calc(182 * var(--px)); height: calc(5 * var(--px));
+  background: #3a3a3a; border: 1px solid #101010;
+}
+.boss-bar .bb-fill { height: 100%; width: 100%; }
+
+/* 13-BOSSES §9.4 — beacon power screen */
+.beacon-screen { position: absolute; left: calc(8 * var(--gpx)); top: calc(18 * var(--gpx)); width: calc(160 * var(--gpx)); display: flex; flex-direction: column; gap: calc(3 * var(--gpx)); }
+.beacon-hdr { color: #3f3f3f; font-size: calc(7 * var(--gpx)); font-weight: bold; }
+.beacon-row { display: flex; flex-wrap: wrap; gap: calc(2 * var(--gpx)); }
+.beacon-btn { padding: calc(2 * var(--gpx)) calc(4 * var(--gpx)); background: #8b8b8b; border: calc(1 * var(--gpx)) solid; border-color: #fefefe #565656 #565656 #fefefe; cursor: pointer; font-size: calc(6 * var(--gpx)); }
+.beacon-btn:hover { background: #a4c4e0; }
+.beacon-btn.sel { background: #6aa0d8; outline: calc(1 * var(--gpx)) solid #ffffff; }
+.beacon-btn.disabled { opacity: 0.4; cursor: not-allowed; }
+.beacon-confirm { margin-top: calc(2 * var(--gpx)); padding: calc(2 * var(--gpx)); text-align: center; background: #4a8f4a; color: #fff; border: calc(1 * var(--gpx)) solid; border-color: #8fe08f #2a5a2a #2a5a2a #8fe08f; cursor: pointer; font-size: calc(6 * var(--gpx)); }
+.beacon-confirm.disabled { opacity: 0.4; cursor: not-allowed; background: #6b6b6b; }

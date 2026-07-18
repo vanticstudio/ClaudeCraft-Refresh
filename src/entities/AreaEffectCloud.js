@@ -51,6 +51,9 @@ export class AreaEffectCloud extends Entity {
   applyTo(e) {
     if (this.effectPayload) {                                     // 13's direct payload
       const p = this.effectPayload;
+      // 13-BOSSES §6.5 — dragon-breath clouds deal direct magic damage (armor-ignoring),
+      // not a status effect.
+      if (p.damage) { if (e.hurt) e.hurt(p.damage, 'magic', {}); return; }
       if (p.instant) applyInstant(e, p.id, p.amp ?? 0, 0.5, this.owner);
       else addEffect(e, p.id, p.amp ?? 0, Math.floor((p.ticks ?? 0) / 4));
       return;

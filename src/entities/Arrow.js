@@ -82,6 +82,14 @@ export class Arrow extends Entity {
       // endermen dodge arrows (05 §8.5)
       if (target.tryDodgeProjectile?.()) {
         // treated as a miss; arrow keeps flying
+      } else if (target.tryDeflectArrow?.(this)) {
+        // 13-BOSSES §5.3/§8.9 — a perched dragon / armored wither reflects arrows:
+        // 0 damage, bounce v = −v×0.3 with jitter (target may set this.flame).
+        const j = () => (this.world.rng() - 0.5) * 0.2;
+        this.vel.x = -this.vel.x * 0.3 + j();
+        this.vel.y = -this.vel.y * 0.3 + j();
+        this.vel.z = -this.vel.z * 0.3 + j();
+        this.stuck = false; this.owner = null;
       } else {
         // 08 §5.9 Power — base 2 becomes 2 + 0.5L + 0.5 (§5.1); the crit bonus
         // then applies to the BOOSTED value (Java order). L=0 keeps the base ×2

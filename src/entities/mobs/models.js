@@ -153,6 +153,11 @@ const PAINT = {
     px(c, 0, Math.floor(s / 2), '#6e4a6e', s, 1);        // lid seam
     px(c, 5, 6, '#3a2a3a', 2, 2); px(c, 9, 6, '#3a2a3a', 2, 2);   // eyes
   },
+  // 13-BOSSES §2.5 — ender dragon + wither skins.
+  dragon_body: (c, s, r) => { noiseFill(c, s, '#101014', 6, r); px(c, 4, 5, '#e079fa', 2, 1); px(c, 10, 5, '#e079fa', 2, 1); px(c, 6, 9, '#4a3a5a', 4, 1); },
+  dragon_wing: (c, s, r) => { noiseFill(c, s, '#2a2033', 4, r); },
+  wither_body: (c, s, r) => { noiseFill(c, s, '#1c1c20', 8, r); for (let y = 2; y < s; y += 4) px(c, 0, y, '#0e0e12', s, 1); },
+  wither_head: (c, s, r) => { noiseFill(c, s, '#1c1c20', 8, r); px(c, 4, 5, '#3a3a3a', 2, 2); px(c, 10, 5, '#3a3a3a', 2, 2); px(c, 6, 10, '#3a3a3a', 4, 1); },
 };
 
 export function mobTexture(name) {

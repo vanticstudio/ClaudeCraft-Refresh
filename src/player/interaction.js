@@ -8,6 +8,7 @@ import { ITEMS, idOf } from '../registry/items.js';
 import { raycastBlocks } from '../world/raycast.js';
 import { LivingEntity } from '../entities/Entity.js';
 import { EyeOfEnder } from '../entities/EyeOfEnder.js';   // 11-END §3
+import { EndCrystal } from '../entities/EndCrystal.js';   // 13-BOSSES §3
 import { emitSound, startLoop, at } from '../audio/engine.js';
 import { AABB } from '../math/aabb.js';
 import { KEYBINDS } from '../constants.js';
@@ -229,8 +230,9 @@ export class Interaction {
     // multiplied (Java exact).
     let dmg = base * (0.2 + 0.8 * charge * charge);
 
+    // 13-BOSSES AMENDS 05 §13.4 — crits never apply to the dragon's part hitboxes.
     const crit = p.vel.y < 0 && !p.onGround && charge >= 0.848 &&
-                 !p.sprinting && !p.inWater && !p.onLadder;
+                 !p.sprinting && !p.inWater && !p.onLadder && !target.isDragonPart;
     if (crit) dmg *= 1.5;
     // 08 §5.4.1 — the enchBonus term. Added AFTER the crit multiply and scaled
     // linearly by charge, so it is never ×1.5'd (Java exact). Checklist:
@@ -731,6 +733,8 @@ export class Interaction {
     // 11-END §3/§5.2 — eye of ender: fill a targeted empty frame, else launch it
     // (overworld only). Handled before placement since it uses the block hit.
     if (held.kind === 'eye_of_ender') return this.useEyeOfEnder(hand, hit);
+    // 13-BOSSES §3.4 — end crystal places a crystal entity on obsidian/bedrock only.
+    if (held.kind === 'end_crystal') return this.useEndCrystal(hand, hit);
 
     // 3: placeable block. Per §7.3 a place that FAILS still consumes the
     // attempt and blocks the offhand — only "no block to place against" passes.
@@ -848,6 +852,14 @@ export class Interaction {
       case 'container': {
         const kind = block.id === B.HOPPER ? 'hopper' : block.id === B.DROPPER ? 'dropper' : 'dispenser';
         g.openContainer(kind, hit.x, hit.y, hit.z);
+        break;
+      }
+      // 13-BOSSES §4 — RMB the dragon egg teleports it (installed onUse).
+      case 'dragon_egg': block.onUse?.(this.world, hit.x, hit.y, hit.z); this.swing(); break;
+      // 13-BOSSES §9.4 — an ACTIVE beacon opens its power screen.
+      case 'beacon': {
+        const be = g.getBlockEntity(hit.x, hit.y, hit.z);
+        if (be?.data?.active) g.openContainer('beacon', hit.x, hit.y, hit.z);
         break;
       }
     }
@@ -974,6 +986,25 @@ export class Interaction {
     emitSound('eye_of_ender.launch', at(eye.x, eye.y, eye.z));
     if (!p.creative) p.consumeIn(hand, 1);
     this.swing();
+    return true;
+  }
+
+  // 13-BOSSES §3.4 — place an end crystal on the top face of obsidian/bedrock, with
+  // 2 air above and no entity in the 2x2x2 target; used for PvE + the respawn ritual.
+  useEndCrystal(hand, hit) {
+    const p = this.player, w = this.world, g = this.game;
+    if (!hit || hit.face[1] !== 1) return true;                 // top face only
+    const base = w.getBlock(hit.x, hit.y, hit.z);
+    if (base !== B.OBSIDIAN && base !== B.BEDROCK) return true;
+    const cx = hit.x, cy = hit.y + 1, cz = hit.z;
+    const clear = id => id === B.AIR || BLOCKS[id]?.replaceable;
+    if (!clear(w.getBlock(cx, cy, cz)) || !clear(w.getBlock(cx, cy + 1, cz))) return true;
+    const box = new AABB(cx - 0.5, cy, cz - 0.5, cx + 1.5, cy + 2, cz + 1.5);
+    if (g.entities.getEntitiesInBox(box, e => !e.dead && e !== p && e.type !== 'end_crystal').length) return true;
+    g.entities.add(new EndCrystal(w, cx, cy, cz, { hasBase: false, playerPlaced: true }));
+    if (!p.creative) p.consumeIn(hand, 1);
+    this.swing();
+    g.endFight?.checkRitual?.(w.seedString);   // §7.11 — may start the respawn ritual
     return true;
   }
 
@@ -1360,10 +1391,25 @@ export class Interaction {
   }
 
   // §11.1 — RMB an empty bottle at water → a water bottle (source not consumed).
+  // 13-BOSSES §6.5 — RMB inside a dragon breath cloud → bottle the dragon_breath.
   fillBottle(hand) {
+    const p = this.player;
+    const e = this.eyePos();
+    const box = new AABB(e.x - 8, e.y - 8, e.z - 8, e.x + 8, e.y + 8, e.z + 8);
+    const cloud = this.game.entities.getEntitiesInBox(box,
+      x => x.type === 'area_effect_cloud' && !x.dead && x.effectPayload?.damage)   // dragon-breath clouds carry {damage}
+      .find(c => { const dx = e.x - c.pos.x, dz = e.z - c.pos.z; return dx * dx + dz * dz <= c.radius * c.radius && Math.abs(e.y - c.pos.y) <= 2; });
+    if (cloud) {
+      p.consumeIn(hand, 1);
+      const breath = { id: idOf('dragon_breath'), count: 1 };
+      if (p.give(breath) > 0) this.game.throwStack(breath);
+      cloud.radius = Math.max(0, cloud.radius - 0.5);
+      emitSound('item.bottle.fill', null);
+      this.swing();
+      return;
+    }
     const hit = this.rayHit(this.reach(), { fluidMode: true });
     if (!hit || this.world.getBlock(hit.x, hit.y, hit.z) !== B.WATER) return;
-    const p = this.player;
     p.consumeIn(hand, 1);
     const water = { id: idOf('potion'), count: 1, tags: { potionId: 'water' } };
     if (p.give(water) > 0) this.game.throwStack(water);

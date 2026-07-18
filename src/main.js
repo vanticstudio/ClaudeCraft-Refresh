@@ -11,6 +11,7 @@ import { Game } from './Game.js';
 import { createRenderer } from './render/renderer.js';
 import { Input } from './player/input.js';
 import { Hud } from './ui/hud.js';
+import { BossBar } from './ui/BossBar.js';
 import { Menus } from './ui/menus.js';
 import { Containers } from './ui/containers.js';
 import { DebugOverlay } from './ui/debug.js';
@@ -45,6 +46,7 @@ async function boot() {
 
   // ---------------- UI ----------------
   const hud = new Hud(game, overlayEl);
+  const bossBar = new BossBar(overlayEl);   // 13-BOSSES §1 — mounts inside Hud's #boss-bars
   const debug = new DebugOverlay(game, overlayEl);
   const containers = new Containers(game, screensEl);
 
@@ -98,7 +100,7 @@ async function boot() {
   menus.setHasSave(save.hasWorld());
 
   game.ui = {
-    hud, menus, containers, debug,
+    hud, bossBar, menus, containers, debug,
     toast: msg => hud.toast(msg),
     setSleepFade: on => hud.setSleepFade(on),
     setLoadingProgress: (m, n) => menus.setLoadingProgress(m, n),

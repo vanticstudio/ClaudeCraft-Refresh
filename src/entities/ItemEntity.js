@@ -96,7 +96,8 @@ export class ItemEntity extends Entity {
   tick() {
     this.baseTick();
     if (this.pickupDelay > 0) this.pickupDelay--;
-    if (this.age >= this.despawnAge) { this.dead = true; return; }
+    // 13-BOSSES AMENDS 06 §16 — the nether_star item entity never despawns.
+    if (this.age >= this.despawnAge && !ITEMS.get(this.stack?.id)?.neverDespawn) { this.dead = true; return; }
 
     this.updateMedium();
     // 10-NETHER §9.4 — netherite items (lavaImmune) are not destroyed by lava,

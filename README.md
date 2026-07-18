@@ -75,6 +75,30 @@ autosaves to the browser's IndexedDB every 30 seconds — close the tab and
 
 *This section is updated as new features land.*
 
+- **2026-07-19** — **Bosses & the beacon (expansion phase E11, `13`)**: the two
+  boss fights and the beacon are in. Enter The End and the **ender dragon** is
+  waiting — 200 HP, circling the pillars, healed by the **10 end crystals** perched
+  on top (a white beam links each to the dragon; shoot a crystal and it detonates in
+  a huge blast and stops the healing). The dragon dives to **perch** on the exit
+  portal and breathes a cloud of purple **dragon's breath** (bottle it with a glass
+  bottle — the only survival source of lingering potions), **strafes** you with
+  fireballs, and **charges** if you keep your distance; its head takes full damage,
+  its body shrugs most off, and while perched arrows just bounce off — melee its head.
+  Kill it and it rises and disintegrates over ten seconds, showering **12,000 XP**,
+  filling the exit portal home, dropping the **dragon egg** trophy (click it and it
+  teleports away), and opening an **end gateway** to the outer islands. Place four
+  crafted **end crystals** on the portal frame to **respawn** it. Meanwhile, build a
+  **wither**: a T of four soul-sand blocks topped with three **wither-skeleton skulls**
+  (place the last skull to trigger it). It's born invulnerable, charging for eleven
+  seconds, then detonates in the game's biggest explosion and starts hunting — 300 HP,
+  three heads firing skulls that inflict **Wither** (your hearts turn black and drain,
+  and it *can* kill you), eating through walls (even obsidian, with the blue skulls),
+  and turning **arrow-proof** below half health. Beat it for the **nether star** to
+  craft a **beacon**: stack a pyramid of iron/gold/diamond/emerald/netherite blocks
+  under it (9/34/83/164 blocks for tiers 1–4), give it a clear view of the sky, and
+  its beam shoots to the sky while it grants everyone nearby **Speed, Haste,
+  Resistance, Jump Boost, Strength, or Regeneration** — pay one ingot to lock in your
+  choice.
 - **2026-07-18** — **The End: strongholds, elytra, shulkers (expansion phase E10, `11`)**:
   the endgame is in. Craft an **eye of ender** (ender pearl + blaze powder) and throw
   it — it climbs and drifts toward the world's one **stronghold** (a stone-brick maze

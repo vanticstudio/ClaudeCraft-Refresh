@@ -4,6 +4,98 @@ Deviations and ambiguity rulings. (The base-spec `.md` files were removed from
 the working tree during repo cleanup; the pre-UPDATE deviation log for the
 initial build lives in git history — `git show 8441ac9:DEVIATIONS.md`.)
 
+## E11 — 13-BOSSES + beacon (2026-07-19)
+
+Built on E10's End arena + E7's wither skulls/soul blocks + E9's status engine.
+Adds blocks 185–187 (dragon_egg, wither_skeleton_skull, beacon), items 450–452
+(nether_star, end_crystal, dragon_breath — which closes E9's survival lingering
+potions + tipped arrows), the boss bar, end crystals, the ender dragon (+ 8-state
+phase machine, 2-box multipart hurtbox, death sequence, respawn ritual), the wither,
+and the beacon.
+
+**The 11↔13 arena interface was MISSING and added here.** E10 exported only the
+platform + `endPillars`/`endGatewayPositions`; 13 needs `pillarPositions(seed)`,
+`EXIT_PORTAL`, `EGG_CELL`, `activateExitPortal(game)`, `spawnGateway(game,seed,n)`,
+and `regenerateSpike(game,seed,k)` — all added to `src/world/endArena.js`.
+
+**The flagged death-path finding is reconciled.** `onDeath` (death sound + drops +
+XP) fires only via `LivingEntity.die()` when health≤0; every direct `dead=true`
+(creeper detonation, void-reap, despawn, chunk-unload) bypasses it. Both bosses die
+through the proper pipeline (the wither's fatal hit → die → onDeath spawns the
+nether star + 50 XP; the dragon runs its own §7.9 death sequence, never a raw
+`dead=true`). The creeper detonation now emits `mob.creeper.death` before removal
+(the pre-existing "no death sound" bug the finding named).
+
+**Gates verified** (11/11 headless + node): the dragon fight spawns (10 crystals,
+200 HP, HOLDING) and a fatal blow runs the death sequence — dragon egg at the
+pedestal, exit portal activated (8 bed cells), a seeded gateway placed, ~11 XP-orb
+drops (first-kill 12000 schedule), `dragonAlive=false`; the 4-soul + 3-skull T
+(skull last) summons a wither that drops exactly 1 nether star; a full 4-tier iron
+pyramid reads level 4 with a clear sky and an active beacon grants Strength II; the
+boss bar renders; any 1-damage hit detonates an end crystal.
+
+Deviations / simplifications (HIGH tier — the three gates + the arena handoff +
+persistence are exact; the fights are functional with compressed fidelity):
+
+1. **Dragon multipart hurtbox is 2 boxes** (headBox 1³, bodyBox 4×3×4) instead of
+   vanilla's 8 sub-hitboxes (§6.2 stated adaptation): head hit = full damage, body
+   hit = raw/4 + min(1,raw). Crits never apply to parts (isDragonPart), non-player/
+   non-explosion sources are zeroed.
+2. **Dragon flight/model are simplified.** The 12-node ring + ≤4°/tick steering
+   drives all phases; the box model (body + wings + neck + head) is recognizable but
+   not the full 40+ part rig. Terrain destruction (no drops, dragonImmune set) and
+   the crystal healing link (±32 cuboid, +2 HP/s, 10-HP link-kill → STRAFING) are
+   implemented; some phase timers/odds are approximated where the wiki is vague.
+3. **Boss beams/rays are cosmetic-light**: the crystal→dragon healing beam and the
+   death light-rays render minimally (or as particle cues); the exact camera-facing
+   additive quad strips (§3.3/§7.9) are approximated.
+4. **The dragon is not a chunk entity** — it lives in `game.dimMeta[2].endFight` and
+   is ticked/rendered by an `EndFight` manager only while `activeDim===2`, dodging
+   the EntityManager freeze. Its two DragonParts ARE in the EntityManager (so attacks
+   hit them) and are `isBoss`-exempt from freeze/reap. The dragon write-throughs its
+   snapshot each tick; `maybeRespawnDragon` rebuilds it on load.
+5. **Wither block-eating + skull combat are full** (3×4×3 100%-drop hole on damage,
+   witherImmune set; center-head 40-tick aimed shots, side-head cooldown/blueCounter
+   spray, armored arrow-deflect below 150 HP). The 3-headed independent-target model
+   is simplified to shared/primary targeting where per-head tracking added little.
+6. **Blue wither skulls break obsidian** via a new `game.explodeBlast0` (blast-0
+   override; bedrock/portal survive the hardness<0 guard). Dragon-breath clouds deal
+   6 HP armor-ignoring magic via an `AreaEffectCloud.applyTo` `{damage}` payload
+   extension. `dragon_breath` is bottled by RMB-ing a glass_bottle inside a cloud.
+7. **Beacon effects reuse 09's already-wired gameplay** (Haste ×1.2/1.4 mining,
+   Strength +3/+6, Resistance ×0.8/0.6, Jump Boost, Regen) — the beacon only grants
+   them (ambient-flagged, players only, box ±range × down-range-up-to-sky, 80-tick
+   cadence). The GUI is a clickable button screen (level-gated primary, L4 secondary
+   Regen/Primary-II, 1-item payment slot, confirm) rather than the exact vanilla
+   sprite sheet. The beam is rendered light (beam constants exported; a full
+   two-prism mesh is a cosmetic follow-up).
+8. **Respawn ritual** (§7.11): 4 player-placed crystals on the exit-portal rim cells
+   start the 604-tick sequence (pillars regenerate via `regenerateSpike`, dragon
+   respawns, ritual crystals detonate). Beam sweep visuals are minimal.
+9. **Sounds** (§11): the entity type is `ender_dragon`, so `mob.ender_dragon.*` is
+   aliased onto the `dragon` voice; boss + beacon one-shots (spawn/shoot/break_block/
+   flap/growl/activate/deactivate/ambient/power_select/end_portal.spawn) registered.
+10. **Textures/models are procedural** (dragon_egg/skull/beacon block tiles, nether_
+    star/end_crystal/dragon_breath item sprites, dragon/wither mob skins). No
+    SAVE_VERSION/DB_VERSION bump (endFight/wither/crystal/beacon records are additive).
+
+An Opus review confirmed the gates, persistence, beacon, explodeBlast0, and death
+paths clean, and caught 6 real bugs — all fixed and re-verified: (1) the dragon
+fireball burst on the dragon's own head part on tick 1 (STRAFING was dead) — now
+excludes isDragonPart; (2) the wither duplicated on a chunk unload→reload (isBoss
+kept it live AND it was saved) — the boss unload-exemption is removed so the wither
+saves+freezes as a normal chunk entity (verified: 1 wither across a dimension
+round-trip); (3) a live wither followed the player through a portal — same fix, plus
+`changeActiveDimension` nulls the live dragon (it re-hydrates via
+`maybeRespawnDragon` on return); (4) the dragon boss bar lingered after leaving the
+End — `changeActiveDimension` now clears all bars (verified: only the wither's own
+bar remains); (6) two skull/fireball sounds used `entity.*` ids that don't resolve —
+retargeted to registered ids; (7) the wither's arrow-deflect double-negated the
+arrow velocity — it now returns the bool and lets the Arrow hook do the reflection.
+The dragon re-creates its two DragonParts each tick if reaped, so it stays hittable
+across arena chunk churn. (The §7.11 ritual crystals detonating power-6 is spec-
+faithful — an intended hazard; left as-is.)
+
 ## E10 — 11-END: stronghold, End dim, cities, shulkers, elytra (2026-07-18)
 
 Built on E7's committed dimension engine. **The CRITICAL constraint held**: dim 2

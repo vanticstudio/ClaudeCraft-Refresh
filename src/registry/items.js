@@ -266,6 +266,14 @@ defItem(423, 'shulker_shell', {});                       // §9.1 shulker drop
 // elytra: chest-slot armor, 0 defense; glide via §10. flightEnabled once durability>1.
 defItem(424, 'elytra', { kind: 'armor', stack: 1, durability: 432, armorSlot: 1, armorPoints: 0, toughness: 0, elytra: true });
 
+// --- 13-BOSSES §2.3 — boss items (450-452) ---
+// nether_star: wither drop; its item entity never despawns (AMENDS 06 §16).
+defItem(450, 'nether_star', { neverDespawn: true });
+// end_crystal: places a crystal entity on obsidian/bedrock only (§3.4).
+defItem(451, 'end_crystal', { kind: 'end_crystal', stack: 64 });
+// dragon_breath: bottled from a breath cloud (§6.5); 09's splash→lingering modifier.
+defItem(452, 'dragon_breath', {});
+
 export const idOf = name => {
   const v = NAME_TO_ID.get(name);
   if (v === undefined) throw new Error(`unknown item/block name: ${name}`);
@@ -367,6 +375,10 @@ shaped(B.PURPUR_BLOCK, 4, ['PP', 'PP'], { P: [422] });            // popped_chor
 shaped(B.PURPUR_PILLAR, 2, ['B', 'B'], { B: [B.PURPUR_BLOCK] });
 shaped(B.END_ROD, 4, ['B', 'P'], { B: [391], P: [422] });         // blaze_rod + popped
 shaped(B.SHULKER_BOX, 1, ['S', 'C', 'S'], { S: [423], C: [B.CHEST] });
+
+// ========================= 13-BOSSES §2.4 — crafting =========================
+shaped(B.BEACON, 1, ['GGG', 'GNG', 'OOO'], { G: [B.GLASS], N: [450], O: [B.OBSIDIAN] });   // glass/nether_star/obsidian
+shaped(451, 1, ['GGG', 'GEG', 'GTG'], { G: [B.GLASS], E: [420], T: [394] });               // end_crystal = glass/eye_of_ender/ghast_tear
 
 // --- 10-NETHER §1.3 ---
 // §9: 4 netherite_scrap + 4 gold_ingot → 1 netherite_ingot (shapeless); block ↔ 9 ingot

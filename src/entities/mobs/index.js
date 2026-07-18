@@ -12,9 +12,10 @@ import { Ghast } from './nether/Ghast.js';
 import { Blaze, ZombifiedPiglin, WitherSkeleton, MagmaCube, Piglin } from './nether/mobs.js';
 import { Villager, IronGolem, ZombieVillager } from './villager.js';
 import { Shulker } from './Shulker.js';   // 11-END §9
+import { Wither } from './Wither.js';     // 13-BOSSES §8
 
 export const HOSTILE_TYPES = new Set(['zombie', 'skeleton', 'creeper', 'spider', 'enderman',
-  'ghast', 'blaze', 'wither_skeleton', 'magma_cube', 'zombie_villager', 'shulker']);   // golem/villager neutral
+  'ghast', 'blaze', 'wither_skeleton', 'magma_cube', 'zombie_villager', 'shulker']);   // golem/villager/boss neutral
 
 const CTORS = {
   zombie: Zombie, skeleton: Skeleton, creeper: Creeper, spider: Spider,
@@ -23,6 +24,7 @@ const CTORS = {
   wither_skeleton: WitherSkeleton, magma_cube: MagmaCube, piglin: Piglin,
   villager: Villager, iron_golem: IronGolem, zombie_villager: ZombieVillager,   // 12-VILLAGES
   shulker: Shulker,   // 11-END §9
+  wither: Wither,     // 13-BOSSES §8 (restore path; summoned imperatively)
 };
 
 export function createMob(world, type, x, y, z, opts = {}) {
