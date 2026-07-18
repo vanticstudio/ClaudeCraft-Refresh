@@ -19,6 +19,7 @@ uniform float uSkyDarken;
 uniform vec3 uSkyTint;
 uniform vec3 uFogColor; uniform float uFogNear; uniform float uFogFar;
 uniform float uAlphaTest; uniform float uAlpha;
+uniform float uDimAmbient;
 varying vec2 vUv; varying vec4 vCol; varying float vDist;
 const vec3 BLOCK_TINT = vec3(1.00, 0.89, 0.69);
 const float AMBIENT_FLOOR = ${AMBIENT_FLOOR.toFixed(3)};
@@ -31,6 +32,8 @@ void main() {
   if (tex.a < uAlphaTest) discard;
   float effSky = max(vCol.r * 15.0 - uSkyDarken, 0.0);
   vec3 light = max(brightness(vCol.g * 15.0) * BLOCK_TINT, brightness(effSky) * uSkyTint);
+  // 10-NETHER §13.1 — per-dimension ambient floor; no cell renders below it.
+  light = max(light, vec3(uDimAmbient));
   vec3 rgb = tex.rgb * light * vCol.b;
   float fog = smoothstep(uFogNear, uFogFar, vDist);
   gl_FragColor = vec4(mix(rgb, uFogColor, fog), tex.a * uAlpha * vCol.a);
@@ -44,6 +47,8 @@ export const sharedUniforms = {
   uFogColor: { value: new THREE.Color(0.75, 0.85, 1.0) },
   uFogNear: { value: 96 },
   uFogFar: { value: 128 },
+  // 10-NETHER §13.1 — per-dimension ambient floor (Nether 0.10).
+  uDimAmbient: { value: 0.0 },
 };
 
 export function createChunkMaterials(atlasTexture) {

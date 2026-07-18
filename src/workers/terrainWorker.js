@@ -4,17 +4,22 @@
 // blocks/heightMap/biomes buffers TRANSFERRED (zero-copy).
 
 import { createGenerator } from '../world/gen/terrain.js';
+import { createNetherGenerator } from '../world/gen/nether.js';
 
-let gen = null;
+let gen = null;          // overworld (dim 0)
+let netherGen = null;    // 10-NETHER dim 1
 
 self.onmessage = (e) => {
   const msg = e.data;
   if (msg.type === 'init') {
     gen = createGenerator(msg.seed);
+    netherGen = createNetherGenerator(msg.seed);   // §2.2 — disjoint stream namespace
     self.postMessage({ type: 'ready', worldSpawn: gen.findWorldSpawn() });
   } else if (msg.type === 'generate') {
     try {
-      const r = gen.generateChunk(msg.cx, msg.cz);
+      // §2.2 — dispatch gen by dimension. (dim 2 / End is 11's.)
+      const g = msg.dim === 1 ? netherGen : gen;
+      const r = g.generateChunk(msg.cx, msg.cz);
       self.postMessage(
         {
           type: 'chunk', cx: msg.cx, cz: msg.cz, jobId: msg.jobId,

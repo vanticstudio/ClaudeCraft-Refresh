@@ -59,6 +59,8 @@ const NO_BLOCK_ITEM = new Set([
   // 07 §2: wire places from item 342; the lit lamp/piston head place from their
   // base ids, never as their own block-item.
   B.REDSTONE_WIRE, B.REDSTONE_LAMP_LIT, B.PISTON_HEAD,
+  // 10-NETHER §1.1 — no survival block-item.
+  B.NETHER_PORTAL, B.SPAWNER, B.NETHER_WART,
 ]);
 const DEBUG_ONLY = new Set([B.BEDROCK, B.GLOWSTONE, B.WOOL_RED, B.WOOL_BLUE, B.WOOL_BLACK]);
 
@@ -192,6 +194,18 @@ defItem(345, 'oak_door', { kind: 'door', placesAs: 'door' });
 // action for it and passes to the offhand (08 §7.3).
 defItem(346, 'enchanted_book', { stack: 1 });
 
+// --- 10-NETHER §1.2 — brewing ingredients + materials (390-419). Netherite
+// tier (398-408) is E8; only the non-tier items are defined here now. ---
+defItem(390, 'nether_wart', { plantsCrop: B.NETHER_WART });   // plants crop 138 on soul_sand
+defItem(391, 'blaze_rod', { fuel: 2400 });                    // brewing stand (09); fuel
+defItem(392, 'blaze_powder', {});
+defItem(393, 'magma_cream', {});
+defItem(394, 'ghast_tear', {});
+defItem(395, 'glowstone_dust', {});
+defItem(396, 'gold_nugget', {});
+defItem(397, 'nether_quartz', {});
+defItem(409, 'nether_brick', {});                             // smelt netherrack; nether_bricks family
+
 export const idOf = name => {
   const v = NAME_TO_ID.get(name);
   if (v === undefined) throw new Error(`unknown item/block name: ${name}`);
@@ -244,6 +258,18 @@ shaped(B.SNOW_LAYER, 6, ['SSS'], { S: [B.SNOW_BLOCK] });
 shaped(B.WOOL_WHITE, 1, ['SS', 'SS'], { S: [327] });
 shaped(B.COAL_BLOCK, 1, ['CCC', 'CCC', 'CCC'], { C: [319] });   // coal only, NOT charcoal
 shaped(B.IRON_BLOCK, 1, ['III', 'III', 'III'], { I: [322] });
+
+// --- 10-NETHER §1.3 (netherite tier recipes are E8) ---
+shapeless(392, 2, [[391]]);                                    // blaze_rod → 2 blaze_powder
+shaped(B.GLOWSTONE, 1, ['DD', 'DD'], { D: [395] });            // glowstone_dust → block 32
+shapeless(396, 9, [[324]]);                                    // gold_ingot → 9 gold_nugget
+shaped(324, 1, ['NNN', 'NNN', 'NNN'], { N: [396] });           // 9 gold_nugget → gold_ingot
+shaped(B.NETHER_BRICKS, 1, ['RR', 'RR'], { R: [409] });        // 4 nether_brick → nether_bricks
+shaped(B.NETHER_BRICK_FENCE, 6, ['BRB', 'BRB'], { B: [B.NETHER_BRICKS], R: [409] });
+shaped(B.NETHER_BRICK_STAIRS, 4, ['B..', 'BB.', 'BBB'], { B: [B.NETHER_BRICKS] });
+shapeless(B.CRIMSON_PLANKS, 4, [[B.CRIMSON_STEM]]);
+shapeless(B.WARPED_PLANKS, 4, [[B.WARPED_STEM]]);
+shaped(B.SMITHING_TABLE, 1, ['II', 'PP', 'PP'], { I: [322], P: [...PLANKS, B.CRIMSON_PLANKS, B.WARPED_PLANKS] });
 shaped(B.GOLD_BLOCK, 1, ['GGG', 'GGG', 'GGG'], { G: [324] });
 shaped(B.DIAMOND_BLOCK, 1, ['DDD', 'DDD', 'DDD'], { D: [325] });
 shapeless(319, 9, [[B.COAL_BLOCK]]);
@@ -320,6 +346,10 @@ export const SMELTING = new Map([
   [323, { out: 324, xp: 1.0 }],       // raw_gold → gold_ingot
   [B.SAND, { out: B.GLASS, xp: 0.1 }],
   [B.COBBLESTONE, { out: B.STONE, xp: 0.1 }],
+  // 10-NETHER §1.4 (ancient_debris → scrap is E8)
+  [B.NETHERRACK, { out: 409, xp: 0.1 }],       // netherrack → nether_brick
+  [B.NETHER_GOLD_ORE, { out: 324, xp: 1.0 }],  // silk-touched ore → gold_ingot
+  [B.NETHER_QUARTZ_ORE, { out: 397, xp: 0.2 }],
   [B.OAK_LOG, { out: 320, xp: 0.15 }],
   [B.BIRCH_LOG, { out: 320, xp: 0.15 }],
   [B.SPRUCE_LOG, { out: 320, xp: 0.15 }],

@@ -344,6 +344,43 @@ P.grindstone_side = (c, x, y, r) => {                     // wheel side
 
 P.grindstone_tread = (c, x, y, r) => noise(c, x, y, r, '#7f7f7f', 8);
 
+// ============ 10-NETHER §11 block textures ============
+const netherrackBase = (c, x, y, r) => speckle(c, x, y, r, '#6e2727', '#571d1d', 12);
+P.netherrack = netherrackBase;
+P.nether_bricks = (c, x, y, r) => { blotch(c, x, y, r, '#2e1416', '#241012', 6); for (let yy = 0; yy < 16; yy += 4) rect(c, x, y, 0, yy, 16, 1, '#4a2226'); };
+P.soul_sand = (c, x, y, r) => { blotch(c, x, y, r, '#463430', '#34251f', 8); rect(c, x, y, 4, 5, 3, 3, '#241a15'); rect(c, x, y, 9, 8, 3, 3, '#241a15'); };
+P.soul_soil = (c, x, y, r) => { noise(c, x, y, r, '#4a3a33', 8); for (let i = 0; i < 6; i++) rect(c, x, y, r() * 14, r() * 14, 1, 2, '#33251f'); };
+P.magma_block = (c, x, y, r) => blotch(c, x, y, r, '#8a2b12', '#d45a12', 10);
+P.nether_quartz_ore = (c, x, y, r) => { netherrackBase(c, x, y, r); oreTile(c, x, y, r, '#e8e0d8'); };
+P.nether_gold_ore = (c, x, y, r) => { netherrackBase(c, x, y, r); oreTile(c, x, y, r, '#fcee4b'); };
+P.ancient_debris_top = (c, x, y, r) => { noise(c, x, y, r, '#4a3a34', 8); rings(c, x, y, r, '#5a463c', '#c08a5a'); };
+P.ancient_debris_side = (c, x, y, r) => { noise(c, x, y, r, '#4a3a34', 8); rect(c, x, y, 4, 6, 8, 4, '#c08a5a'); };
+P.crimson_nylium = (c, x, y, r) => { noise(c, x, y, r, '#7a1030', 10); speckle(c, x, y, r, '#7a1030', '#a51843', 6); };
+P.warped_nylium = (c, x, y, r) => { noise(c, x, y, r, '#167a6e', 10); speckle(c, x, y, r, '#167a6e', '#1aa58f', 6); };
+P.crimson_stem = (c, x, y, r) => bark(c, x, y, r, '#6a2033', '#4a1626');
+P.crimson_stem_top = (c, x, y, r) => rings(c, x, y, r, '#8a2942', '#6a2033');
+P.warped_stem = (c, x, y, r) => bark(c, x, y, r, '#2b6d63', '#1e4d46');
+P.warped_stem_top = (c, x, y, r) => rings(c, x, y, r, '#37867a', '#2b6d63');
+P.crimson_planks = (c, x, y, r) => planks(c, x, y, r, '#7a3a4a');
+P.warped_planks = (c, x, y, r) => planks(c, x, y, r, '#3a6b64');
+P.nether_wart_block = (c, x, y, r) => { noise(c, x, y, r, '#7a0a15', 10); for (let i = 0; i < 20; i++) rect(c, x, y, r() * 15, r() * 15, 1, 1, '#a01824'); };
+P.warped_wart_block = (c, x, y, r) => { noise(c, x, y, r, '#167a6e', 8); speckle(c, x, y, r, '#167a6e', '#0e8a4a', 8); };
+P.shroomlight = (c, x, y, r) => blotch(c, x, y, r, '#f5a83c', '#d47a1a', 8);
+P.crimson_fungus = (c, x, y) => { rect(c, x, y, 7, 8, 2, 6, '#7a5b3a'); rect(c, x, y, 5, 5, 6, 3, '#c42d2d'); };
+P.warped_fungus = (c, x, y) => { rect(c, x, y, 7, 8, 2, 6, '#5a6b3a'); rect(c, x, y, 5, 5, 6, 3, '#3aa58f'); };
+P.crimson_roots = (c, x, y) => { for (let i = 0; i < 5; i++) rect(c, x, y, 3 + i * 2, 8, 1, 5, '#8a1030'); };
+P.warped_roots = (c, x, y) => { for (let i = 0; i < 5; i++) rect(c, x, y, 3 + i * 2, 8, 1, 5, '#1aa58f'); };
+P.nether_wart_0 = (c, x, y) => { for (let i = 0; i < 3; i++) rect(c, x, y, 4 + i * 4, 11, 1, 3, '#7a0a15'); };
+P.nether_wart_1 = (c, x, y) => { for (let i = 0; i < 4; i++) rect(c, x, y, 3 + i * 3, 8, 2, 6, '#7a0a15'); };
+P.nether_wart_2 = (c, x, y) => { for (let i = 0; i < 4; i++) { rect(c, x, y, 3 + i * 3, 5, 2, 9, '#7a0a15'); rect(c, x, y, 3 + i * 3, 5, 2, 2, '#a01824'); } };
+P.bone_block_top = (c, x, y, r) => rings(c, x, y, r, '#d8d3bd', '#b8b19a');
+P.bone_block_side = (c, x, y) => { for (let xx = 0; xx < 16; xx += 3) rect(c, x, y, xx, 0, 2, 16, '#e0dccb'); };
+P.nether_portal = (c, x, y, r) => { solid(c, x, y, '#280b3b'); for (let i = 0; i < 30; i++) rect(c, x, y, r() * 15, r() * 15, 1, 1, r() < 0.5 ? '#b061e0' : '#e0a0ff'); };
+P.spawner = (c, x, y, r) => { noise(c, x, y, r, '#2a2a30', 8); for (let xx = 2; xx < 15; xx += 4) rect(c, x, y, xx, 0, 1, 16, '#1f2a1f'); for (let yy = 2; yy < 15; yy += 4) rect(c, x, y, 0, yy, 16, 1, '#1f2a1f'); rect(c, x, y, 6, 6, 4, 4, '#f5a83c'); };
+P.netherite_block = (c, x, y, r) => { noise(c, x, y, r, '#443f42', 4); border(c, x, y, '#2a2528'); for (const [xx, yy] of [[2, 2], [13, 2], [2, 13], [13, 13]]) rect(c, x, y, xx, yy, 1, 1, '#6a5f5a'); };
+P.smithing_table_top = (c, x, y, r) => { noise(c, x, y, r, '#3a3336', 8); rect(c, x, y, 5, 5, 6, 6, '#8a8a8a'); };
+P.smithing_table_side = (c, x, y, r) => { planks(c, x, y, r, '#5a4436'); rect(c, x, y, 0, 6, 16, 3, '#2a2528'); };
+
 P.crafting_table_top = (c, x, y, r) => {
   planks(c, x, y, r, '#a76e35');
   for (let i = 0; i < 16; i++) {
@@ -1068,6 +1105,45 @@ function ingot(color, shade, hi) {
 }
 P.item_iron_ingot = ingot('#d8d8d8', '#a8a8a8', '#f0f0f0');
 P.item_gold_ingot = ingot('#f9ec4e', '#d4b82a', '#fdf7a0');
+
+// ---- 10-NETHER item sprites ----
+P.item_nether_wart = (c, x, y) => {
+  disc(c, x, y, 8, 9, 4, '#8a0a15');
+  px(c, x, y, 6, 7, '#c0202c'); px(c, x, y, 10, 8, '#c0202c');
+  px(c, x, y, 8, 4, '#5a0710'); px(c, x, y, 9, 5, '#5a0710');
+};
+P.item_blaze_rod = (c, x, y) => {
+  for (let i = 0; i < 11; i++) { px(c, x, y, 4 + i, 12 - i, '#f5c518'); px(c, x, y, 5 + i, 12 - i, '#e88a10'); }
+  px(c, x, y, 4, 12, '#fff2a0'); px(c, x, y, 14, 2, '#fff2a0');
+};
+P.item_blaze_powder = (c, x, y, r) => {
+  for (let i = 0; i < 26; i++) px(c, x, y, 3 + (r() * 10 | 0), 3 + (r() * 10 | 0), r() < 0.5 ? '#f5a020' : '#f5d030');
+};
+P.item_magma_cream = (c, x, y) => {
+  disc(c, x, y, 8, 8, 4, '#3a2a1a');
+  px(c, x, y, 6, 6, '#f5a020'); px(c, x, y, 9, 7, '#f5c518'); px(c, x, y, 7, 9, '#e88a10');
+};
+P.item_ghast_tear = (c, x, y) => {
+  disc(c, x, y, 8, 9, 3, '#cfeae0');
+  px(c, x, y, 8, 4, '#eafaf4'); px(c, x, y, 8, 5, '#dff5ee');
+  px(c, x, y, 7, 8, '#f4fefb');
+};
+P.item_glowstone_dust = (c, x, y, r) => {
+  for (let i = 0; i < 24; i++) px(c, x, y, 3 + (r() * 10 | 0), 3 + (r() * 10 | 0), r() < 0.5 ? '#f5e07a' : '#e0b840');
+};
+P.item_gold_nugget = (c, x, y) => {
+  disc(c, x, y, 8, 8, 3, '#f9ec4e');
+  px(c, x, y, 7, 7, '#fdf7a0'); px(c, x, y, 9, 9, '#d4b82a');
+};
+P.item_nether_quartz = (c, x, y) => {
+  disc(c, x, y, 8, 8, 4, '#e8e0d8');
+  px(c, x, y, 6, 6, '#ffffff'); px(c, x, y, 9, 9, '#c8bcae'); px(c, x, y, 10, 6, '#f4efe8');
+};
+P.item_nether_brick = (c, x, y) => {
+  rect(c, x, y, 4, 6, 8, 5, '#3a1a1c');
+  rect(c, x, y, 4, 8, 8, 1, '#5a2a2e');
+  px(c, x, y, 4, 6, '#5a2a2e'); px(c, x, y, 11, 10, '#241012');
+};
 P.item_diamond = (c, x, y) => {
   const d = '#4aedd9', s = '#2bbfae', w = '#d8fff8';
   rect(c, x, y, 5, 4, 6, 2, d);

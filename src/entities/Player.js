@@ -16,6 +16,7 @@ import {
   currentXp, splitmix32, subtractLevels, xpToNext as xpToNextPoints,
 } from '../items/xp.js';
 import { epfMultiplier, rollThorns, fireTicksAfterProtection } from '../items/effects.js';
+import { tickPortal } from '../world/Portal.js';
 
 const DEG = Math.PI / 180;
 
@@ -532,6 +533,10 @@ export class Player extends LivingEntity {
       ? (this.sprinting ? 1.21 : 1.10)          // 1.10² for sprint-fly (approx)
       : (this.sprinting ? 1.10 : 1.0);
     this.fovScale += (targetFov - this.fovScale) * 0.5;
+
+    // 10-NETHER §3.4 — the portal transfer timer (standing in a portal for 80 t
+    // changes dimension). Only runs in PLAYING (skipped mid-load).
+    if (this.world.game?.state === 'PLAYING') tickPortal(this.world.game);
   }
 
   // -------------------------------------------------- movement branches
@@ -909,6 +914,7 @@ export class Player extends LivingEntity {
       pos: [this.pos.x, this.pos.y, this.pos.z],
       vel: [this.vel.x, this.vel.y, this.vel.z],
       yaw: this.yaw, pitch: this.pitch,
+      dimension: this.dim,        // 10-NETHER §2.4 — restore the active dim on load
       health: this.health,
       hunger: this.foodLevel, saturation: this.saturation, exhaustion: this.exhaustion,
       foodPoisonTicks: this.foodPoisonTicks,
@@ -933,6 +939,7 @@ export class Player extends LivingEntity {
 
   deserialize(rec) {
     super.deserialize(rec);
+    this.dim = rec.dimension ?? 0;        // 10-NETHER §2.4 — Game.startWorld reads this
     this.pitch = rec.pitch ?? 0;
     this.health = rec.health ?? 20;
     this.foodLevel = rec.hunger ?? 20;

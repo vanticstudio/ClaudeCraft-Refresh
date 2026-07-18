@@ -126,9 +126,10 @@ export class Music {
     const g = this.engine.game;
     if (!g || !g.world || !g.player) return 'overworld-day';
     if (g.bossActive) return 'boss';
-    const dim = g.world.dimension;
-    if (dim === 'nether') return 'nether';
-    if (dim === 'end') return 'end';
+    // 10-NETHER §2 — dims are numeric ids now (0 overworld / 1 nether / 2 end).
+    const dim = g.world.activeDim;
+    if (dim === 1) return 'nether';
+    if (dim === 2) return 'end';
     const p = g.player;
     const eyeY = Math.floor(p.pos.y + p.eyeHeight);
     if (p.pos.y < 52 && g.world.getSkyLight(Math.floor(p.pos.x), eyeY, Math.floor(p.pos.z)) === 0) {
