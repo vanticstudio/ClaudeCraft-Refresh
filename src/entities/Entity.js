@@ -38,6 +38,10 @@ export class Entity {
     this.onLadder = false;
     this.age = 0;
     this.dead = false;
+    // 10-NETHER §2/§3 — dimension membership + portal timers.
+    this.dim = 0;
+    this.portalTimer = 0;
+    this.portalCooldown = 0;
     this.object3d = null;
     this.lightScalar = 1;
     this.chunkKey = null;                     // spatial index registration

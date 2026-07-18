@@ -4,6 +4,190 @@ Deviations and ambiguity rulings. (The base-spec `.md` files were removed from
 the working tree during repo cleanup; the pre-UPDATE deviation log for the
 initial build lives in git history — `git show 8441ac9:DEVIATIONS.md`.)
 
+## E7 — 10-NETHER: the multi-dimension engine (registry + portals + Nether) (2026-07-18)
+
+Built to `10-NETHER.md` §1–§9, §11–§14, §16 **minus the netherite tier (§8) and
+minus §10's bartering/huge-fungi content**, which are deliberately deferred (see
+below). This file OWNS the dimension engine; 11-END will build the End on exactly
+the surface frozen here without editing this module.
+
+### THE DIMENSION CONTRACT (frozen — read before any 11-END / cross-dim work)
+
+`src/world/dimensions.js` is the single definition of the multi-dimension API,
+per 10 §2 and CLAUDE.md §8.2's build-order gate. Three public functions and one
+data shape; **do not add a fourth entry point, do not reach past `changeDimension`
+to move the player, do not mutate a registered descriptor after boot.**
+
+| Symbol | Contract |
+|---|---|
+| `registerDimension(id, descriptor)` | ids never overlap; 0=overworld, 1=nether, 2=End (11 registers 2) |
+| `getDimension(id) → descriptor` | pure data + flags every existing system reads |
+| `changeDimension(entity, targetDim, targetPos, opts)` | the ONE teleport door; non-player entities retag+freeze to disk, the local player calls `Game.changeActiveDimension` |
+| descriptor `{ hasSkyLight, ambientLight, sky, scale, evaporatesWater, explodesBeds, lavaFast, bedrockRoof, spawnTable, onArrive? }` | the flags read by LightEngine / DayNight / interaction / trySleep / the spawner |
+
+**SINGLE-ACTIVE-DIMENSION model** (10 §2.3's endorsed simplification). One live
+`World`/`ChunkManager`/`EntityManager` set. `changeActiveDimension` flushes the
+active dim's chunks to disk (dim-prefixed keys), swaps `world.activeDim` +
+`world.hasSkyLight`, repositions the player, and re-streams the target through the
+LOADING veil. Inactive dimensions live on disk and hydrate on return. In-memory
+chunk keys stay **dim-agnostic** (only one dim is ever resident); the dim prefix
+is applied ONLY at the save layer. 11-END gets the same API whether or not a
+later refactor makes multiple dims co-resident — the public surface doesn't change.
+
+### THE SAVE MIGRATION (v1 → v2, frozen path)
+
+`SAVE_VERSION` bumped 1 → 2 for dim-prefixed chunk keys (`"<dim>:cx,cz"`, via
+`saveManager.keyFor`). Per the phase prompt and CLAUDE.md §8.5, `open()` now
+**migrates forward instead of nulling `meta`** (the old code discarded the entire
+world on any version mismatch, which would have broken every future bump). The
+migration clears the chunk store (the overworld regenerates deterministically from
+the seed), preserves `meta.player` (inventory + position), sets `player.dimension
+= 0`, and seeds `meta.dimensions = {}`. A Nether edit and an Overworld edit at the
+same `cx,cz` coexist as separate records because the key is dim-prefixed.
+
+### Amendments applied to the codebase (base specs stay frozen)
+
+- **Registered netherrack (block 115) and the whole §11 block range (115–143)** —
+  without netherrack the Nether would generate as air. Item range 390–397 + 409
+  (brewing/§9 ingredients) added; netherite items 398–408 left empty for E8.
+- **`uDimAmbient` shader uniform** (materials.js §13.1) — a per-dimension ambient
+  floor (Nether 0.10) so unlit caverns are dim, not pitch black. `max(light,
+  vec3(uDimAmbient))`; overworld leaves it 0.0 so nothing changes there.
+- **LightEngine / World sky-light gated on `world.hasSkyLight`** — no-sky dims
+  never seed sky light and the bedrock roof can't leak daylight.
+- **DayNight per-dimension branch** — no-sky dims render a flat fog void, hide
+  sun/moon/stars/clouds, force `uSkyDarken` 0, and drive `uDimAmbient` from the
+  descriptor.
+- **Ghast fireball made deflectable by extending `LivingEntity`** (§7.3) — a
+  fireball is targetable by the melee attack path; its `hurt()` override reverses
+  velocity toward the attacker's look and reassigns owner instead of taking
+  damage, so a deflected direct hit one-shots the ghast. Elegant reuse of the
+  existing attack→hurt plumbing rather than a bespoke ray test.
+- **`Mob.fireImmune` flag** — Nether mobs skip the lava/fire/undead-daylight
+  environment ticks; the daylight-burn guard also checks `world.hasSkyLight`.
+
+### Deviations (endorsed simplifications, declared not skipped)
+
+1. **Single live dimension instead of `Map<dimId, DimensionState>`.** 10 §2.3
+   explicitly allows one resident dimension with the others on disk. The public
+   API (registry + `changeDimension`) is identical to the full model, so this is
+   invisible to 11-END. Blast radius stayed sane; the deep engine refactor did not
+   regress the overworld (regressions below).
+2. **Fortress uses a simplified piece placement, not the full corridor grammar.**
+   One fortress per 27×27-chunk region (seed-jittered, deterministic across chunk
+   borders), built as a nether-brick platform over lava with a blaze-spawner room,
+   a fence-caged wart garden, and a loot chest. The §5 room/bridge/corridor
+   grammar is condensed to these guaranteed pieces — the gate items (blaze
+   spawner, wart garden + chest, cross-border determinism) all hold.
+3. **Nether mob AI is goal-based, not full navmesh pathing.** Ghast drift/charge/
+   shoot, blaze burst-fire, zombified-piglin anger propagation, magma-cube hop +
+   split, wither-skeleton melee+wither, piglin hostility+zombification are all
+   implemented with the stat/flag/drop numbers **exact**; the locomotion is
+   drift/hop/step rather than A* around obstacles. Meshes are tinted boxes, no
+   bespoke skins.
+
+### Deferred (declared, not silently skipped)
+
+- **Netherite tier (§8): entirely E8.** Items 398–408, the smithing-table upgrade
+  math, netherite tool/armor stats, and lava-float/fire-survive item behavior are
+  NOT built here. The smithing_table block (id in §11 range) and ancient_debris
+  ore generate, so E8 has its anchors.
+- **Piglin bartering (§7.8).** Piglins are hostile to gold-less players and
+  zombify outside the Nether, but the gold-ingot barter → reward table is not
+  wired. Deferred with the rest of the piglin economy.
+- **Huge crimson/warped fungi (§6).** Crimson/warped forests generate nylium plus
+  small fungus/roots cross-plants and shroomlight; the multi-block huge-fungus
+  "trees" are not grown. Biome identity + surface still reads correctly.
+- **§11 textures are procedural approximations** — all 34 Nether block tiles and 9
+  item sprites are painted (no missing-texture magenta in the common view), but
+  they are stylistic stand-ins, not pixel-faithful to vanilla.
+
+### Defects found and fixed before landing
+
+- **Save migration crashed on the real v1→v2 path.** `open()` called `migrate()`
+  *before* `this.savedChunkKeys` was assigned, and the constructor never
+  initialized it — so `migrate()`'s `savedChunkKeys.clear()` ran on `undefined`
+  and threw, on exactly the upgrade scenario the phase prompt told me to get
+  right. Even past the throw, the subsequent `savedChunkKeys = new Set(oldKeys)`
+  would have overwritten the clear with the stale pre-clear keys. Fixed: the
+  constructor seeds `savedChunkKeys = new Set()`, and `open()` now assigns the key
+  set *before* calling `migrate()` so the clear wins.
+- **Duplicate `wood:` material key in blocks.js** — a second `wood:` array would
+  have shadowed the first; merged crimson/warped stems+planks into the existing
+  array.
+- **`ZombifiedPiglin.dropTable` syntax error** and **`GhastFireball` placeholder
+  solidity check** — both cleaned up during authoring (malformed ternary; bogus
+  `require`/`_solid` block-collision test replaced with the real
+  `BLOCKS[...].collidable` lookup).
+- **Bed explosion tried a non-existent `explode(...,{fire:true})` option** — the
+  signature is `explode(x,y,z,power)`; dropped the fire arg (documented nicety).
+
+### Defects found by the CRITICAL-tier review pass and fixed
+
+A separate Opus subagent audited the dimension API, gen determinism, and the
+SAVE_VERSION migration. It confirmed the migration, dim-prefixed round-trip,
+`changeActiveDimension`, gen determinism (no `Date`/`random`, disjoint `nether:`
+streams, no cross-chunk reads), light gating, portal validation/collapse, and the
+chunk-key-collision safety were all correct. It surfaced these real defects, now
+fixed:
+
+- **H-1 (HIGH) — a Nether save rebooted into the Overworld.** The player's
+  dimension was never serialized/deserialized and `startWorld` never restored
+  `world.activeDim` / `save.activeDim` / `hasSkyLight` from the save, so on reload
+  `ChunkManager` streamed dim 0, `save.hasChunk` queried the `"0:"` prefix, missed
+  every `"1:"` Nether record, and **regenerated the Overworld** — orphaning all
+  Nether edits. Fixed: `Player.serialize/deserialize` carry `dimension`, and
+  `startWorld` applies the saved dim (world + save + `hasSkyLight`) BEFORE
+  streaming. The 33/33 suite missed it because nothing round-tripped a Nether save
+  through `startWorld`; **e7review** now does (marker block survives reload).
+- **M-2 (MED) — ancient debris lined cavern walls.** The `vein` predicate had two
+  identical OR branches and its `replaceAir` param was never passed, so §4.5's
+  air-discard was a no-op. Fixed: debris veins now skip any cell touching carved
+  air (`exposedToAir`), so debris is fully buried (strip-mine only) — RNG stream
+  unchanged, so gen stays byte-deterministic.
+- **M-3 (MED) — `meta.dimensions` did not round-trip.** `buildMeta` wrote
+  `game.dimMeta` but `startWorld` never restored it, silently dropping the frozen
+  contract's per-dim blob (portal links, fortress registry, 11's `endFight`) every
+  reload. Fixed: `startWorld` restores `this.dimMeta = savedMeta.dimensions ?? {}`.
+- **M-4 / M-5 (MED) — portal pairing.** The destination search was ±16 blocks
+  (spec §3.5 requires 128) and the §3.6 link cache was absent, risking portal
+  proliferation. Fixed: the search now sweeps loaded chunks within a 128-block
+  horizontal radius (direct block-array scan, once per travel), and a §3.6
+  `portalLinks` fast-path (stored in `dimMeta`, so it round-trips) records the
+  forward link. NOTE: pairing is search-primary with a forward cache — not a full
+  bidirectional link registry; return trips rely on the 128-block search (which
+  correctly reuses the existing portal).
+- **L-6 — misleading sync save + double chunk write** at dim change: `saveAll(...,
+  {sync:true})` was ignored (always async) and re-wrote every dirty chunk that
+  `flushAllChunks` also wrote. Reordered: `flushAllChunks` (durable via
+  `saveChunkNow`) first, then a single meta-only checkpoint after the swap.
+- **L-8 — Nether/End music never selected.** The mood selector read the
+  renamed-away `world.dimension`; now reads the numeric `world.activeDim` (1→
+  nether, 2→end).
+- **L-9 — heightMap type mismatch.** The Nether returned a `Uint16Array`; every
+  other producer uses `Uint8Array`. Aligned (values ≤ 127).
+- **L-7 — already fixed** independently this session before the review ran (the
+  `savedChunkKeys.clear()`-then-overwrite ordering — see "Defects found and fixed
+  before landing" above).
+- **Secondary — bare biomes.** `decorate` only swapped the top block. Added
+  deterministic surface scatter (crimson/warped roots + fungus + shroomlight
+  accents, soul-sand-valley bone fossils) so each forest reads distinctly; the
+  multi-block huge fungi stay deferred.
+
+### Verified
+
+- **e7core 20/20** (registry API + descriptors, deterministic gen with bedrock
+  floor/roof + netherrack body + carved caverns + lava sea, fortress blaze
+  spawner + block-entity record, **all 3 migration assertions**, portal frame
+  validation + fill + dim swap + safe landing + cooldown), **e7gate 13/13** (mob
+  roster flags, ghast-fireball deflect reverses/reassigns/no-damage/explodes, bed
+  explodes in the Nether, water evaporates in the Nether), and **e7review 12/12**
+  (H-1 Nether save round-trips through `startWorld` with the edit intact, M-2 no
+  debris exposed to air across sampled chunks, M-3 `dimMeta` round-trips, overworld
+  reload control) — headless swiftshader against the e7 dev build.
+- **Regressions clean** after the engine refactor: verify-ingame 7/7, audio 35/35,
+  verify-e2 24/24, `npm run build` green.
+
 ## E3 — 08-ENCHANTING part 1: the `tags` contract, sweep attack, offhand (2026-07-17)
 
 Built to `08-ENCHANTING.md` §1, §6, §7, §12 (the sweep hook), §13. **§2–§5 and

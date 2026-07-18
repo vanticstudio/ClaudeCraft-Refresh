@@ -691,6 +691,96 @@ defBlock(66, 'dead_bush', {
   canPlaceAt: (world, x, y, z) => [B.SAND, B.DIRT].includes(world.getBlock(x, y - 1, z)),
 });
 
+// =========================================================================
+// 10-NETHER §1.1 — blocks 115–143 (144–149 reserved). Behaviors (portal, crop,
+// spawner, magma damage) are attached at runtime by world/nether.js so this
+// file stays a leaf; here we declare static registry/render/physics data.
+// =========================================================================
+
+defBlock(115, 'netherrack', {
+  hardness: 0.4, blast: 0.4, tool: 'pickaxe', tier: 0,
+  infiniteBurn: true,                         // §10.4 — fire on netherrack burns forever
+  tiles: all('netherrack'),
+});
+defBlock(116, 'nether_bricks', { hardness: 2.0, blast: 6.0, tool: 'pickaxe', tier: 0, tiles: all('nether_bricks') });
+defBlock(117, 'nether_brick_fence', {
+  hardness: 2.0, blast: 6.0, tool: 'pickaxe', tier: 0,
+  shape: 'fence', opaque: false, opacity: 0, collisionBox: [0, 0, 0, 1, 1.5, 1],
+  tiles: all('nether_bricks'),
+});
+defBlock(118, 'nether_brick_stairs', {
+  hardness: 2.0, blast: 6.0, tool: 'pickaxe', tier: 0,
+  shape: 'stairs', opaque: false, opacity: 0, collisionBox: [0, 0, 0, 1, 1, 1],
+  tiles: all('nether_bricks'),
+});
+defBlock(119, 'soul_sand', {
+  hardness: 0.5, blast: 0.5, tool: 'shovel',
+  shape: 'soul_sand', collisionBox: [0, 0, 0, 1, 14 / 16, 1],   // §10.3 entities sink 2/16 + slow
+  tiles: all('soul_sand'),
+});
+defBlock(120, 'soul_soil', { hardness: 0.5, blast: 0.5, tool: 'shovel', tiles: all('soul_soil') });
+defBlock(121, 'magma_block', {
+  hardness: 0.5, blast: 0.5, tool: 'pickaxe', tier: 0, emission: 3, tiles: all('magma_block'),
+});
+ore(122, 'nether_quartz_ore', 0, () => [{ name: 'nether_quartz', count: 1 }],
+  function (ctx) { return harvestOK(this, ctx.toolClass, ctx.toolTier) ? ri(ctx.rng, 2, 5) : 0; });
+ore(123, 'nether_gold_ore', 0, ctx => [{ name: 'gold_nugget', count: ri(ctx.rng, 2, 6) }],
+  function (ctx) { return harvestOK(this, ctx.toolClass, ctx.toolTier) ? ri(ctx.rng, 0, 1) : 0; });
+defBlock(124, 'ancient_debris', {
+  hardness: 30, blast: 1200, tool: 'pickaxe', tier: 3,   // diamond-tier to drop (§9)
+  drops: gated(dropSelf('ancient_debris')), tiles: column('ancient_debris_top', 'ancient_debris_side'),
+});
+// nylium: drops netherrack (like grass→dirt); self only with Silk Touch (08)
+const nylium = (id, name) => defBlock(id, name, {
+  hardness: 0.4, blast: 0.4, tool: 'pickaxe', tier: 0,
+  drops: ctx => [{ name: 'netherrack', count: 1 }],
+  tiles: column(name, 'netherrack'),
+});
+nylium(125, 'crimson_nylium');
+nylium(126, 'warped_nylium');
+defBlock(127, 'crimson_stem', { hardness: 2.0, blast: 2.0, tool: 'axe', tiles: column('crimson_stem_top', 'crimson_stem') });
+defBlock(128, 'warped_stem', { hardness: 2.0, blast: 2.0, tool: 'axe', tiles: column('warped_stem_top', 'warped_stem') });
+defBlock(129, 'crimson_planks', { hardness: 2.0, blast: 3.0, tool: 'axe', tiles: all('crimson_planks') });
+defBlock(130, 'warped_planks', { hardness: 2.0, blast: 3.0, tool: 'axe', tiles: all('warped_planks') });
+defBlock(131, 'nether_wart_block', { hardness: 1.0, blast: 1.0, tool: 'hoe', tiles: all('nether_wart_block') });
+defBlock(132, 'warped_wart_block', { hardness: 1.0, blast: 1.0, tool: 'hoe', tiles: all('warped_wart_block') });
+defBlock(133, 'shroomlight', { hardness: 1.0, blast: 1.0, tool: 'hoe', emission: 15, tiles: all('shroomlight') });
+defBlock(134, 'crimson_fungus', { ...CROSS, needsSupport: 'below', tiles: all('crimson_fungus') });
+defBlock(135, 'warped_fungus', { ...CROSS, needsSupport: 'below', tiles: all('warped_fungus') });
+defBlock(136, 'crimson_roots', { ...CROSS, needsSupport: 'below', tiles: all('crimson_roots') });
+defBlock(137, 'warped_roots', { ...CROSS, needsSupport: 'below', tiles: all('warped_roots') });
+// §8.1 nether_wart crop (no block-item; planted by item 390 on soul_sand). 4
+// stages in bits0-1, rendered in 3 art stages.
+defBlock(138, 'nether_wart', {
+  ...CROSS, shape: 'hash', needsSupport: 'below',
+  tiles: all('nether_wart_0'),
+  // 4 growth stages (bits0-1) → 3 art stages: 0 → 0, 1-2 → 1, 3 → 2.
+  tilesFor: state => { const s = state & 3; return `nether_wart_${s === 0 ? 0 : s === 3 ? 2 : 1}`; },
+  drops: ctx => [{ name: 'nether_wart', count: (ctx.state & 3) >= 3 ? ri(ctx.rng, 2, 4) : 1 }],
+  canPlaceAt: (world, x, y, z) => world.getBlock(x, y - 1, z) === B.SOUL_SAND,
+});
+defBlock(139, 'bone_block', { hardness: 2.0, blast: 2.0, tool: 'pickaxe', tier: 0, tiles: column('bone_block_top', 'bone_block_side') });
+defBlock(140, 'nether_portal', {
+  hardness: -1, blast: 0, emission: 11,
+  shape: 'portal', bucket: 'translucent', opaque: false, opacity: 0, collidable: false, targetable: false,
+  drops: noDrop, tiles: all('nether_portal'),
+});
+defBlock(141, 'spawner', {
+  hardness: 5.0, blast: 5.0, tool: 'pickaxe', tier: 0, emission: 1,
+  opaque: false, opacity: 0, shape: 'spawner', bucket: 'cutout',
+  blockEntity: 'spawner', drops: noDrop,
+  xpForMine: function (ctx) { return harvestOK(this, ctx.toolClass, ctx.toolTier) ? ri(ctx.rng, 15, 43) : 0; },
+  tiles: all('spawner'),
+});
+defBlock(142, 'netherite_block', {
+  hardness: 50, blast: 1200, tool: 'pickaxe', tier: 3, drops: gated(dropSelf('netherite_block')),
+  tiles: all('netherite_block'),
+});
+defBlock(143, 'smithing_table', {
+  hardness: 2.5, blast: 2.5, tool: 'axe', interactable: 'smithing',
+  tiles: column('smithing_table_top', 'smithing_table_side'),
+});
+
 // =======================================================================
 // Material classes — the `Mat` column (16-AUDIO AMENDS 06 §2, table 16 §3.1).
 //
@@ -705,17 +795,25 @@ defBlock(66, 'dead_bush', {
 // cactus→wool, glowstone→glass, ice→glass, coal_block→stone (unlike the other
 // metal blocks), dirt/farmland→gravel, sandstone→stone, dead_bush→grass.
 const MAT = {
-  stone: ['stone', 'cobblestone', 'sandstone', 'bedrock', 'obsidian', 'furnace', 'furnace_lit', 'coal_block'],
+  // 10-NETHER §1: the nether stone/brick family + machines join 'stone'; nyliums
+  // and wart blocks are soft/organic → 'grass'; stems/planks → 'wood'.
+  stone: ['stone', 'cobblestone', 'sandstone', 'bedrock', 'obsidian', 'furnace', 'furnace_lit', 'coal_block',
+    'netherrack', 'nether_bricks', 'nether_brick_fence', 'nether_brick_stairs', 'magma_block',
+    'nether_quartz_ore', 'nether_gold_ore', 'ancient_debris', 'bone_block', 'spawner',
+    'netherite_block', 'smithing_table', 'nether_portal', 'crimson_nylium', 'warped_nylium'],
   ore: ['coal_ore', 'iron_ore', 'gold_ore', 'diamond_ore', 'redstone_ore', 'lapis_ore'],
   metal: ['iron_block', 'gold_block', 'diamond_block'],
   wood: ['oak_planks', 'birch_planks', 'spruce_planks', 'oak_log', 'birch_log', 'spruce_log',
     'crafting_table', 'chest', 'bookshelf', 'ladder', 'oak_fence', 'oak_door', 'bed_block',
-    'torch', 'pumpkin', 'jack_o_lantern'],
+    'torch', 'pumpkin', 'jack_o_lantern',
+    'crimson_stem', 'warped_stem', 'crimson_planks', 'warped_planks'],
   gravel: ['gravel', 'dirt', 'farmland'],
   sand: ['sand'],
   grass: ['grass_block', 'oak_leaves', 'birch_leaves', 'spruce_leaves', 'oak_sapling',
     'birch_sapling', 'spruce_sapling', 'wheat_crop', 'carrot_crop', 'potato_crop',
-    'sugar_cane_block', 'short_grass', 'dandelion', 'poppy', 'dead_bush', 'tnt'],
+    'sugar_cane_block', 'short_grass', 'dandelion', 'poppy', 'dead_bush', 'tnt',
+    'soul_sand', 'soul_soil', 'nether_wart_block', 'warped_wart_block', 'shroomlight',
+    'crimson_fungus', 'warped_fungus', 'crimson_roots', 'warped_roots', 'nether_wart'],
   glass: ['glass', 'ice', 'glowstone'],
   wool: ['wool_white', 'wool_red', 'wool_blue', 'wool_black', 'cactus'],
   snow: ['snow_layer', 'snow_block'],

@@ -13,6 +13,7 @@ export class Mob extends LivingEntity {
     super(world, x, y, z);
     this.hostile = false;
     this.undead = false;
+    this.fireImmune = false;      // 10-NETHER AMENDS 05 §2
     this.detectionRange = 16;
     this.attackDamage = 0;
     this.attackReach = 2.0;
@@ -170,17 +171,21 @@ export class Mob extends LivingEntity {
   }
 
   tickEnvironment() {
-    if (this.inLava) {
-      if (this.age % 10 === 0) this.hurt(4, 'lava');
-      this.fireTicks = 300;
+    // 10-NETHER AMENDS 05 §2 — fire-immune mobs never take FIRE/LAVA/BURNING
+    // damage and never ignite (the whole Nether roster).
+    if (!this.fireImmune) {
+      if (this.inLava) {
+        if (this.age % 10 === 0) this.hurt(4, 'lava');
+        this.fireTicks = 300;
+      }
+      if (this.fireTicks > 0) {
+        this.fireTicks--;
+        if (this.age % 20 === 0 && !this.inLava) this.hurt(1, 'burn');
+        if (this.inWater) this.fireTicks = 0;
+      }
     }
-    if (this.fireTicks > 0) {
-      this.fireTicks--;
-      if (this.age % 20 === 0 && !this.inLava) this.hurt(1, 'burn');
-      if (this.inWater) this.fireTicks = 0;
-    }
-    // undead daylight burning (04 §10.2, 05 §5)
-    if (this.undead && !this.isBaby && this.age % 4 === 0) {
+    // undead daylight burning (04 §10.2, 05 §5) — never with no sky light or when immune
+    if (this.undead && !this.isBaby && !this.fireImmune && this.world.hasSkyLight && this.age % 4 === 0) {
       const w = this.world;
       const eyeY = Math.floor(this.pos.y + this.height);
       if (w.skyDarken < 4 &&

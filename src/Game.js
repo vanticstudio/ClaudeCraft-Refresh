@@ -31,6 +31,9 @@ import { AABB } from './math/aabb.js';
 import { createMob, MobSpawner, HOSTILE_TYPES } from './entities/mobs/index.js';
 import { emitSound, startLoop, at } from './audio/engine.js';
 import { forgetFireInChunk } from './world/fire.js';
+import { getDimension } from './world/dimensions.js';
+import { findOrCreatePortal } from './world/Portal.js';
+import { installNetherBehaviors, tickSpawner } from './world/nether.js';
 
 const NEUTRAL_FRAME = {
   forward: 0, strafe: 0, jump: false, sneak: false, sprintKey: false,
@@ -99,6 +102,7 @@ export class Game {
     this.player = new Player(this.world);
     this.entities.add(this.player);
     this.interaction = new Interaction(this);
+    installNetherBehaviors();                 // 10-NETHER — attach runtime block behaviors (idempotent)
     this.dayNight = new DayNight(this);
     this.particles = new Particles(this.scene);
     this.mobSpawner = new MobSpawner(this);
@@ -107,6 +111,20 @@ export class Game {
       this.world.time = savedMeta.worldTime ?? 0;
       this.dayNight.deserialize(savedMeta.weather);
       this.player.deserialize(savedMeta.player);
+      // 10-NETHER §2.4 — restore the per-dimension blob (portal links, fortress
+      // registry, 11's endFight) so the frozen contract round-trips.
+      this.dimMeta = savedMeta.dimensions ?? {};
+      // Apply the saved active dimension BEFORE any chunk streams — ChunkManager
+      // tags new chunks with world.activeDim and saveManager queries save.activeDim,
+      // so a Nether save must swap these before initWorkers or it reboots into the
+      // Overworld and orphans every Nether edit (audit H-1).
+      const savedDim = this.player.dim ?? 0;
+      const desc = getDimension(savedDim) ?? getDimension(0);
+      this.world.activeDim = savedDim;
+      this.world.hasSkyLight = desc.hasSkyLight;
+      if (this.save) this.save.activeDim = savedDim;
+    } else {
+      this.dimMeta = {};
     }
 
     this.setState(STATE.LOADING);
@@ -222,7 +240,20 @@ export class Game {
       this.ui?.setLoadingProgress?.(meshed, needed);
       if (meshed >= needed) {
         this.chunkManager.loading = false;
-        this.snapPlayerToGround();
+        // 10-NETHER §3.5 — a portal travel deferred the destination build until
+        // the ring streamed. Now that blocks exist, find-or-create the portal and
+        // drop the player on its stand cell.
+        if (this.pendingPortalBuild) {
+          const b = this.pendingPortalBuild; this.pendingPortalBuild = null;
+          const link = b.fromDim != null ? { fromDim: b.fromDim, srcKey: b.srcKey } : null;
+          const stand = findOrCreatePortal(this, b.x, b.y, b.z, link);
+          this.player.setPos(stand.x, stand.y, stand.z);
+          this.player.prevPos.x = stand.x; this.player.prevPos.y = stand.y; this.player.prevPos.z = stand.z;
+          this.player.portalCooldown = 300;
+          this.chunkManager.rebuildNow([]);   // any edited chunks re-mesh next frame
+        } else {
+          this.snapPlayerToGround();
+        }
         this.setState(STATE.PLAYING);
         this.input.requestLock();
       }
@@ -244,6 +275,52 @@ export class Game {
       }
     }
     p.prevPos.y = p.pos.y;
+  }
+
+  /**
+   * 10-NETHER §2.5 — swap the active dimension for the LOCAL PLAYER.
+   * Flushes the source dim's chunks to disk (dim-prefixed), retargets every live
+   * subsystem to the new dim, repositions the player, and re-enters the loading
+   * veil so the target ring streams before control returns. The teleport door
+   * (dimensions.changeDimension) routes here for the player.
+   */
+  changeActiveDimension(targetDim, targetPos, opts = {}) {
+    const desc = getDimension(targetDim);
+    if (!desc) { console.warn('[dim] unknown dimension', targetDim); return; }
+    const p = this.player;
+
+    // 1. durably persist + unload the source dim's chunks. flushAllChunks writes
+    //    every modified chunk synchronously via saveChunkNow (keyed by chunk.dim),
+    //    then clears world.chunks — so the meta checkpoint below writes no chunks
+    //    and there is no double-write.
+    this.chunkManager.flushAllChunks();
+
+    // 2. retarget the world + save layer to the new dim
+    this.world.activeDim = targetDim;
+    this.world.hasSkyLight = desc.hasSkyLight;
+    if (this.save) this.save.activeDim = targetDim;
+    this.dimMeta = this.dimMeta ?? {};
+    this.dimMeta[targetDim] = this.dimMeta[targetDim] ?? {};
+
+    // 3. place the player
+    p.dim = targetDim;
+    p.setPos(targetPos.x, targetPos.y, targetPos.z);
+    p.prevPos.x = p.pos.x; p.prevPos.y = p.pos.y; p.prevPos.z = p.pos.z;
+    p.vel.x = p.vel.y = p.vel.z = 0;
+    p.fallDistance = 0;
+    p.portalCooldown = 300;                      // §3.6 no instant bounce
+
+    // 4. dimension-arrival hook (dim 2 sets onArrive = regenObsidianPlatform, 11)
+    desc.onArrive?.(p, targetPos);
+
+    // 5. meta checkpoint AFTER the swap so a crash mid-travel restores into the
+    //    new dim/pos (chunks already durable via step 1; world.chunks now empty).
+    this.save?.saveAll?.(this);
+
+    // 6. re-enter the loading veil so the target ring streams synchronously
+    this.chunkManager.loading = true;
+    this.setState(STATE.LOADING);
+    emitSound('block.portal.travel', null);
   }
 
   // ---------------------------------------------------------------- rendering
@@ -462,8 +539,11 @@ export class Game {
     if (!be) {
       const kind = BLOCKS[chunk.blocks[i]].blockEntity;
       if (!kind) return null;
-      be = kind === 'chest'
-        ? { type: 'chest', data: { slots: new Array(27).fill(null) } }
+      be = kind === 'chest' ? { type: 'chest', data: { slots: new Array(27).fill(null) } }
+        // 10-NETHER §6.1 — spawner block-entity defaults.
+        : kind === 'spawner' ? { type: 'spawner', data: {
+          mobType: 'blaze', delay: 20, minDelay: 200, maxDelay: 800,
+          spawnCount: 4, maxNearby: 6, activationRange: 16, spawnRange: 4 } }
         : { type: 'furnace', data: { slots: new Array(3).fill(null), burn: 0, fuelTotal: 0, cook: 0, xpBank: 0 } };
       chunk.blockEntities.set(i, be);
       chunk.modified = true;
@@ -479,9 +559,9 @@ export class Game {
         const chunk = this.world.chunks.get(chunkKey(p.cx + dcx, p.cz + dcz));
         if (!chunk || chunk.state < ChunkState.GENERATED || chunk.blockEntities.size === 0) continue;
         for (const [i, be] of chunk.blockEntities) {
-          if (be.type !== 'furnace') continue;
           const x = chunk.cx * 16 + (i & 15), y = i >> 8, z = chunk.cz * 16 + ((i >> 4) & 15);
-          this.tickFurnace(be.data, x, y, z, chunk);
+          if (be.type === 'furnace') this.tickFurnace(be.data, x, y, z, chunk);
+          else if (be.type === 'spawner') tickSpawner(this, be, x, y, z);   // 10-NETHER §6.2
         }
       }
     }
@@ -706,12 +786,22 @@ export class Game {
   onChunkGenerated(chunk) {
     if (chunk.pendingSpawns && !chunk.spawnsDone) {
       for (const rec of chunk.pendingSpawns) {
-        this.spawnMobAt(rec.type, rec.x, rec.y, rec.z, { persistent: true });
+        // 10-NETHER §4.9/§5.4 — a fortress emits a spawner block-entity record;
+        // everything else is a mob herd record.
+        if (rec.be === 'spawner') this.configureSpawner(rec.x, rec.y, rec.z, rec.mobType);
+        else this.spawnMobAt(rec.type, rec.x, rec.y, rec.z, { persistent: true });
       }
       chunk.spawnsDone = true;
       chunk.pendingSpawns = null;
       chunk.modified = true;
     }
+  }
+
+  /** 10-NETHER §6 — set a gen-placed spawner block's block-entity mob type. */
+  configureSpawner(x, y, z, mobType) {
+    if (this.world.getBlock(x, y, z) !== 141) return;   // spawner id
+    const be = this.getBlockEntity(x, y, z);
+    if (be?.data) be.data.mobType = mobType;
   }
 
   onChunkHydrated(chunk, record) {
@@ -771,6 +861,13 @@ export class Game {
 
   trySleep(x, y, z) {
     const p = this.player;
+    // 10-NETHER §10.2 — in an explodesBeds dimension, RMB detonates the bed
+    // (power-5 + fire) instead of sleeping; no spawn set, no sleep.
+    if (getDimension(this.world.activeDim)?.explodesBeds) {
+      this.world.setBlock(x, y, z, B.AIR, { byPlayer: true });   // onBroken clears the other half
+      this.explode(x + 0.5, y + 0.5, z + 0.5, 5);                // §10.2 power-5 (fire is a documented nicety)
+      return;
+    }
     p.spawnPoint = { x, y, z };            // always set on click (06 §5.7)
     if (!this.dayNight.canSleepNow()) {
       this.toast('You can only sleep at night');

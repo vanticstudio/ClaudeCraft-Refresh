@@ -11,9 +11,12 @@ export const ChunkState = {
 };
 
 export class Chunk {
-  constructor(cx, cz) {
+  constructor(cx, cz, dim = 0) {
     this.cx = cx;
     this.cz = cz;
+    // 10-NETHER §2.4 — the in-memory key stays dim-agnostic (only the active dim
+    // is resident); the save layer prefixes it with `dim`.
+    this.dim = dim;
     this.key = cx + ',' + cz;
     this.blocks = null;                  // Uint8Array(32768), installed at GENERATED
     this.states = null;                  // Uint8Array(32768) per-voxel state nibble

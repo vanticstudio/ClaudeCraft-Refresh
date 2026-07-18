@@ -85,7 +85,26 @@ export class ChunkManager {
     this.pending.set(jobId, chunk.key);
     const worker = this.workers[this.nextWorker];
     this.nextWorker = (this.nextWorker + 1) % this.workers.length;
-    worker.postMessage({ type: 'generate', cx: chunk.cx, cz: chunk.cz, jobId });
+    // 10-NETHER §2.2 — the worker dispatches gen by dimension.
+    worker.postMessage({ type: 'generate', cx: chunk.cx, cz: chunk.cz, jobId, dim: chunk.dim });
+  }
+
+  /**
+   * 10-NETHER §2.3/§2.5 — flush every resident chunk to disk (dim-prefixed) and
+   * unload it, then reset streaming so a new dimension re-streams from scratch.
+   */
+  flushAllChunks() {
+    for (const chunk of this.world.chunks.values()) {
+      if (chunk.modified && chunk.blocks && this.save) this.save.saveChunkNow(chunk);
+      this.game?.onChunkUnloading?.(chunk);
+      this.disposeChunkMeshes(chunk);
+    }
+    this.world.chunks.clear();
+    this.world.chunkVersion++;
+    this.remeshQueue.clear();
+    this.pending.clear();
+    this.requestList.length = 0;
+    this.lastPlayerChunk = null;
   }
 
   async hydrate(chunk, record) {
@@ -136,7 +155,7 @@ export class ChunkManager {
     while (this.pending.size < MAX_JOBS_IN_FLIGHT && this.requestList.length > 0) {
       const [key, cx, cz] = this.requestList.shift();
       if (this.world.chunks.has(key)) continue;
-      const chunk = new Chunk(cx, cz);
+      const chunk = new Chunk(cx, cz, this.world.activeDim);   // 10-NETHER §2.4
       this.world.chunks.set(key, chunk);
       this.world.chunkVersion++;
       if (this.save?.hasChunk(key)) {

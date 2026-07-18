@@ -14,8 +14,12 @@ export class World {
   constructor(seedString) {
     this.seedString = seedString;
     this.worldSeed = hashString(seedString);
-    this.chunks = new Map();            // "cx,cz" → Chunk
+    this.chunks = new Map();            // "cx,cz" → Chunk (of the ACTIVE dim only)
     this.chunkVersion = 0;              // bumped on add/remove (cache invalidation)
+    // 10-NETHER §2 — the single active dimension. Every resident chunk belongs to
+    // it; changing dims flushes them to disk (dim-prefixed) and re-streams.
+    this.activeDim = 0;
+    this.hasSkyLight = true;            // mirrors the active dim's descriptor (§13.2)
     this.time = 0;                      // worldTime (persisted; DayNight advances)
     this.skyDarken = 0;                 // int 0–11, DayNight recomputes per tick
     this.playerChunk = null;            // {cx, cz}, Game sets each tick
@@ -61,7 +65,9 @@ export class World {
   }
 
   getSkyLight(x, y, z) {
-    if (y > MAX_Y) return 15;
+    // 10-NETHER §13.2 — no-sky dimensions never have sky light; the ceiling
+    // (bedrock roof) must not leak daylight.
+    if (y > MAX_Y) return this.hasSkyLight ? 15 : 0;
     if (y < 0) return 0;
     const c = this.getChunkAt(x, z);
     if (!c) return 0;

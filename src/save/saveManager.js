@@ -6,9 +6,16 @@ export class SaveManager {
     this.db = null;
     this.savedChunkKeys = new Set();
     this.meta = null;
+    this.savedChunkKeys = new Set();
     this.autosaveCounter = 0;
     this.saving = false;
+    // 10-NETHER §2.4 — the dimension whose chunks are currently resident. Game
+    // updates this on changeDimension so hasChunk/loadChunk prefix correctly.
+    this.activeDim = 0;
   }
+
+  /** 10-NETHER §2.4 — the dim-prefixed store key for a chunk. */
+  keyFor(bareKey, dim) { return dim + ':' + bareKey; }
 
   open() {
     return new Promise((resolve, reject) => {
@@ -25,11 +32,14 @@ export class SaveManager {
         const keysReq = tx.objectStore('chunks').getAllKeys();
         tx.oncomplete = () => {
           this.meta = metaReq.result ?? null;
-          if (this.meta && this.meta.version !== SAVE_VERSION) {
-            console.warn('[save] incompatible save version — offering new world only');
-            this.meta = null;
-          }
+          // Seed the key set FIRST so migrate()'s clear() isn't overwritten by the
+          // stale pre-clear keys read above (order matters — see §8.5).
           this.savedChunkKeys = new Set(keysReq.result ?? []);
+          // 10-NETHER §2.4 / CLAUDE.md §8.5 — MIGRATE forward instead of nulling
+          // meta (which discarded the whole world and broke every future bump).
+          if (this.meta && this.meta.version !== SAVE_VERSION) {
+            this.migrate(this.meta);
+          }
           resolve(this);
         };
         tx.onerror = () => reject(tx.error);
@@ -39,15 +49,37 @@ export class SaveManager {
   }
 
   hasWorld() { return this.meta !== null; }
-  hasChunk(key) { return this.savedChunkKeys.has(key); }
+  hasChunk(key) { return this.savedChunkKeys.has(this.keyFor(key, this.activeDim)); }
 
   loadChunk(key) {
     return new Promise(resolve => {
       const tx = this.db.transaction('chunks', 'readonly');
-      const req = tx.objectStore('chunks').get(key);
+      const req = tx.objectStore('chunks').get(this.keyFor(key, this.activeDim));
       req.onsuccess = () => resolve(req.result ?? null);
       req.onerror = () => resolve(null);
     });
+  }
+
+  /**
+   * CLAUDE.md §8.5 — the v1→v2 migration. v1 chunk keys were bare "cx,cz" (dim 0
+   * implied) and meta had no dimension fields. Per the phase prompt we CLEAR the
+   * chunk store (the overworld regenerates deterministically from the seed) and
+   * up-convert meta so the player — inventory, position — survives the bump.
+   * Runs synchronously against the already-open db.
+   */
+  migrate(meta) {
+    if (meta.version < 2) {
+      try {
+        const tx = this.db.transaction('chunks', 'readwrite');
+        tx.objectStore('chunks').clear();
+      } catch (err) { console.warn('[save] migration chunk-clear failed', err); }
+      this.savedChunkKeys.clear();
+      if (meta.player) meta.player.dimension = 0;
+      meta.dimensions = meta.dimensions ?? {};
+      console.warn('[save] migrated v' + meta.version + ' → v' + SAVE_VERSION +
+        ' (chunk store cleared; player preserved)');
+    }
+    meta.version = SAVE_VERSION;
   }
 
   serializeChunk(chunk, game) {
@@ -84,6 +116,9 @@ export class SaveManager {
       worldTime: game.world.time,
       weather: game.dayNight?.serialize() ?? null,
       player: game.player.serialize(),
+      // 10-NETHER §2.4 — per-dimension blob (portal links §3.6, fortress registry
+      // §5, and 11's End-fight record live here).
+      dimensions: game.dimMeta ?? {},
       lastSaved: Date.now(),
     };
   }
@@ -94,9 +129,10 @@ export class SaveManager {
     const game = chunk?.gameRef ?? window.game;
     try {
       const record = this.serializeChunk(chunk, game);
+      const key = this.keyFor(chunk.key, chunk.dim);
       const tx = this.db.transaction('chunks', 'readwrite');
-      tx.objectStore('chunks').put(record, chunk.key);
-      this.savedChunkKeys.add(chunk.key);
+      tx.objectStore('chunks').put(record, key);
+      this.savedChunkKeys.add(key);
       tx.oncomplete = () => { chunk.modified = false; };
     } catch (err) {
       console.warn('[save] chunk write failed', err);
@@ -120,8 +156,9 @@ export class SaveManager {
       tx.objectStore('meta').put(this.buildMeta(game), 'world');
       const store = tx.objectStore('chunks');
       for (const chunk of dirty) {
-        store.put(this.serializeChunk(chunk, game), chunk.key);
-        this.savedChunkKeys.add(chunk.key);
+        const key = this.keyFor(chunk.key, chunk.dim);
+        store.put(this.serializeChunk(chunk, game), key);
+        this.savedChunkKeys.add(key);
       }
       tx.oncomplete = () => {
         for (const chunk of dirty) chunk.modified = false;

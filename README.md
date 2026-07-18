@@ -75,6 +75,27 @@ autosaves to the browser's IndexedDB every 30 seconds — close the tab and
 
 *This section is updated as new features land.*
 
+- **2026-07-18** — **The Nether + a multi-dimension engine (expansion phase E7, `10`)**:
+  light a 4×5 obsidian frame with **flint & steel** and step through — after 4
+  seconds the world dissolves and you arrive in the **Nether**, a claustrophobic
+  cavern hell of netherrack, lava seas, and dense red fog with no sky. Travel is
+  **8:1**: a step in the Nether is eight in the Overworld, and a return trip drops
+  you back at your own portal. Four biomes generate — nether wastes, crimson and
+  warped forests (glowing nylium, fungi, roots, shroomlight) and soul-sand valleys
+  with bone fossils — threaded with **fortresses** built of nether brick over lava,
+  each guarding a **blaze spawner** and a nether-wart garden with a loot chest.
+  New mobs: **ghasts** (shoot fireballs you can **deflect back** with a well-timed
+  hit to one-shot them), **blazes**, **zombified piglins** (neutral until you swing
+  first — then the whole pack turns on you), **magma cubes** that split when killed,
+  **wither skeletons**, and **piglins**. Mine **quartz, nether gold, ancient debris,
+  glowstone, and magma blocks**; grow **nether wart** on soul sand for brewing.
+  Nether rules bite: **water evaporates**, **lava spreads fast**, magma blocks burn
+  your feet, and **sleeping in a bed explodes it**. Under the hood this lands the
+  frozen multi-dimension engine (dimension registry, portal/teleport API, and
+  per-dimension world/sky/lighting/save keys) that the End will build on — and your
+  Nether builds now persist and reload correctly per dimension. *(Netherite gear
+  and piglin bartering arrive in a later phase.)*
+
 - **2026-07-17** — **Sweep attack + offhand slot (expansion phase E3, `08` part 1)**:
   a full-charge sword swing while standing now **sweeps** — every mob in the halo
   around the one you hit takes damage, gets shoved the way you're looking, and the

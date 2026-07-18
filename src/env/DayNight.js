@@ -5,6 +5,7 @@ import { sharedUniforms } from '../mesh/materials.js';
 import { Sky } from '../render/Sky.js';
 import { BLOCKS, B, isSolidSupport } from '../registry/blocks.js';
 import { emitSound, at } from '../audio/engine.js';
+import { getDimension } from '../world/dimensions.js';
 import { lightningIgnite } from '../world/fire.js';
 import { BIOME_TEMPS } from '../world/gen/biomes.js';
 import { RENDER_RADIUS, chunkKey, SIM_RADIUS } from '../constants.js';
@@ -328,6 +329,24 @@ export class DayNight {
       this.fogColor.setHex(0x991900); fogNear = 0.25; fogFar = 1.0; underFluid = true;
     }
 
+    // 10-NETHER §13.1 — no-sky dimensions override the sky/fog/ambient. A flat
+    // fog-colored void, dense short fog, no time darkening, and the ambient floor.
+    const dim = getDimension(this.world.activeDim);
+    const netherLike = dim && dim.sky?.kind === 'nether';
+    if (dim && !dim.hasSkyLight) {
+      if (!underFluid) {
+        this.fogColor.setHex(netherLike ? dim.sky.clearColor : 0x000000);
+        const R = 128;
+        fogNear = 0;
+        fogFar = netherLike ? dim.sky.fogFar * R : R;
+      }
+      skyDarkenF = 0;
+      this.skyTint.setRGB(1, 1, 1);
+      sharedUniforms.uDimAmbient.value = dim.ambientLight;
+    } else {
+      sharedUniforms.uDimAmbient.value = 0;
+    }
+
     // shared chunk-shader uniforms (01 §8.7)
     sharedUniforms.uSkyDarken.value = skyDarkenF;
     sharedUniforms.uSkyTint.value.copy(this.skyTint);
@@ -349,10 +368,11 @@ export class DayNight {
     const sunDir = { x: -Math.sin(a2), y: Math.cos(a2), z: 0 };
     this.sky.update({
       camera, angle,
-      zenith: underFluid ? this.fogColor : this.kf.zenith,
-      horizon: underFluid ? this.fogColor : this.kf.horizon,
-      starAlpha: starBrightness(t) * (1 - this.rainLevel),
-      sunAlpha: 1 - this.rainLevel,
+      // 10-NETHER §13.1 — flat fog-colored void, no sun/moon/stars in no-sky dims.
+      zenith: (underFluid || netherLike) ? this.fogColor : this.kf.zenith,
+      horizon: (underFluid || netherLike) ? this.fogColor : this.kf.horizon,
+      starAlpha: netherLike ? 0 : starBrightness(t) * (1 - this.rainLevel),
+      sunAlpha: netherLike ? 0 : (1 - this.rainLevel),
       sunrise: sunriseColor(t),
       cloudTint: (0.16 + 0.84 * sunIntensity) * (1 - 0.3 * this.rainLevel),
       sunIntensity, ambient,

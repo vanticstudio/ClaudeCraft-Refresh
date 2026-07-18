@@ -86,7 +86,8 @@ export class LightEngine {
   getLightArr(channel, c) { return channel === SKY ? c.skyLight : c.blockLight; }
 
   light(channel, x, y, z) {
-    if (y > MAX_Y) return channel === SKY ? 15 : 0;
+    // 10-NETHER §13.2 — above the ceiling, sky light is 15 only in sky dimensions.
+    if (y > MAX_Y) return channel === SKY ? (this.world.hasSkyLight ? 15 : 0) : 0;
     if (y < 0) return 0;
     const c = this.chunkAt(x, z);
     if (!c) return 0;
@@ -196,25 +197,29 @@ export class LightEngine {
     const sky = chunk.skyLight, blocks = chunk.blocks, hm = chunk.heightMap;
     const pqSky = this.propQ[SKY], pqBlock = this.propQ[BLOCK];
 
-    // 1. column seed: skyLight 15 from the top down to the heightmap top
-    for (let z = 0; z < 16; z++) {
-      for (let x = 0; x < 16; x++) {
-        const H = hm[(z << 4) | x];
-        for (let y = MAX_Y; y >= H; y--) sky[(y << 8) | (z << 4) | x] = 15;
-      }
-    }
-
-    // 2. sky frontier: cells that can bleed sideways into somewhere darker
-    for (let z = 0; z < 16; z++) {
-      for (let x = 0; x < 16; x++) {
-        const H = hm[(z << 4) | x];
-        const wx = baseX + x, wz = baseZ + z;
-        let hMax = H;
-        for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-          const nH = this.world.heightTop(wx + dx, wz + dz);
-          if (nH > hMax) hMax = nH;
+    // 10-NETHER §13.2 — in a no-sky dimension, skyLight stays 0 everywhere; only
+    // emitters + block-light border import run. The Nether's darkness is a pure
+    // block-light problem (the shader's ambient floor keeps it navigable).
+    if (this.world.hasSkyLight) {
+      // 1. column seed: skyLight 15 from the top down to the heightmap top
+      for (let z = 0; z < 16; z++) {
+        for (let x = 0; x < 16; x++) {
+          const H = hm[(z << 4) | x];
+          for (let y = MAX_Y; y >= H; y--) sky[(y << 8) | (z << 4) | x] = 15;
         }
-        for (let y = H; y < hMax; y++) pqSky.push(wx, y, wz, 15);
+      }
+      // 2. sky frontier: cells that can bleed sideways into somewhere darker
+      for (let z = 0; z < 16; z++) {
+        for (let x = 0; x < 16; x++) {
+          const H = hm[(z << 4) | x];
+          const wx = baseX + x, wz = baseZ + z;
+          let hMax = H;
+          for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+            const nH = this.world.heightTop(wx + dx, wz + dz);
+            if (nH > hMax) hMax = nH;
+          }
+          for (let y = H; y < hMax; y++) pqSky.push(wx, y, wz, 15);
+        }
       }
     }
 

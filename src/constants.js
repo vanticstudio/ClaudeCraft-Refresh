@@ -43,7 +43,12 @@ export const AMBIENT_FLOOR = 0.04;        // 04 §11.1
 export const AUTOSAVE_INTERVAL = 600;     // ticks (30 s)
 export const DB_NAME = 'mc-world';
 export const DB_VERSION = 1;
-export const SAVE_VERSION = 1;
+// v2 (10-NETHER §2.4): chunk keys are dim-prefixed "<dim>:cx,cz"; meta gains
+// player.dimension + meta.dimensions. The v1→v2 migration (saveManager.open)
+// preserves the player and clears the chunk store — the overworld regenerates
+// deterministically from the same seed (player builds in it are lost; a testing
+// env, per DEVIATIONS).
+export const SAVE_VERSION = 2;
 
 // --- Render (01 §1, §14) ---
 export const CAMERA_FOV = 70;

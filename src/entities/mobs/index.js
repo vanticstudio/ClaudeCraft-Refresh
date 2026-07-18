@@ -6,12 +6,18 @@ import { Creeper } from './Creeper.js';
 import { Spider } from './Spider.js';
 import { Enderman } from './Enderman.js';
 import { Cow, Pig, Sheep, Chicken } from './passive.js';
+// 10-NETHER §7 — the six Nether mobs.
+import { Ghast } from './nether/Ghast.js';
+import { Blaze, ZombifiedPiglin, WitherSkeleton, MagmaCube, Piglin } from './nether/mobs.js';
 
-export const HOSTILE_TYPES = new Set(['zombie', 'skeleton', 'creeper', 'spider', 'enderman']);
+export const HOSTILE_TYPES = new Set(['zombie', 'skeleton', 'creeper', 'spider', 'enderman',
+  'ghast', 'blaze', 'wither_skeleton', 'magma_cube']);   // zombified_piglin/piglin are neutral
 
 const CTORS = {
   zombie: Zombie, skeleton: Skeleton, creeper: Creeper, spider: Spider,
   enderman: Enderman, cow: Cow, pig: Pig, sheep: Sheep, chicken: Chicken,
+  ghast: Ghast, blaze: Blaze, zombified_piglin: ZombifiedPiglin,
+  wither_skeleton: WitherSkeleton, magma_cube: MagmaCube, piglin: Piglin,
 };
 
 export function createMob(world, type, x, y, z, opts = {}) {

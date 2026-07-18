@@ -11,6 +11,8 @@ import { emitSound, startLoop, at } from '../audio/engine.js';
 import { AABB } from '../math/aabb.js';
 import { KEYBINDS } from '../constants.js';
 import { cloneStack, tagsEqual } from '../items/tags.js';
+import { tryIgnitePortal } from '../world/Portal.js';
+import { getDimension } from '../world/dimensions.js';
 
 const REPLACEABLE_TARGET = id => BLOCKS[id]?.replaceable;
 
@@ -891,6 +893,13 @@ export class Interaction {
 
   useFlintSteel(hit) {
     const w = this.world;
+    // 10-NETHER §3.2 — RMB on obsidian may ignite a Nether portal frame.
+    if (w.getBlock(hit.x, hit.y, hit.z) === B.OBSIDIAN && tryIgnitePortal(this.game, hit)) {
+      emitSound('item.flintandsteel.use', at(hit.x + 0.5, hit.y + 0.5, hit.z + 0.5));
+      this.player.damageHeld(1);
+      this.swing();
+      return true;
+    }
     if (w.getBlock(hit.x, hit.y, hit.z) === B.TNT) {
       w.setBlock(hit.x, hit.y, hit.z, B.AIR, { byPlayer: true });
       // Only the snick belongs here — world.tnt.fuse is started inside
@@ -965,6 +974,16 @@ export class Interaction {
     const hit = this.currentHit;
     if (!hit) return false;
     const w = this.world;
+    // 10-NETHER §10.1 — water evaporates: in an evaporatesWater dimension a
+    // water bucket places nothing, empties to a bucket, and poofs. (Lava is fine.)
+    if (held.name === 'water_bucket' && getDimension(w.activeDim)?.evaporatesWater) {
+      if (!this.player.creative) this.player.heldStack = { id: idOf('bucket'), count: 1 };
+      const c = hit;
+      emitSound('block.extinguish', at(c.x + 0.5, c.y + 0.5, c.z + 0.5));
+      this.game.particles?.smoke?.(c.x + 0.5, c.y + 1, c.z + 0.5);
+      this.swing();
+      return true;
+    }
     // 15 §13.1 rule 2 / §10.4 — water bucket on a targeted DRY waterloggable
     // block sets bit 7 instead of placing a source beside it.
     // Gated on water_bucket: this same method serves lava_bucket, which must

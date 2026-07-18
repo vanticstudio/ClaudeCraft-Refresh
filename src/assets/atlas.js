@@ -35,6 +35,16 @@ const BLOCK_TILES = [
   'potato_0', 'potato_1', 'potato_2', 'potato_3',
   'sugar_cane', 'short_grass', 'dandelion', 'poppy',
   'water', 'lava', 'fire', 'dead_bush',
+  // 10-NETHER §11
+  'netherrack', 'nether_bricks', 'soul_sand', 'soul_soil', 'magma_block',
+  'nether_quartz_ore', 'nether_gold_ore', 'ancient_debris_top', 'ancient_debris_side',
+  'crimson_nylium', 'warped_nylium', 'crimson_stem', 'crimson_stem_top',
+  'warped_stem', 'warped_stem_top', 'crimson_planks', 'warped_planks',
+  'nether_wart_block', 'warped_wart_block', 'shroomlight',
+  'crimson_fungus', 'warped_fungus', 'crimson_roots', 'warped_roots',
+  'nether_wart_0', 'nether_wart_1', 'nether_wart_2',
+  'bone_block_top', 'bone_block_side', 'nether_portal', 'spawner',
+  'netherite_block', 'smithing_table_top', 'smithing_table_side',
 ];
 const DESTROY_TILES = Array.from({ length: 10 }, (_, i) => 'destroy_' + i);
 const ITEM_TILES = Object.keys(PAINTERS).filter(n => n.startsWith('item_')).sort();
