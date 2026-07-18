@@ -12,6 +12,8 @@ import { AABB } from '../math/aabb.js';
 import { KEYBINDS } from '../constants.js';
 import { cloneStack, tagsEqual, getEnchantLvl } from '../items/tags.js';
 import { ENCH } from '../items/enchants.js';
+import { EFFECT, effectLevel, addEffect, applyInstant } from '../status/effects.js';
+import { POTIONS } from '../status/potions.js';
 import {
   meleeEnchBonus, silkDrop, silkSuppressesXp, silkSuppressesOnBroken,
 } from '../items/effects.js';
@@ -19,6 +21,7 @@ import { tryIgnitePortal } from '../world/Portal.js';
 import { getDimension } from '../world/dimensions.js';
 
 const REPLACEABLE_TARGET = id => BLOCKS[id]?.replaceable;
+const FATIGUE_MULT = [0.3, 0.09, 0.0027, 0.00081];   // 09-POTIONS §3.3 (amp 0..3+)
 
 function gaussian(rng) {
   let u = 0, v = 0;
@@ -212,8 +215,11 @@ export class Interaction {
   attack(target) {
     const p = this.player;
     const item = p.heldItem();
-    const base = item?.attackDamage ?? 1;
-    const speed = item?.attackSpeed ?? 4.0;
+    // 09-POTIONS §3.4 / AMENDS 05 §13.1 — Strength +3L, Weakness −4L, floored 0.
+    const base = Math.max(0, (item?.attackDamage ?? 1)
+      + 3 * effectLevel(p, EFFECT.STRENGTH) - 4 * effectLevel(p, EFFECT.WEAKNESS));
+    // AMENDS 05 §13.2 — Haste speeds attack cooldown recovery ×(1+0.1L).
+    const speed = (item?.attackSpeed ?? 4.0) * (1 + 0.1 * effectLevel(p, EFFECT.HASTE));
     const T = 20 / speed;
     const charge = Math.min(1, Math.max(0, (p.ticksSinceAttack + 0.5) / T));
     // AMENDS 05 §13.1: damage = base × (0.2+0.8p²) × (crit?1.5:1) + enchBonus×p.
@@ -338,6 +344,11 @@ export class Interaction {
     // their 15/5 multipliers are > 1. Applied BEFORE the ÷5s (Java order).
     const eff = getEnchantLvl(p.heldStack, ENCH.EFFICIENCY);
     if (isBestTool && speed > 1 && eff > 0) speed += eff * eff + 1;
+    // 09-POTIONS §3.3 / AMENDS 03 §15.2 — Haste ×(1+0.2L); Mining Fatigue ×FATIGUE_MULT.
+    const lHaste = effectLevel(p, EFFECT.HASTE);
+    if (lHaste > 0) speed *= 1 + 0.2 * lHaste;
+    const lFatigue = effectLevel(p, EFFECT.MINING_FATIGUE);
+    if (lFatigue > 0) speed *= FATIGUE_MULT[Math.min(lFatigue - 1, 3)];
     // AMENDS 03 §15.2 / 08 §5.3 — Aqua Affinity (helmet) cancels the submerged
     // ÷5. The !onGround ÷5 is unaffected by any enchant, so floating underwater
     // with Aqua Affinity is ÷5, not ÷25.
@@ -501,6 +512,16 @@ export class Interaction {
       }
       p.usingItem = null;
     }
+    // 09-POTIONS §11.2 — potion drink: gulp every 4 t, apply + return bottle at 32.
+    if (chan.kind === 'drink') {
+      if (chan.ticks % 4 === 0) emitSound('player.drink.gulp', null);
+      if (chan.ticks >= 32) {
+        const hand = chan.hand ?? 'main';
+        const stack = p.stackIn(hand);
+        if (ITEMS.get(stack?.id)?.kind === 'potion') this.drinkPotion(stack, hand);
+        p.usingItem = null;
+      }
+    }
     // §3.3: the draw ramp — density 0.6->1.8, BP 350->550 Hz over the 20-tick draw
     if (chan.kind === 'bow' && this.bowLoop) {
       const k = Math.min(1, chan.ticks / 20);
@@ -520,9 +541,15 @@ export class Interaction {
     const bow = p.stackIn(hand);
     const infinite = getEnchantLvl(bow, ENCH.INFINITY) > 0;
 
-    // §5.9 Infinity: fire without consuming, but still require ≥ 1 arrow (search
-    // order §7.4). "No arrow anywhere → cannot draw (unchanged)."
-    if (infinite ? !this.hasAmmo('arrow') : !this.takeItem('arrow')) return;
+    // §5.9 / §15.3 — pick the first arrow-class stack (plain 282 or tipped 378)
+    // in scan order. Infinity spares only PLAIN arrows; tipped always consume.
+    const ammo = this.pickArrowStack();
+    if (!ammo) return;                              // no arrow anywhere → cannot fire
+    const tipped = ammo.potionId != null;
+    if (!p.creative && !(infinite && !tipped)) {
+      const s = ammo.stack;
+      if (--s.count <= 0) { if (ammo.where === 'off') p.offhand = null; else p.inventory[ammo.where] = null; }
+    }
 
     // §7.4: a bow drawn in the offhand spends the OFFHAND bow's durability.
     // §5.7 gates this per point inside damageIn; §5.8 Mending repairs it.
@@ -542,7 +569,8 @@ export class Interaction {
       powerLvl: getEnchantLvl(bow, ENCH.POWER),
       punchLvl: getEnchantLvl(bow, ENCH.PUNCH),
       flame: getEnchantLvl(bow, ENCH.FLAME) > 0,
-      noPickup: infinite,
+      noPickup: infinite && !tipped,
+      potionId: ammo.potionId,        // 09-POTIONS §15.2 — tipped shots carry the effect
     });
     // Self event -> flat pool (§3.3). NOT inside Game.spawnArrow: skeletons share
     // that path and their shot must render positionally.
@@ -592,6 +620,17 @@ export class Interaction {
   }
 
   hasAmmo(name) { return this.findAmmo(name) !== null; }
+
+  // 09-POTIONS §15.3 — the first arrow-class stack (plain or tipped): offhand,
+  // then inventory 0→35. Returns { where, stack, potionId } or null.
+  pickArrowStack() {
+    const p = this.player, ARROW = idOf('arrow'), TIPPED = idOf('tipped_arrow');
+    const ok = s => s && (s.id === ARROW || s.id === TIPPED) && s.count > 0;
+    const pid = s => (s.id === TIPPED ? (s.tags?.potionId ?? null) : null);
+    if (ok(p.offhand)) return { where: 'off', stack: p.offhand, potionId: pid(p.offhand) };
+    for (let i = 0; i < 36; i++) if (ok(p.inventory[i])) return { where: i, stack: p.inventory[i], potionId: pid(p.inventory[i]) };
+    return null;
+  }
 
   takeItem(name) {
     // 18 §5.3 — "using any item in creative leaves the source stack untouched".
@@ -710,14 +749,28 @@ export class Interaction {
       // Food at hunger 20 still returns DONE: §7.3 counts it as a failed action
       // that consumes the press, so the offhand does not act on it.
       if (p.creative) return true;
-      if (p.foodLevel < 20 && !p.usingItem) {
+      // 09-POTIONS §9.1 — the golden apple is always edible (bypasses the
+      // full-hunger gate) so its Absorption + Regeneration are reachable when fed.
+      if ((held.alwaysEdible || p.foodLevel < 20) && !p.usingItem) {
         p.usingItem = { kind: 'eat', ticks: 0, hand };
       }
       return true;
     }
+    // 09-POTIONS §11.2 — drink a potion (32-tick channel, no hunger requirement).
+    if (held.kind === 'potion') {
+      if (!p.usingItem) p.usingItem = { kind: 'drink', ticks: 0, hand };
+      return true;
+    }
+    // §13/§14 — throw a splash/lingering potion.
+    if (held.kind === 'splash_potion' || held.kind === 'lingering_potion') {
+      this.throwPotion(held, hand);
+      return true;
+    }
+    // §11.1 — fill an empty glass bottle from a targeted water cell.
+    if (held.kind === 'bottle') { this.fillBottle(hand); return true; }
     if (held.name === 'bow') {
-      // §7.4: offhand → main → inventory. An arrow anywhere permits the draw.
-      if (!p.usingItem && this.hasAmmo('arrow')) {
+      // §7.4/§15.3: any arrow-class stack (plain or tipped) permits the draw.
+      if (!p.usingItem && this.pickArrowStack()) {
         p.usingItem = { kind: 'bow', ticks: 0, hand };
         this.bowLoop = startLoop('item.bow.draw', null);
       }
@@ -747,6 +800,7 @@ export class Interaction {
     switch (block.interactable) {
       case 'crafting': g.openContainer('crafting'); break;
       case 'smithing': g.openContainer('smithing', hit.x, hit.y, hit.z); break;   // 10-NETHER §9.3
+      case 'brewing': g.openContainer('brewing', hit.x, hit.y, hit.z); break;     // 09-POTIONS §10.4
       case 'furnace': g.openContainer('furnace', hit.x, hit.y, hit.z); break;
       // AMENDS 03 §16.1 — 08 §2 grows step 2's interactable set by these three.
       // All need their position: the table reads shelf power around it (§4.1),
@@ -1181,6 +1235,49 @@ export class Interaction {
     p.consumeIn(hand, 1);
     this.swing();
     return true;
+  }
+
+  // 09-POTIONS §11.2 — apply a drunk potion, then return an empty glass bottle.
+  drinkPotion(stack, hand) {
+    const p = this.player;
+    const P = POTIONS[stack.tags?.potionId ?? 'water'];
+    if (P && P.effect) {
+      if (P.instant) applyInstant(p, P.effect, P.amp, 1.0, null);
+      else addEffect(p, P.effect, P.amp, P.ticks);
+    }
+    p.consumeIn(hand, 1);
+    const bottle = { id: idOf('glass_bottle'), count: 1 };
+    if (p.give(bottle) > 0) this.game.throwStack(bottle);
+  }
+
+  // §13.1/§14.1 — throw a splash/lingering potion (speed 0.5, arc raised 20°,
+  // gaussian inaccuracy). The bottle is lost.
+  throwPotion(held, hand) {
+    const p = this.player;
+    const potionId = held.tags?.potionId ?? 'water';
+    const form = held.kind === 'lingering_potion' ? 'lingering' : 'splash';
+    const e = this.eyePos();
+    const pitch = p.pitch + 20 * Math.PI / 180;         // raise the throw 20°
+    const cp = Math.cos(pitch);
+    const dx = -Math.sin(p.yaw) * cp, dy = Math.sin(pitch), dz = -Math.cos(p.yaw) * cp;
+    const spd = 0.5, g = 0.0172275, rng = this.world.rng;
+    this.game.spawnPotion(potionId, form, e.x, e.y, e.z,
+      dx * spd + gaussian(rng) * g, dy * spd + gaussian(rng) * g, dz * spd + gaussian(rng) * g, p);
+    emitSound('entity.splash_potion.throw', null);
+    p.consumeIn(hand, 1);
+    this.swing();
+  }
+
+  // §11.1 — RMB an empty bottle at water → a water bottle (source not consumed).
+  fillBottle(hand) {
+    const hit = this.rayHit(this.reach(), { fluidMode: true });
+    if (!hit || this.world.getBlock(hit.x, hit.y, hit.z) !== B.WATER) return;
+    const p = this.player;
+    p.consumeIn(hand, 1);
+    const water = { id: idOf('potion'), count: 1, tags: { potionId: 'water' } };
+    if (p.give(water) > 0) this.game.throwStack(water);
+    emitSound('item.bottle.fill', null);
+    this.swing();
   }
 
   dropHeld(wholeStack) {

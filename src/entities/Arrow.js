@@ -6,6 +6,8 @@ import { tileSpriteGeometry, makeAtlasMaterial, entityAtlas } from './ItemEntity
 import { idOf } from '../registry/items.js';
 import { emitSound, at } from '../audio/engine.js';
 import { matOf, B } from '../registry/blocks.js';
+import { POTIONS, potionTint } from '../status/potions.js';
+import { addEffect, applyInstant } from '../status/effects.js';
 
 export class Arrow extends Entity {
   constructor(world, x, y, z, vx, vy, vz, owner, {
@@ -13,9 +15,11 @@ export class Arrow extends Entity {
     // 08 §5.9 — bow enchant payload. Skeleton bows are visual only (05 §3) and
     // are never enchanted, so these all default off for them.
     powerLvl = 0, punchLvl = 0, flame = false, noPickup = false,
+    potionId = null,        // 09-POTIONS §15 — tipped-arrow effect (player shots only)
   } = {}) {
     super(world, x, y, z);
     this.type = 'arrow';
+    this.potionId = potionId;
     this.width = 0.5; this.height = 0.5;
     this.vel.x = vx; this.vel.y = vy; this.vel.z = vz;
     this.owner = owner;
@@ -99,6 +103,14 @@ export class Arrow extends Entity {
         }
         // §5.9 Flame — 100 ticks (5 s) on an entity hit.
         if (this.flame && !target.dead) target.setOnFire(100);
+        // 09-POTIONS §15.4 — tipped arrow on-hit: full instant, or base ÷ 8 duration.
+        if (this.potionId) {
+          const P = POTIONS[this.potionId];
+          if (P?.effect) {
+            if (P.instant) applyInstant(target, P.effect, P.amp, 1.0, this.owner);
+            else addEffect(target, P.effect, P.amp, Math.max(1, Math.floor(P.ticks / 8)));
+          }
+        }
         emitSound('entity.arrow.hit_mob',                     // §3.3 (05 §11)
           at(target.pos.x, target.pos.y + target.height / 2, target.pos.z));
         this.dead = true;
@@ -139,7 +151,11 @@ export class Arrow extends Entity {
     const player = this.world.game?.player;
     if (!player || player.dead) return;
     if (player.getAABB().expand(0.5, 0.25, 0.5).intersects(this.getAABB())) {
-      const leftover = player.give({ id: idOf('arrow'), count: 1 });
+      // 09-POTIONS §15 — a tipped arrow returns tipped_arrow carrying its potionId.
+      const stack = this.potionId
+        ? { id: idOf('tipped_arrow'), count: 1, tags: { potionId: this.potionId } }
+        : { id: idOf('arrow'), count: 1 };
+      const leftover = player.give(stack);
       if (leftover === 0) this.dead = true;
     }
   }
@@ -150,6 +166,10 @@ export class Arrow extends Entity {
     const tile = TILE['item_arrow'] ?? 0;
     const mat = makeAtlasMaterial({ doubleSide: true });
     if (!this.fromPlayer) mat.userData.baseColor.setRGB(0.75, 0.75, 0.75);   // skeleton arrows darker
+    else if (this.potionId) {                                                 // §15.2 tint tipped head
+      const c = potionTint(this.potionId);
+      mat.userData.baseColor.setRGB(((c >> 16) & 255) / 255, ((c >> 8) & 255) / 255, (c & 255) / 255);
+    }
     // flat cross aligned to +Z, rotated to velocity in updateRender
     for (const rot of [0, Math.PI / 2]) {
       const quad = new THREE.Mesh(tileSpriteGeometry(tile, 0.5), mat);
@@ -176,6 +196,7 @@ export class Arrow extends Entity {
     return {
       type: 'arrow', ...super.serialize(),
       crit: this.crit, fromPlayer: this.fromPlayer, stuck: this.stuck,
+      potionId: this.potionId,
     };
   }
 }

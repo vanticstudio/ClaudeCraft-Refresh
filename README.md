@@ -75,6 +75,29 @@ autosaves to the browser's IndexedDB every 30 seconds — close the tab and
 
 *This section is updated as new features land.*
 
+- **2026-07-18** — **Potions & status effects (expansion phase E9, `09`)**: the
+  full brewing and status-effect layer is in. Craft a **brewing stand** (blaze rod
+  + cobblestone), fill glass **bottles** at any water, and brew: water + **nether
+  wart** → awkward, then an ingredient picks the effect — **sugar → Speed, blaze
+  powder → Strength, ghast tear → Regeneration, magma cream → Fire Resistance,
+  spider eye → Poison, golden carrot → Night Vision, golden apple → Healing**.
+  **Redstone** lengthens a potion, **glowstone** strengthens it, a **fermented
+  spider eye** corrupts it (Speed → Slowness, Healing → Harming, Night Vision →
+  Invisibility), and **gunpowder** makes it a **splash** potion. Drink one and the
+  effect shows in a **top-right HUD stack with a live timer**; **21 effects** are
+  modelled to Java-exact numbers — Speed/Slowness change walk speed and FOV, Jump
+  Boost clears higher ledges and softens falls, Haste/Mining Fatigue rescale mining,
+  Strength/Weakness swing the damage math, **Regeneration** heals over time (green
+  hearts for Poison, black for Wither, which *can* kill), **Resistance** and
+  **Absorption** (yellow hearts) soak damage, **Fire Resistance** makes lava free,
+  **Night Vision** lights the dark, and **Invisibility** shrinks how far mobs see
+  you. **Splash potions** hit everything in an area with a distance falloff;
+  **lingering potions** leave a shrinking cloud that re-doses whoever stands in it;
+  **tipped arrows** carry a potion's effect onto whatever they hit. Golden apples
+  grant Absorption + Regen, spider eyes poison you, rotten flesh now gives real
+  Hunger, brown & red **mushrooms** grow in dark caves, and it all saves and reloads
+  — effects, absorption, and every brewing stand mid-brew.
+
 - **2026-07-18** — **Netherite: the endgame gear tier (expansion phase E8, `10` §9)**:
   the full progression is now live. Mine **ancient debris** with a diamond (or
   better) pickaxe deep in the Nether, **smelt** it into netherite scrap, combine

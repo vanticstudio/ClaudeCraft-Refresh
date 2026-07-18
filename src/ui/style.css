@@ -535,3 +535,17 @@ html, body {
 #tooltip .tt-name { color: #ffffff; }
 #tooltip .tt-renamed { font-style: italic; }        /* renamed via tags.name (§8.4) */
 #tooltip .tt-ench { color: #a8a8ff; }               /* light purple, per §15.2 */
+
+/* 09-POTIONS §6.1 — active-effect icon stack (top-right). */
+#effect-stack {
+  position: absolute; top: 8px; right: 8px;
+  display: flex; flex-direction: column; gap: 3px; pointer-events: none;
+}
+#effect-stack .effect-icon {
+  display: flex; justify-content: space-between; gap: 8px;
+  min-width: 90px; padding: 2px 6px;
+  background: rgba(0, 0, 0, 0.55); border-left: 3px solid #fff; border-radius: 2px;
+  font-size: 11px; color: #e8e8e8; font-family: monospace;
+}
+#effect-stack .effect-icon.ambient { outline: 1px solid #6a9cff; }
+#effect-stack .ei-time { color: #b8b8b8; }

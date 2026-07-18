@@ -10,6 +10,16 @@ import { lightningIgnite } from '../world/fire.js';
 import { BIOME_TEMPS } from '../world/gen/biomes.js';
 import { RENDER_RADIUS, chunkKey, SIM_RADIUS } from '../constants.js';
 import { ChunkState } from '../world/Chunk.js';
+import { EFFECT } from '../status/effects.js';
+
+// 09-POTIONS §6.5 — Night Vision sky floor: steady 1.0, flash-blinking in the
+// last 10 s (200 t) via a 10-tick sine (~1.0 → 0.4).
+function nightVisionScale(player) {
+  const fx = player?.effects?.get(EFFECT.NIGHT_VISION);
+  if (!fx) return 0;
+  if (fx.duration > 200) return 1.0;
+  return 0.7 + 0.3 * Math.sin(fx.duration * Math.PI / 10);
+}
 import { AABB } from '../math/aabb.js';
 import { LivingEntity } from '../entities/Entity.js';
 
@@ -346,6 +356,9 @@ export class DayNight {
     } else {
       sharedUniforms.uDimAmbient.value = 0;
     }
+
+    // 09-POTIONS §6.5 — Night Vision sky-channel floor, flash-blinking below 10 s.
+    sharedUniforms.uNightVision.value = nightVisionScale(this.game.player);
 
     // shared chunk-shader uniforms (01 §8.7)
     sharedUniforms.uSkyDarken.value = skyDarkenF;

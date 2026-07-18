@@ -381,6 +381,23 @@ P.netherite_block = (c, x, y, r) => { noise(c, x, y, r, '#443f42', 4); border(c,
 P.smithing_table_top = (c, x, y, r) => { noise(c, x, y, r, '#3a3336', 8); rect(c, x, y, 5, 5, 6, 6, '#8a8a8a'); };
 P.smithing_table_side = (c, x, y, r) => { planks(c, x, y, r, '#5a4436'); rect(c, x, y, 0, 6, 16, 3, '#2a2528'); };
 
+// ============ 09-POTIONS §7 mushrooms + brewing stand ============
+P.brown_mushroom = (c, x, y) => {
+  rect(c, x, y, 7, 8, 2, 6, '#d8cdba');                   // stem
+  rect(c, x, y, 4, 4, 8, 4, '#9a6a43'); rect(c, x, y, 5, 3, 6, 1, '#7a5233');  // cap
+};
+P.red_mushroom = (c, x, y) => {
+  rect(c, x, y, 7, 8, 2, 6, '#e6ddc9');                   // stem
+  rect(c, x, y, 4, 4, 8, 4, '#c8302a'); rect(c, x, y, 5, 3, 6, 1, '#a02420');  // cap
+  px(c, x, y, 6, 5, '#f0f0f0'); px(c, x, y, 9, 6, '#f0f0f0'); px(c, x, y, 8, 4, '#f0f0f0');  // spots
+};
+P.brewing_stand = (c, x, y, r) => {
+  noise(c, x, y, r, '#3a3336', 8);
+  rect(c, x, y, 7, 2, 2, 12, '#8a8a8a');                  // central rod
+  rect(c, x, y, 3, 13, 10, 2, '#5a5a5a');                 // base
+  px(c, x, y, 8, 3, '#e0a040');                           // flame tip
+};
+
 P.crafting_table_top = (c, x, y, r) => {
   planks(c, x, y, r, '#a76e35');
   for (let i = 0; i < 16; i++) {
@@ -1152,6 +1169,34 @@ P.item_netherite_scrap = (c, x, y) => {
   px(c, x, y, 5, 10, '#4a3028'); px(c, x, y, 11, 10, '#8a6a5c');
 };
 P.item_netherite_ingot = ingot('#5a545e', '#39343e', '#7c7482');
+
+// ---- 09-POTIONS item sprites ----
+// Bottle base shared by potion/splash/lingering; the per-potionId tint is applied
+// by the runtime bottle-icon pipeline (§12.3) — the atlas holds a neutral bottle.
+const bottleBase = (c, x, y, liquid) => {
+  rect(c, x, y, 6, 2, 4, 2, '#caa06a');                  // cork
+  rect(c, x, y, 6, 4, 4, 2, '#d8e6ee');                  // neck
+  rect(c, x, y, 4, 6, 8, 8, '#c8dce6');                  // glass body
+  rect(c, x, y, 5, 8, 6, 5, liquid);                     // liquid
+  px(c, x, y, 4, 6, '#eef6fa'); px(c, x, y, 5, 7, '#eef6fa');
+};
+P.item_glass_bottle = (c, x, y) => {
+  rect(c, x, y, 6, 2, 4, 2, '#caa06a');
+  rect(c, x, y, 6, 4, 4, 2, '#d8e6ee');
+  rect(c, x, y, 4, 6, 8, 8, '#c8dce6'); rect(c, x, y, 6, 8, 4, 5, '#aecad8');
+};
+P.item_potion = (c, x, y) => bottleBase(c, x, y, '#385DC6');
+P.item_splash_potion = (c, x, y) => { bottleBase(c, x, y, '#385DC6'); rect(c, x, y, 5, 2, 6, 1, '#8A8A8A'); };
+P.item_lingering_potion = (c, x, y) => { bottleBase(c, x, y, '#385DC6'); px(c, x, y, 6, 14, '#8A8A8A'); px(c, x, y, 8, 15, '#8A8A8A'); px(c, x, y, 10, 14, '#8A8A8A'); };
+P.item_spider_eye = (c, x, y) => { disc(c, x, y, 8, 8, 4, '#7a1f24'); disc(c, x, y, 8, 8, 2, '#c85a1a'); px(c, x, y, 8, 8, '#1a1a1a'); };
+P.item_fermented_spider_eye = (c, x, y) => { disc(c, x, y, 8, 8, 4, '#3a5a34'); disc(c, x, y, 8, 8, 2, '#6a8a3a'); px(c, x, y, 8, 8, '#1a1a1a'); };
+P.item_golden_apple = (c, x, y) => { disc(c, x, y, 8, 9, 4, '#fcd94a'); px(c, x, y, 8, 4, '#6a4a20'); rect(c, x, y, 6, 6, 2, 2, '#fff2a0'); };
+P.item_golden_carrot = (c, x, y) => { for (let i = 0; i < 7; i++) px(c, x, y, 4 + i, 12 - i, '#f5c518'); for (let i = 0; i < 7; i++) px(c, x, y, 5 + i, 12 - i, '#d4a017'); rect(c, x, y, 10, 3, 3, 2, '#3aa53a'); };
+P.item_tipped_arrow = (c, x, y) => {
+  for (let i = 0; i < 12; i++) px(c, x, y, 2 + i, 13 - i, '#c8b088');   // shaft
+  rect(c, x, y, 11, 1, 3, 3, '#88c0e0');                                 // tinted head
+  px(c, x, y, 2, 13, '#e0e0e0'); px(c, x, y, 3, 12, '#e0e0e0');          // fletching
+};
 P.item_diamond = (c, x, y) => {
   const d = '#4aedd9', s = '#2bbfae', w = '#d8fff8';
   rect(c, x, y, 5, 4, 6, 2, d);

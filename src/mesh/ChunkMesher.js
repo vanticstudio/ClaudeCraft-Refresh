@@ -184,6 +184,11 @@ export class ChunkMesher {
         case 'comparator': this.emitBox(x, y, z, blk, st, [0, 0, 0, 1, 2 / 16, 1], false); break;
         case 'piston_head': this.emitBox(x, y, z, blk, st, [0, 0, 0, 1, 1, 1], true); break;
         case 'hopper': this.emitBox(x, y, z, blk, st, [0, 0, 0, 1, 1, 1], true); break;
+        // 09-POTIONS §7.2 — brewing stand: a low base + a central post.
+        case 'brewing_stand':
+          this.emitBox(x, y, z, blk, st, [1 / 16, 0, 1 / 16, 15 / 16, 2 / 16, 15 / 16], true);
+          this.emitBox(x, y, z, blk, st, [7 / 16, 2 / 16, 7 / 16, 9 / 16, 14 / 16, 9 / 16], true);
+          break;
         default: break;   // 'none'
       }
       // 15 §12 — the SECOND contribution. The block mesh above is emitted

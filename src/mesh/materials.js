@@ -20,6 +20,7 @@ uniform vec3 uSkyTint;
 uniform vec3 uFogColor; uniform float uFogNear; uniform float uFogFar;
 uniform float uAlphaTest; uniform float uAlpha;
 uniform float uDimAmbient;
+uniform float uNightVision;
 varying vec2 vUv; varying vec4 vCol; varying float vDist;
 const vec3 BLOCK_TINT = vec3(1.00, 0.89, 0.69);
 const float AMBIENT_FLOOR = ${AMBIENT_FLOOR.toFixed(3)};
@@ -31,6 +32,8 @@ void main() {
   vec4 tex = texture2D(uAtlas, vUv);
   if (tex.a < uAlphaTest) discard;
   float effSky = max(vCol.r * 15.0 - uSkyDarken, 0.0);
+  // 09-POTIONS §6.5 / AMENDS 04 §11.2 — Night Vision floors the sky channel to 15.
+  effSky = max(effSky, uNightVision * 15.0);
   vec3 light = max(brightness(vCol.g * 15.0) * BLOCK_TINT, brightness(effSky) * uSkyTint);
   // 10-NETHER §13.1 — per-dimension ambient floor; no cell renders below it.
   light = max(light, vec3(uDimAmbient));
@@ -49,6 +52,8 @@ export const sharedUniforms = {
   uFogFar: { value: 128 },
   // 10-NETHER §13.1 — per-dimension ambient floor (Nether 0.10).
   uDimAmbient: { value: 0.0 },
+  // 09-POTIONS §6.5 — Night Vision sky-channel floor (0..1), written per frame.
+  uNightVision: { value: 0.0 },
 };
 
 export function createChunkMaterials(atlasTexture) {

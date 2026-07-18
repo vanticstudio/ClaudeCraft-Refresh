@@ -571,7 +571,14 @@ export class Containers {
       x, y, region: 'result', takeOnly: true,
       get: () => {
         const r = findRecipe(this.craftGrid, this.craftW);
-        return r ? { id: r.output.id, count: r.output.count } : null;
+        if (!r) return null;
+        const out = { id: r.output.id, count: r.output.count };
+        // 09-POTIONS §15.1 — tipped arrows inherit the lingering potion's potionId.
+        if (out.id === idOf('tipped_arrow')) {
+          const lp = this.craftGrid.find(s => s && s.id === idOf('lingering_potion'));
+          if (lp?.tags?.potionId) out.tags = { potionId: lp.tags.potionId };
+        }
+        return out;
       },
       onCraft: () => {
         for (let i = 0; i < this.craftGrid.length; i++) {
@@ -615,6 +622,7 @@ export class Containers {
       inventory: 'Inventory', crafting: 'Crafting', furnace: 'Furnace', chest: 'Chest',
       enchanting: 'Enchant', anvil: 'Repair & Name', grindstone: 'Repair & Disenchant',
       dispenser: 'Dispenser', dropper: 'Dropper', hopper: 'Hopper', smithing: 'Smithing Table',
+      brewing: 'Brewing Stand',
     }[this.kind];
     panel.innerHTML = `<div class="panel-title">${title}</div>`;
     this.panel = panel;
@@ -724,6 +732,27 @@ export class Containers {
       flame.className = 'gauge-flame-abs';
       flame.innerHTML = '<div id="g-flame"></div>';
       panel.appendChild(flame);
+      defs.push(...this.playerStorageDefs());
+    } else if (this.kind === 'brewing') {
+      // 09-POTIONS §10.4 — ingredient (top), 3 bottles (arc), fuel (far-left).
+      const b = this.be.data;
+      const dirty = () => { this.markBeDirty(); this.notifyContainer(); };
+      const bottleXY = [[47, 50], [79, 58], [111, 50]];
+      for (let i = 0; i < 3; i++) defs.push({
+        x: bottleXY[i][0], y: bottleXY[i][1], region: 'brewBottle',
+        get: () => b.slots[i], set: v => { b.slots[i] = v; dirty(); },
+        canPut: s => s.id === 371 || s.id === 372 || s.id === 373,
+      });
+      defs.push({
+        x: 79, y: 15, region: 'brewIngredient',
+        get: () => b.slots[3], set: v => { b.slots[3] = v; dirty(); },
+      });
+      defs.push({
+        x: 16, y: 17, region: 'brewFuel',
+        get: () => b.slots[4], set: v => { b.slots[4] = v; dirty(); },
+        canPut: s => s.id === idOf('blaze_powder'),
+      });
+      this.addArrow(panel, 79, 34);
       defs.push(...this.playerStorageDefs());
     } else if (this.kind === 'enchanting') {
       // 08 §4.2 — item slot, lapis slot, three offer buttons stacked vertically.
@@ -1298,9 +1327,16 @@ export class Containers {
     if (['container', 'furnaceIn', 'furnaceFuel', 'furnaceOut', 'craft', 'armor', 'result', 'offhand',
       // 08 §4.2/§8.5/§9.1 — shift-clicking OUT of any 08 input slot returns the
       // stack to the player, exactly like the furnace/craft slots above.
-      'enchantIn', 'enchantLapis', 'anvilTarget', 'anvilSac', 'grindIn0', 'grindIn1']
+      'enchantIn', 'enchantLapis', 'anvilTarget', 'anvilSac', 'grindIn0', 'grindIn1',
+      'brewBottle', 'brewIngredient', 'brewFuel']    // 09-POTIONS §10.4
       .includes(slot.region)) {
       return bySel(['hotbar', 'main']);
+    }
+    // 09-POTIONS §10.4 — potions → bottles, blaze powder → fuel, else → ingredient.
+    if (this.kind === 'brewing') {
+      if (stack.id === 371 || stack.id === 372 || stack.id === 373) return bySel(['brewBottle']);
+      if (stack.id === idOf('blaze_powder')) return bySel(['brewFuel']);
+      return bySel(['brewIngredient']);
     }
     // from player storage:
     if (this.kind === 'chest' || this.kind === 'dispenser' || this.kind === 'dropper' || this.kind === 'hopper')
@@ -1482,7 +1518,7 @@ export class Containers {
         furnace: [35, 36], chest: [37],
         enchanting: [B.ENCHANTING_TABLE], anvil: [B.ANVIL], grindstone: [B.GRINDSTONE],
         dispenser: [83], dropper: [84], hopper: [85],
-        smithing: [B.SMITHING_TABLE],
+        smithing: [B.SMITHING_TABLE], brewing: [B.BREWING_STAND],
       }[this.kind];
       const stillThere = EXPECT ? EXPECT.includes(id) : true;
       if (d > 8 || !stillThere) { this.game.closeContainerScreen?.(); return; }
