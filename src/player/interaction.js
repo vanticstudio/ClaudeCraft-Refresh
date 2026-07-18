@@ -680,6 +680,7 @@ export class Interaction {
     const g = this.game;
     switch (block.interactable) {
       case 'crafting': g.openContainer('crafting'); break;
+      case 'smithing': g.openContainer('smithing', hit.x, hit.y, hit.z); break;   // 10-NETHER §9.3
       case 'furnace': g.openContainer('furnace', hit.x, hit.y, hit.z); break;
       case 'chest': {
         // blocked when an opaque block sits above (06 §5.3)

@@ -98,16 +98,20 @@ export class ItemEntity extends Entity {
     if (this.age >= this.despawnAge) { this.dead = true; return; }
 
     this.updateMedium();
-    if (this.inLava || this.world.getBlock(
-        Math.floor(this.pos.x), Math.floor(this.pos.y), Math.floor(this.pos.z)) === 65 /* fire */) {
+    // 10-NETHER §9.4 — netherite items (lavaImmune) are not destroyed by lava,
+    // fire, OR cactus, and float on lava; every other item burns per 06 §16. (The
+    // spec deliberately extends the immunity to cactus, unlike vanilla.)
+    const immune = ITEMS.get(this.stack.id)?.lavaImmune;
+    if (!immune && (this.inLava || this.world.getBlock(
+        Math.floor(this.pos.x), Math.floor(this.pos.y), Math.floor(this.pos.z)) === 65 /* fire */)) {
       this.dead = true;
       return;
     }
-    // cactus contact destroys items (06 §5.8)
-    if (this.touchesCactus()) { this.dead = true; return; }
+    // cactus contact destroys items (06 §5.8), except lava-immune netherite (§9.4)
+    if (!immune && this.touchesCactus()) { this.dead = true; return; }
 
-    if (this.inWater) {
-      this.vel.y = Math.min(this.vel.y + 0.06, 0.06);   // buoyancy (approx)
+    if (this.inWater || (immune && this.inLava)) {
+      this.vel.y = Math.min(this.vel.y + 0.06, 0.06);   // buoyancy (approx) — floats on lava too
     } else {
       this.vel.y -= 0.04;
     }

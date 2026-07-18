@@ -602,10 +602,11 @@ for (let s = 0; s < 10; s++) {
 // Shared pixel maps; tiers recolor via palette substitution (06 §8.1).
 const TOOL_TIERS = {
   wooden: '#8b6f47', stone: '#9a9a9a', iron: '#d8d8d8',
-  golden: '#fdf55f', diamond: '#4aedd9',
+  golden: '#fdf55f', diamond: '#4aedd9', netherite: '#6a6068',
 };
 const ARMOR_TIERS = {
   leather: '#a0522d', golden: '#fdf55f', iron: '#d8d8d8', diamond: '#4aedd9',
+  netherite: '#6a6068',
 };
 const STICK = '#6b4f2a', STICK_S = '#4a3620';
 
@@ -1036,6 +1037,13 @@ P.item_nether_brick = (c, x, y) => {
   rect(c, x, y, 4, 8, 8, 1, '#5a2a2e');
   px(c, x, y, 4, 6, '#5a2a2e'); px(c, x, y, 11, 10, '#241012');
 };
+// 10-NETHER §9 — netherite tier materials
+P.item_netherite_scrap = (c, x, y) => {
+  disc(c, x, y, 8, 8, 4, '#7a5a4e');
+  px(c, x, y, 6, 6, '#a08070'); px(c, x, y, 10, 7, '#5a3f36');
+  px(c, x, y, 5, 10, '#4a3028'); px(c, x, y, 11, 10, '#8a6a5c');
+};
+P.item_netherite_ingot = ingot('#5a545e', '#39343e', '#7c7482');
 P.item_diamond = (c, x, y) => {
   const d = '#4aedd9', s = '#2bbfae', w = '#d8fff8';
   rect(c, x, y, 5, 4, 6, 2, d);

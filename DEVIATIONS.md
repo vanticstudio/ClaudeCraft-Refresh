@@ -4,6 +4,118 @@ Deviations and ambiguity rulings. (The base-spec `.md` files were removed from
 the working tree during repo cleanup; the pre-UPDATE deviation log for the
 initial build lives in git history — `git show 8441ac9:DEVIATIONS.md`.)
 
+## E8 — 10-NETHER §9: the netherite tier (smithing upgrade + gear) (2026-07-18)
+
+Built to `10-NETHER.md` §9 (netherite tier) + its AMENDS to 06 (tool/armor rows,
+tier ladder, recipes/smelting) and 05 (§14.3 knockback resistance). This is the
+tier E7 deliberately deferred; E7's anchors (ancient_debris 124, netherite_block
+142, smithing_table 143 — all blast 1200 / diamond-tier / correct) were left
+untouched.
+
+### THE SMITHING UPGRADE (frozen behavior — the gate)
+
+`smithingUpgrade(base, material)` in `src/registry/items.js` is the §9.3 operation.
+Pure, allocation-light (the result slot calls it every refresh). Contract:
+- Valid only when `material` is a `netherite_ingot` **and** `base` is a diamond
+  tool/armor with a mapping in `SMITHING_UPGRADES` (the 9 diamond→netherite ids).
+- **Tags carried verbatim** via `cloneTags` — enchantments, anvil name, anvilUses,
+  and any unknown 09+/11 keys survive; the result never shares a tags reference
+  with the base (08 §1 rules 3/4). No re-freeze of the tags contract.
+- **Used durability carried**: `damage` counts UP from 0, so copying `base.damage`
+  preserves the absolute durability already spent; because netherite's max (2031)
+  exceeds diamond's (1561), the upgraded item has *more* remaining — vanilla-faithful.
+  Clamped to `maxDur − 1` so an upgrade can never yield a pre-broken item; an
+  undamaged base yields no `damage` field at all.
+- The smithing screen consumes exactly 1 base + 1 ingot, awards **no XP** (§9.3).
+
+### Amendments applied (base specs stay frozen)
+
+- **Tier ladder gains `netherite(4)`, speed ×9** (AMENDS 06 §1) — one line in
+  `TIERS`. `harvestOK`'s `>= block.tier` means tier 4 clears every diamond gate
+  (obsidian, ancient_debris, netherite_block) with no block edits; ×9 > diamond's
+  ×8 in the break-time numerator.
+- **Items 398–408** defined with **explicit ids** (NOT appended to the 256–280
+  tool loop or 288–303 armor loop, which would renumber bow/shears/bucket/etc.):
+  scrap 398, ingot 399, 5 tools 400–404, 4 armor 405–408. Stats match §9.1/§9.2
+  exactly (dur 2031/×9/+1 dmg; armor 407/592/555/481, points 3/8/6/3, toughness 3).
+- **Two new item fields** on the `defItem` defaults: `knockbackResistance` (§9.2)
+  and `lavaImmune` (§9.4), both defaulting to the previous behavior (0 / false) so
+  no existing item changes.
+- **Knockback resistance** (AMENDS 05 §14.3): `LivingEntity.applyKnockback` scales
+  `strength *= (1 − clamp(knockbackResistance()))`. `Entity.knockbackResistance()`
+  is 0 (mobs unchanged); `Player` overrides it to sum worn armor. Full netherite
+  → 0.4 → 40% less melee/projectile knockback. Toughness needed **no** formula
+  change — `armorReduce` already reads `armorToughness()`, which sums the pieces.
+- **Lava/fire/cactus immunity + float** (§9.4): `ItemEntity.tick` skips the
+  lava/fire *and cactus* destroy for `lavaImmune` items and gives them the water
+  buoyancy branch on lava so they bob on the surface. (§9.4 deliberately extends
+  the immunity to cactus, unlike vanilla.) Non-immune items are byte-for-byte
+  unchanged.
+- **Recipes/smelting**: 4 scrap + 4 gold → 1 ingot (shapeless); 9 ingot ↔ block;
+  ancient_debris → scrap (2.0 XP). The smithing_table craft recipe already existed
+  (E7).
+- **Sprites**: `netherite` added to `TOOL_TIERS`/`ARMOR_TIERS` (auto-generates the
+  9 gear sprites) + bespoke `item_netherite_scrap`/`item_netherite_ingot`.
+
+### Deviations / decisions
+
+1. **Pre-1.20 smithing (no template).** Per the spec's own DECIDED adaptation
+   (§9.3): diamond gear + netherite ingot, no Netherite Upgrade smithing template
+   (templates would need a bastion structure + a whole item family, out of scope).
+2. **The smithing table is transient (no block entity).** Like the crafting table
+   and like vanilla smithing, the two input slots live in the reused `craftGrid`
+   and spill back to the inventory on close — no BE, no serialization, no spill
+   code. (A block-entity route would make inputs persist chest-like, which is
+   non-vanilla for smithing.)
+3. **`enchantability 15` (§9.1/§9.2) is declared but inert in this tree.** The
+   enchanting table (08/E4) is not present on this branch, so nothing consumes an
+   enchantability stat; the smithing upgrade preserves *existing* enchants
+   regardless. When E4 merges, netherite's enchantability slots in as a registry
+   field then. No behavior is lost today.
+4. **Knockback resistance covers melee/arrow/thrown/mob knockback, not the
+   explosion direct-push.** All the routed knockback paths go through
+   `applyKnockback` and get the reduction; `Game.explode` pushes entities directly
+   (a pre-existing boundary, flagged in its own comment), so explosion knockback is
+   unaffected. Documented rather than reworking the explosion push.
+
+### Defects found by the CRITICAL-tier review pass and fixed
+
+A five-dimension adversarial Opus review (each finding independently
+verify-or-refuted) audited the smithing upgrade, registry stats, combat
+integration, item-entity behavior, and cross-cutting regressions. Four dimensions
+were clean; it surfaced one **CONFIRMED** defect, now fixed:
+
+- **MED — netherite items were still destroyed by cactus (§9.4 violation).** I
+  gated the lava/fire destroy on `!immune` but left the cactus check ungated,
+  following *vanilla* parity (where fireproof items still die to cactus). §9.4
+  governs and explicitly lists cactus in the netherite immunity ("not destroyed by
+  lava, fire, **or cactus contact**"), so the code was wrong. Fixed: the cactus
+  check is now `!immune && touchesCactus()`; a regression asserts a netherite item
+  survives a cactus while an ordinary item still dies to it.
+
+The reviewer explicitly confirmed clean: the smithing tag/durability transfer (no
+reference sharing, never pre-broken, 1 base + 1 ingot consumed, no XP, grid spills
+on close), every §9 registry number + id allocation, the knockback-resistance /
+toughness wiring (mobs unchanged, no double-scaling, no NaN), and the
+cross-cutting integration (no id renumbering, no spurious block entity, no import
+cycle, sprites auto-generate).
+
+### Verified
+
+- **e8 suite 33/33**: registry stats (all §9 numbers), smelting + recipes, **the
+  gate** (diamond→netherite preserves enchants + anvil name + used durability, tags
+  deep-cloned, undamaged→no damage field, rejects non-diamond/wrong-material), the
+  smithing UI flow (opens with no spurious block entity, result previews, take
+  routes the upgrade to the cursor and consumes 1 base + 1 ingot), tier/mining
+  (netherite harvests the diamond-gated blocks; iron still gated), combat (0.4
+  kbResist / 12 toughness / 20 points, 40% knockback reduction), and lava/cactus
+  immunity (netherite survives lava + cactus and floats; ordinary items still burn
+  and die to cactus).
+- **Regressions clean**: e7core 20/20, e7gate 13/13, e7review 12/12, verify-ingame
+  7/7, audio 35/35, `npm run build` green. (verify-e2's stochastic fire-spread
+  gate flakes 22–24/24 run-to-run, unrelated to E8 — no E8 change touches block
+  fire spread.)
+
 ## E7 — 10-NETHER: the multi-dimension engine (registry + portals + Nether) (2026-07-18)
 
 Built to `10-NETHER.md` §1–§9, §11–§14, §16 **minus the netherite tier (§8) and

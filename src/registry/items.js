@@ -3,6 +3,7 @@
 // their block's id (0–66).
 
 import { BLOCKS, B } from './blocks.js';
+import { cloneTags } from '../items/tags.js';
 
 export const ITEMS = new Map();
 export const NAME_TO_ID = new Map();
@@ -23,6 +24,8 @@ function defItem(id, name, opts = {}) {
     armorSlot: null,
     armorPoints: 0,
     toughness: 0,
+    knockbackResistance: 0, // 10-NETHER §9.2 — worn armor sums into entity KB resist
+    lavaImmune: false,      // 10-NETHER §9.4 — item entity survives lava/fire, floats on lava
     hunger: 0,
     saturation: 0,
     poisonChance: 0,
@@ -80,13 +83,15 @@ const TIERS = {
   iron:   { tier: 2, speedMult: 6, dur: 250 },
   golden: { tier: 0, speedMult: 12, dur: 32 },   // gold harvests as tier 0, speed 12
   diamond:{ tier: 3, speedMult: 8, dur: 1561 },
+  // 10-NETHER AMENDS 06 §1 — netherite(4), speed ×9, dur 2031 (§9.1)
+  netherite: { tier: 4, speedMult: 9, dur: 2031 },
 };
-const SWORD_DMG = { wooden: 4, stone: 5, iron: 6, golden: 4, diamond: 7 };
-const AXE_DMG = { wooden: 7, stone: 9, iron: 9, golden: 7, diamond: 9 };
-const PICK_DMG = { wooden: 2, stone: 3, iron: 4, golden: 2, diamond: 5 };
-const SHOVEL_DMG = { wooden: 2.5, stone: 3.5, iron: 4.5, golden: 2.5, diamond: 5.5 };
-const AXE_SPD = { wooden: 0.8, stone: 0.8, iron: 0.9, golden: 1.0, diamond: 1.0 };
-const HOE_SPD = { wooden: 1.0, stone: 2.0, iron: 3.0, golden: 1.0, diamond: 4.0 };
+const SWORD_DMG = { wooden: 4, stone: 5, iron: 6, golden: 4, diamond: 7, netherite: 8 };
+const AXE_DMG = { wooden: 7, stone: 9, iron: 9, golden: 7, diamond: 9, netherite: 10 };
+const PICK_DMG = { wooden: 2, stone: 3, iron: 4, golden: 2, diamond: 5, netherite: 6 };
+const SHOVEL_DMG = { wooden: 2.5, stone: 3.5, iron: 4.5, golden: 2.5, diamond: 5.5, netherite: 6.5 };
+const AXE_SPD = { wooden: 0.8, stone: 0.8, iron: 0.9, golden: 1.0, diamond: 1.0, netherite: 1.0 };
+const HOE_SPD = { wooden: 1.0, stone: 2.0, iron: 3.0, golden: 1.0, diamond: 4.0, netherite: 4.0 };
 
 let id = 256;
 for (const mat of ['wooden', 'stone', 'iron', 'golden', 'diamond']) {
@@ -193,12 +198,61 @@ defItem(396, 'gold_nugget', {});
 defItem(397, 'nether_quartz', {});
 defItem(409, 'nether_brick', {});                             // smelt netherrack; nether_bricks family
 
+// --- 10-NETHER §9 — netherite tier (398-408). Tools/armor come ONLY from the
+// smithing upgrade (§9.3), never a grid recipe. netherite_scrap (398) is a plain
+// smelting product; the ingot + all gear (399-408) are fire/lava-immune (§9.4). ---
+const N = TIERS.netherite;
+defItem(398, 'netherite_scrap', {});
+defItem(399, 'netherite_ingot', { lavaImmune: true });
+defItem(400, 'netherite_sword',   { stack: 1, tier: N.tier, speedMult: 1, durability: N.dur, kind: 'sword', toolClass: 'sword', attackDamage: SWORD_DMG.netherite, attackSpeed: 1.6, lavaImmune: true });
+defItem(401, 'netherite_pickaxe', { stack: 1, tier: N.tier, speedMult: N.speedMult, durability: N.dur, kind: 'tool', toolClass: 'pickaxe', attackDamage: PICK_DMG.netherite, attackSpeed: 1.2, lavaImmune: true });
+defItem(402, 'netherite_axe',     { stack: 1, tier: N.tier, speedMult: N.speedMult, durability: N.dur, kind: 'tool', toolClass: 'axe', attackDamage: AXE_DMG.netherite, attackSpeed: AXE_SPD.netherite, lavaImmune: true });
+defItem(403, 'netherite_shovel',  { stack: 1, tier: N.tier, speedMult: N.speedMult, durability: N.dur, kind: 'tool', toolClass: 'shovel', attackDamage: SHOVEL_DMG.netherite, attackSpeed: 1.0, lavaImmune: true });
+defItem(404, 'netherite_hoe',     { stack: 1, tier: N.tier, speedMult: N.speedMult, durability: N.dur, kind: 'tool', toolClass: 'hoe', attackDamage: 1, attackSpeed: HOE_SPD.netherite, lavaImmune: true });
+// armor: points identical to diamond (20 total); toughness 3/piece (12); kbResist 0.1/piece (0.4)
+const NETHERITE_ARMOR = [[407, 3], [592, 8], [555, 6], [481, 3]];
+for (let slot = 0; slot < 4; slot++) {
+  const [dur, pts] = NETHERITE_ARMOR[slot];
+  defItem(405 + slot, `netherite_${PIECES[slot]}`, {
+    kind: 'armor', stack: 1, durability: dur,
+    armorSlot: slot, armorPoints: pts, toughness: 3, knockbackResistance: 0.1, lavaImmune: true,
+  });
+}
+// the netherite_block BLOCK-item (auto-registered at id 142) is also lava-immune (§9.4)
+ITEMS.get(B.NETHERITE_BLOCK).lavaImmune = true;
+
 export const idOf = name => {
   const v = NAME_TO_ID.get(name);
   if (v === undefined) throw new Error(`unknown item/block name: ${name}`);
   return v;
 };
 export const itemById = i => ITEMS.get(i);
+
+// ================== 10-NETHER §9.3 — smithing-table upgrade ==================
+// diamond gear id → its netherite counterpart. The upgrade keeps the source's
+// tags (08's enchants/rename) and its used durability. No template (pre-1.20).
+export const SMITHING_UPGRADES = new Map(
+  ['sword', 'pickaxe', 'axe', 'shovel', 'hoe', 'helmet', 'chestplate', 'leggings', 'boots']
+    .map(p => [idOf(`diamond_${p}`), idOf(`netherite_${p}`)])
+);
+
+/**
+ * §9.3 upgrade(base, material). Returns the netherite result STACK (with tags +
+ * carried durability) or null when the pairing is invalid. Pure — safe to call
+ * every render. `damage` counts UP from 0, so copying it preserves the absolute
+ * durability already spent (netherite's higher max ⇒ more remaining, per vanilla).
+ */
+export function smithingUpgrade(base, material) {
+  if (!base || !material || material.id !== idOf('netherite_ingot')) return null;
+  const outId = SMITHING_UPGRADES.get(base.id);
+  if (outId === undefined) return null;
+  const out = { id: outId, count: 1 };
+  const used = base.damage ?? 0;
+  if (used > 0) out.damage = Math.min(used, ITEMS.get(outId).durability - 1);  // never pre-broken
+  const t = cloneTags(base.tags);        // deep clone; preserves unknown 09+/11 keys (08 §1)
+  if (t) out.tags = t;
+  return out;
+}
 
 // ========================= CRAFTING (06 §10) =========================
 // Shaped: {shaped:true, pattern:['MMM','.S.'], key:{M:[ids],S:[ids]}, output}.
@@ -238,7 +292,11 @@ shaped(B.WOOL_WHITE, 1, ['SS', 'SS'], { S: [327] });
 shaped(B.COAL_BLOCK, 1, ['CCC', 'CCC', 'CCC'], { C: [319] });   // coal only, NOT charcoal
 shaped(B.IRON_BLOCK, 1, ['III', 'III', 'III'], { I: [322] });
 
-// --- 10-NETHER §1.3 (netherite tier recipes are E8) ---
+// --- 10-NETHER §1.3 ---
+// §9: 4 netherite_scrap + 4 gold_ingot → 1 netherite_ingot (shapeless); block ↔ 9 ingot
+shapeless(399, 1, [[398], [398], [398], [398], [324], [324], [324], [324]]);
+shaped(B.NETHERITE_BLOCK, 1, ['III', 'III', 'III'], { I: [399] });
+shapeless(399, 9, [[B.NETHERITE_BLOCK]]);
 shapeless(392, 2, [[391]]);                                    // blaze_rod → 2 blaze_powder
 shaped(B.GLOWSTONE, 1, ['DD', 'DD'], { D: [395] });            // glowstone_dust → block 32
 shapeless(396, 9, [[324]]);                                    // gold_ingot → 9 gold_nugget
@@ -300,7 +358,8 @@ export const SMELTING = new Map([
   [323, { out: 324, xp: 1.0 }],       // raw_gold → gold_ingot
   [B.SAND, { out: B.GLASS, xp: 0.1 }],
   [B.COBBLESTONE, { out: B.STONE, xp: 0.1 }],
-  // 10-NETHER §1.4 (ancient_debris → scrap is E8)
+  // 10-NETHER §1.4 / §9 — ancient_debris → netherite_scrap (2.0 XP, 200 t base)
+  [B.ANCIENT_DEBRIS, { out: 398, xp: 2.0 }],
   [B.NETHERRACK, { out: 409, xp: 0.1 }],       // netherrack → nether_brick
   [B.NETHER_GOLD_ORE, { out: 324, xp: 1.0 }],  // silk-touched ore → gold_ingot
   [B.NETHER_QUARTZ_ORE, { out: 397, xp: 0.2 }],

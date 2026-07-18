@@ -3,7 +3,7 @@
 //  UPDATE-08 §7 offhand slot 45 + F-swap).
 // Geometry: absolute GUI-px on a 176×166 reference panel (Java 1.20 survival
 // coordinates), scaled uniformly by --gpx. Slot (x,y) = top-left INNER corner.
-import { ITEMS, RECIPES, SMELTING, fuelValue } from '../registry/items.js';
+import { ITEMS, RECIPES, SMELTING, fuelValue, idOf, smithingUpgrade, SMITHING_UPGRADES } from '../registry/items.js';
 import { iconCss, tileForItemId } from './hud.js';
 import { emitSound, at, audio } from '../audio/engine.js';
 import { TAB, buildPalette, searchPalette, visibleTabs } from './creativeTabs.js';
@@ -197,6 +197,10 @@ export class Containers {
     if (kind === 'inventory' || kind === 'crafting' || kind === 'creative') {
       this.craftW = kind === 'crafting' ? 3 : 2;
       this.craftGrid = new Array(this.craftW * this.craftW).fill(null);
+    } else if (kind === 'smithing') {
+      // 10-NETHER §9.3 — 2 transient inputs [base, material]; close() spills them
+      // back to the inventory exactly like the crafting grid (non-persistent, MC).
+      this.craftGrid = [null, null];
     } else {
       this.craftGrid = null;
     }
@@ -288,6 +292,24 @@ export class Containers {
     };
   }
 
+  // 10-NETHER §9.3 — the smithing result: computes the netherite upgrade (tags +
+  // used durability carried) and consumes 1 base + 1 ingot on take. The result
+  // slot reuses takeResult's region:'result' path (cursor merge / shift-craft).
+  smithingResultDef(x, y) {
+    return {
+      x, y, region: 'result', takeOnly: true,
+      get: () => smithingUpgrade(this.craftGrid[0], this.craftGrid[1]),
+      onCraft: () => {
+        for (const i of [0, 1]) {
+          const s = this.craftGrid[i];
+          if (!s) continue;
+          s.count--;
+          if (s.count <= 0) this.craftGrid[i] = null;
+        }
+      },
+    };
+  }
+
   // ---------------------------------------------------- DOM build
 
   build() {
@@ -297,7 +319,7 @@ export class Containers {
     const p = this.game.player;
     const panel = document.createElement('div');
     panel.className = 'panel-abs';
-    const title = { inventory: 'Inventory', crafting: 'Crafting', furnace: 'Furnace', chest: 'Chest' }[this.kind];
+    const title = { inventory: 'Inventory', crafting: 'Crafting', furnace: 'Furnace', chest: 'Chest', smithing: 'Smithing Table' }[this.kind];
     panel.innerHTML = `<div class="panel-title">${title}</div>`;
     this.panel = panel;
 
@@ -354,6 +376,21 @@ export class Containers {
       }
       defs.push(this.resultDef(124, 35));
       this.addArrow(panel, 94, 34);
+      defs.push(...this.playerStorageDefs());
+    } else if (this.kind === 'smithing') {
+      // §9.3 — [base gear] + [netherite_ingot] → [netherite result]
+      defs.push({
+        x: 44, y: 35, region: 'craft',
+        get: () => this.craftGrid[0], set: v => { this.craftGrid[0] = v; },
+        canPut: s => SMITHING_UPGRADES.has(s.id),
+      });
+      defs.push({
+        x: 76, y: 35, region: 'craft',
+        get: () => this.craftGrid[1], set: v => { this.craftGrid[1] = v; },
+        canPut: s => s.id === idOf('netherite_ingot'),
+      });
+      defs.push(this.smithingResultDef(134, 35));
+      this.addArrow(panel, 106, 34);
       defs.push(...this.playerStorageDefs());
     } else if (this.kind === 'chest') {
       const be = this.be.data;
@@ -872,6 +909,12 @@ export class Containers {
       if (fuelValue(stack.id) > 0) return bySel(['furnaceFuel']);
       return [];
     }
+    if (this.kind === 'smithing') {
+      // §9.3 — gear routes to the base slot, ingots to the material slot; each
+      // input slot's canPut decides which one accepts this stack.
+      if (SMITHING_UPGRADES.has(stack.id) || stack.id === idOf('netherite_ingot')) return bySel(['craft']);
+      return [];
+    }
     if (item?.armorSlot !== undefined && item.armorSlot !== null && this.kind === 'inventory') {
       const armor = bySel(['armor']).filter(t => !t.canPut || t.canPut(stack));
       if (armor.length && !armor[0].get()) return armor;
@@ -1005,7 +1048,7 @@ export class Containers {
       const p = this.game.player;
       const d = Math.hypot(this.pos.x + 0.5 - p.pos.x, this.pos.y + 0.5 - (p.pos.y + 1), this.pos.z + 0.5 - p.pos.z);
       const id = this.game.world.getBlock(this.pos.x, this.pos.y, this.pos.z);
-      const stillThere = this.kind === 'furnace' ? (id === 35 || id === 36) : this.kind === 'chest' ? id === 37 : true;
+      const stillThere = this.kind === 'furnace' ? (id === 35 || id === 36) : this.kind === 'chest' ? id === 37 : this.kind === 'smithing' ? id === 143 : true;
       if (d > 8 || !stillThere) { this.game.closeContainerScreen?.(); return; }
     }
     if (this.game.world.time % 4 === 0) this.refresh();
