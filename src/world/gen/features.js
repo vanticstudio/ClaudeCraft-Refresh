@@ -3,6 +3,7 @@
 // growth (01 module map exception).
 
 import { splitmix32, chunkSeed, posHash, rngInt } from '../../math/rng.js';
+import { stampVillages } from './village.js';   // 12-VILLAGES §2
 import { ID, BIOMES, TREE_CFG, GRASS_COUNT, FLOWER_COUNT, CANE_BIOMES,
          PUMPKIN_BIOMES, HERD_WEIGHTS } from './biomes.js';
 
@@ -214,7 +215,11 @@ export function decorate(ctx, blocks, cx, cz, colD) {
     }
   }
 
-  // 4. Snow & ice — climate rule (02 §10.6)
+  // 4. VILLAGE stamp (12-VILLAGES §2, AMENDS 02 §10.2) — after all vegetation
+  // (clears it in the stamped volumes), before snow so taiga roofs get caps.
+  const village = stampVillages(ctx, blocks, cx, cz);
+
+  // 5. Snow & ice — climate rule (02 §10.6)
   for (let z = 0; z < 16; z++) {
     for (let x = 0; x < 16; x++) {
       const ci = (z << 4) | x;
@@ -228,6 +233,7 @@ export function decorate(ctx, blocks, cx, cz, colD) {
       else if (SOLID_TOP[id] && top < 127) set(x, top + 1, z, ID.snow_layer);
     }
   }
+  return village;   // { villageMeta|null, spawns }
 }
 
 // Cells whose 4 horizontal neighbors must be air for cactus growth;

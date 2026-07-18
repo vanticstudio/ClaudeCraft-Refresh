@@ -9,15 +9,17 @@ import { Cow, Pig, Sheep, Chicken } from './passive.js';
 // 10-NETHER §7 — the six Nether mobs.
 import { Ghast } from './nether/Ghast.js';
 import { Blaze, ZombifiedPiglin, WitherSkeleton, MagmaCube, Piglin } from './nether/mobs.js';
+import { Villager, IronGolem, ZombieVillager } from './villager.js';
 
 export const HOSTILE_TYPES = new Set(['zombie', 'skeleton', 'creeper', 'spider', 'enderman',
-  'ghast', 'blaze', 'wither_skeleton', 'magma_cube']);   // zombified_piglin/piglin are neutral
+  'ghast', 'blaze', 'wither_skeleton', 'magma_cube', 'zombie_villager']);   // golem/villager neutral
 
 const CTORS = {
   zombie: Zombie, skeleton: Skeleton, creeper: Creeper, spider: Spider,
   enderman: Enderman, cow: Cow, pig: Pig, sheep: Sheep, chicken: Chicken,
   ghast: Ghast, blaze: Blaze, zombified_piglin: ZombifiedPiglin,
   wither_skeleton: WitherSkeleton, magma_cube: MagmaCube, piglin: Piglin,
+  villager: Villager, iron_golem: IronGolem, zombie_villager: ZombieVillager,   // 12-VILLAGES
 };
 
 export function createMob(world, type, x, y, z, opts = {}) {
@@ -79,7 +81,9 @@ export class MobSpawner {
       const y = 1 + Math.floor(rng() * top);
       if (!this.validSpawnPos(x, y, z, null)) continue;
 
-      const species = weightedPick(rng);
+      let species = weightedPick(rng);
+      // 12-VILLAGES AMENDS 05 §3.2 — 5% of spawned zombies become zombie villagers.
+      if (species === 'zombie' && rng() < 0.05) species = 'zombie_villager';
       const packSize = species === 'enderman' ? 1 + Math.floor(rng() * 2) : 1 + Math.floor(rng() * 4);
       let spawned = 0;
       let px = x, pz = z;

@@ -59,6 +59,13 @@ const BLOCK_TILES = [
   'netherite_block', 'smithing_table_top', 'smithing_table_side',
   // 09-POTIONS §7
   'brown_mushroom', 'red_mushroom', 'brewing_stand',
+  // 12-VILLAGES §7 — village blocks
+  'dirt_path_top', 'bell', 'composter_top', 'composter_side',
+  'barrel_top', 'barrel_side', 'lectern_top', 'lectern_side',
+  'blast_furnace_top', 'blast_furnace_side', 'blast_furnace_front', 'blast_furnace_front_lit',
+  'smoker_top', 'smoker_side', 'smoker_front', 'smoker_front_lit',
+  'fletching_table_top', 'fletching_table_side', 'hay_bale_top', 'hay_bale_side',
+  'emerald_ore', 'emerald_block',
 ];
 const DESTROY_TILES = Array.from({ length: 10 }, (_, i) => 'destroy_' + i);
 const ITEM_TILES = Object.keys(PAINTERS).filter(n => n.startsWith('item_')).sort();

@@ -622,12 +622,51 @@ export class Containers {
       inventory: 'Inventory', crafting: 'Crafting', furnace: 'Furnace', chest: 'Chest',
       enchanting: 'Enchant', anvil: 'Repair & Name', grindstone: 'Repair & Disenchant',
       dispenser: 'Dispenser', dropper: 'Dropper', hopper: 'Hopper', smithing: 'Smithing Table',
-      brewing: 'Brewing Stand',
+      brewing: 'Brewing Stand', trade: 'Villager',
     }[this.kind];
     panel.innerHTML = `<div class="panel-title">${title}</div>`;
     this.panel = panel;
 
     const defs = [];
+
+    // 12-VILLAGES §9 — the trade screen: a clickable offer list + player storage.
+    if (this.kind === 'trade') {
+      const v = this.game.tradingVillager;
+      const list = document.createElement('div');
+      list.className = 'trade-offers';
+      // one item chip: a mutated icon element (paintSlotIcon sets the atlas
+      // background and handles the enchant glint) plus its count.
+      const chip = st => {
+        const span = document.createElement('span');
+        span.className = 'trade-chip';
+        const icon = document.createElement('span');
+        icon.className = 'cc-icon';
+        paintSlotIcon(icon, this.game, st);
+        span.appendChild(icon);
+        const n = document.createElement('span');
+        n.textContent = st.count;
+        span.appendChild(n);
+        return span;
+      };
+      const glyph = (cls, txt) => { const s = document.createElement('span'); if (cls) s.className = cls; s.textContent = txt; return s; };
+      (v?.trades ?? []).forEach((t, i) => {
+        const cost = t.buyA.id === 435 ? Math.max(1, t.buyA.count + (t.specialPrice || 0)) : t.buyA.count;
+        const row = document.createElement('div');
+        row.className = 'trade-row' + (t.uses >= t.maxUses ? ' locked' : '');
+        row.appendChild(chip({ id: t.buyA.id, count: cost }));
+        if (t.buyB) { row.appendChild(glyph(null, '+')); row.appendChild(chip(t.buyB)); }
+        row.appendChild(glyph('trade-arrow', '→'));
+        row.appendChild(chip(t.sell));
+        row.addEventListener('click', () => { if (v.doTrade(i, this.game.player)) { emitSound('ui.click', null); this.build(); } });
+        list.appendChild(row);
+      });
+      panel.appendChild(list);
+      defs.push(...this.playerStorageDefs());
+      for (const def of defs) this.addSlot(panel, def);
+      this.root.appendChild(panel);
+      this.refresh();
+      return;
+    }
 
     if (this.kind === 'inventory') {
       // armor 39/38/37/36 at x=8, y=8/26/44/62 (06 §14.1 + UPDATE §2.2)

@@ -128,6 +128,25 @@ const PAINT = {
   },
   chicken_legs: (c, s, r) => noiseFill(c, s, '#e0b23c', 6, r),
   bow_stick: (c, s, r) => noiseFill(c, s, '#6b4f2a', 8, r),
+  // 12-VILLAGES §16 — villager skin/robe, and the iron golem's metal body.
+  villager_skin: (c, s, r) => noiseFill(c, s, '#a8815b', 8, r),
+  villager_face: (c, s, r) => {
+    noiseFill(c, s, '#a8815b', 8, r);
+    px(c, 6, 6, '#4a3320', 4, 3);                       // unibrow
+    px(c, 4, 7, '#ffffff', 2, 2); px(c, 10, 7, '#ffffff', 2, 2);
+    px(c, 5, 8, '#3a2a5a'); px(c, 11, 8, '#3a2a5a');    // eyes
+    px(c, 7, 9, '#8a6444', 2, 4);                       // big nose
+  },
+  villager_robe: (c, s, r) => {
+    noiseFill(c, s, '#6b4a34', 8, r);
+    px(c, 0, 5, '#8a5a2a', s, 2);                        // apron trim
+  },
+  iron_golem: (c, s, r) => {
+    noiseFill(c, s, '#d8c9b8', 6, r);
+    for (let y = 2; y < s; y += 5) px(c, 0, y, '#b7a48c', s, 1);  // plate seams
+    px(c, 4, 6, '#5a5048', 2, 2); px(c, 10, 6, '#5a5048', 2, 2);  // eyes
+    px(c, 6, 9, '#6a7a4a', 4, 3);                        // vine patch
+  },
 };
 
 export function mobTexture(name) {

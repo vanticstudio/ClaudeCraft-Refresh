@@ -105,6 +105,9 @@ export class SaveManager {
       blockEntities,
       spawnsDone: chunk.spawnsDone,
       spawns: chunk.pendingSpawns ?? null,
+      // 12-VILLAGES §2.7 — persist the village record (incl. golem timer) with the
+      // anchor chunk. Deterministic gen would rebuild layout, but not runtime state.
+      villageMeta: chunk.villageMeta ?? null,
       entities,
     };
   }

@@ -1033,6 +1033,68 @@ defBlock(143, 'smithing_table', {
   tiles: column('smithing_table_top', 'smithing_table_side'),
 });
 
+// ===================== 12-VILLAGES §7/§12 — village blocks (170–182) =====================
+defBlock(170, 'dirt_path', {                       // §7.1 shovel-made; drops dirt; no block-item
+  hardness: 0.65, blast: 0.65, tool: 'shovel', shape: 'farmland', opaque: false, opacity: 0,
+  collisionBox: [0, 0, 0, 1, 15 / 16, 1],
+  drops: () => [{ name: 'dirt', count: 1 }],
+  tiles: column('dirt_path_top', 'dirt'),
+});
+defBlock(171, 'bell', {                            // §7.2 interactable; rings
+  hardness: 5.0, blast: 5.0, tool: 'pickaxe', tier: 0, interactable: 'bell',
+  shape: 'brewing_stand', opaque: false, opacity: 0, collisionBox: [4 / 16, 0, 4 / 16, 12 / 16, 1, 12 / 16],
+  drops: gated(dropSelf('bell')), tiles: all('bell'),
+});
+defBlock(172, 'composter', {                       // §7.3 fill 0–8 in state nibble
+  hardness: 0.6, blast: 0.6, tool: 'axe', fuel: 300, interactable: 'composter',
+  drops: dropSelf('composter'), tiles: column('composter_top', 'composter_side'),
+});
+defBlock(173, 'barrel', {                          // §7.4 27-slot container
+  hardness: 2.5, blast: 2.5, tool: 'axe', fuel: 300, blockEntity: 'chest', interactable: 'barrel',
+  drops: dropSelf('barrel'), tiles: column('barrel_top', 'barrel_side'),
+});
+defBlock(174, 'lectern', {                         // §7.5 librarian workstation (no UI)
+  hardness: 2.5, blast: 2.5, tool: 'axe', fuel: 300,
+  drops: dropSelf('lectern'), tiles: column('lectern_top', 'lectern_side'),
+});
+defBlock(175, 'blast_furnace', {                   // §7.6 ore smelting 2×
+  hardness: 3.5, blast: 3.5, tool: 'pickaxe', tier: 0, blockEntity: 'blast_furnace', interactable: 'furnace',
+  drops: gated(() => [{ name: 'blast_furnace', count: 1 }]), tiles: column('blast_furnace_top', 'blast_furnace_side'),
+  tilesFor: furnaceTiles('blast_furnace_front'),
+});
+defBlock(176, 'blast_furnace_lit', {
+  displayName: 'Blast Furnace', hardness: 3.5, blast: 3.5, tool: 'pickaxe', tier: 0, emission: 13,
+  blockEntity: 'blast_furnace', interactable: 'furnace',
+  drops: gated(() => [{ name: 'blast_furnace', count: 1 }]), tiles: column('blast_furnace_top', 'blast_furnace_side'),
+  tilesFor: furnaceTiles('blast_furnace_front_lit'),
+});
+defBlock(177, 'smoker', {                          // §7.7 food smelting 2×
+  hardness: 3.5, blast: 3.5, tool: 'pickaxe', tier: 0, blockEntity: 'smoker', interactable: 'furnace',
+  drops: gated(() => [{ name: 'smoker', count: 1 }]), tiles: column('smoker_top', 'smoker_side'),
+  tilesFor: furnaceTiles('smoker_front'),
+});
+defBlock(178, 'smoker_lit', {
+  displayName: 'Smoker', hardness: 3.5, blast: 3.5, tool: 'pickaxe', tier: 0, emission: 13,
+  blockEntity: 'smoker', interactable: 'furnace',
+  drops: gated(() => [{ name: 'smoker', count: 1 }]), tiles: column('smoker_top', 'smoker_side'),
+  tilesFor: furnaceTiles('smoker_front_lit'),
+});
+defBlock(179, 'fletching_table', {                 // §7.8 fletcher workstation (no UI)
+  hardness: 2.5, blast: 2.5, tool: 'axe', fuel: 300,
+  drops: dropSelf('fletching_table'), tiles: column('fletching_table_top', 'fletching_table_side'),
+});
+defBlock(180, 'hay_bale', {                         // §7.9 fall ×0.2
+  hardness: 0.5, blast: 0.5, tool: 'hoe', drops: dropSelf('hay_bale'),
+  tiles: column('hay_bale_top', 'hay_bale_side'),
+});
+ore(181, 'emerald_ore', 2,                          // §6.2 mountains worldgen; iron+ to drop
+  ctx => [{ name: 'emerald', count: fortuneM(ctx.fortune ?? 0, ctx.rng) }],
+  function (ctx) { return harvestOK(this, ctx.toolClass, ctx.toolTier) ? ri(ctx.rng, 3, 7) : 0; });
+defBlock(182, 'emerald_block', {                   // §6.2 storage
+  hardness: 5.0, blast: 6.0, tool: 'pickaxe', tier: 2, drops: gated(dropSelf('emerald_block')),
+  tiles: all('emerald_block'),
+});
+
 // =======================================================================
 // Material classes — the `Mat` column (16-AUDIO AMENDS 06 §2, table 16 §3.1).
 //
@@ -1053,6 +1115,7 @@ const MAT = {
   // stems/planks → 'wood').
   stone: ['stone', 'cobblestone', 'sandstone', 'bedrock', 'obsidian', 'furnace', 'furnace_lit', 'coal_block',
     'enchanting_table', 'grindstone', 'brewing_stand',
+    'blast_furnace', 'blast_furnace_lit', 'smoker', 'smoker_lit', 'emerald_ore',   // 12-VILLAGES
     'redstone_wire', 'redstone_torch', 'lever', 'stone_button', 'stone_pressure_plate',
     'repeater', 'comparator', 'piston', 'sticky_piston', 'piston_head', 'observer',
     'dispenser', 'dropper', 'hopper', 'redstone_lamp', 'redstone_lamp_lit', 'redstone_block',
@@ -1060,20 +1123,23 @@ const MAT = {
     'nether_quartz_ore', 'nether_gold_ore', 'ancient_debris', 'bone_block', 'spawner',
     'netherite_block', 'smithing_table', 'nether_portal', 'crimson_nylium', 'warped_nylium'],
   ore: ['coal_ore', 'iron_ore', 'gold_ore', 'diamond_ore', 'redstone_ore', 'lapis_ore'],
-  metal: ['iron_block', 'gold_block', 'diamond_block', 'anvil'],
+  metal: ['iron_block', 'gold_block', 'diamond_block', 'anvil',
+    'bell', 'emerald_block'],   // 12-VILLAGES
   wood: ['oak_planks', 'birch_planks', 'spruce_planks', 'oak_log', 'birch_log', 'spruce_log',
     'crafting_table', 'chest', 'bookshelf', 'ladder', 'oak_fence', 'oak_door', 'bed_block',
     'torch', 'pumpkin', 'jack_o_lantern',
     'wooden_button', 'wooden_pressure_plate', 'note_block',
-    'crimson_stem', 'warped_stem', 'crimson_planks', 'warped_planks'],
-  gravel: ['gravel', 'dirt', 'farmland'],
+    'crimson_stem', 'warped_stem', 'crimson_planks', 'warped_planks',
+    'composter', 'barrel', 'lectern', 'fletching_table'],   // 12-VILLAGES
+  gravel: ['gravel', 'dirt', 'farmland', 'dirt_path'],       // 12-VILLAGES
   sand: ['sand'],
   grass: ['grass_block', 'oak_leaves', 'birch_leaves', 'spruce_leaves', 'oak_sapling',
     'birch_sapling', 'spruce_sapling', 'wheat_crop', 'carrot_crop', 'potato_crop',
     'sugar_cane_block', 'short_grass', 'dandelion', 'poppy', 'dead_bush', 'tnt',
     'soul_sand', 'soul_soil', 'nether_wart_block', 'warped_wart_block', 'shroomlight',
     'crimson_fungus', 'warped_fungus', 'crimson_roots', 'warped_roots', 'nether_wart',
-    'brown_mushroom', 'red_mushroom'],   // 09-POTIONS §7.1
+    'brown_mushroom', 'red_mushroom',   // 09-POTIONS §7.1
+    'hay_bale'],   // 12-VILLAGES
   glass: ['glass', 'ice', 'glowstone'],
   wool: ['wool_white', 'wool_red', 'wool_blue', 'wool_black', 'cactus'],
   snow: ['snow_layer', 'snow_block'],

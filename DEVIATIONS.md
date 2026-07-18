@@ -4,6 +4,92 @@ Deviations and ambiguity rulings. (The base-spec `.md` files were removed from
 the working tree during repo cleanup; the pre-UPDATE deviation log for the
 initial build lives in git history — `git show 8441ac9:DEVIATIONS.md`.)
 
+## E6 — 12-VILLAGES: villages, trading, iron golem, curing (2026-07-18)
+
+Built after E4 (enchanted books) and E9 (potions) so the librarian's book trades
+and the zombie-villager cure could use the real `randomEnchantedBook` and
+`EFFECT.WEAKNESS` contracts rather than stubs.
+
+**Worldgen is deterministic and chunk-independent (the load-bearing property).**
+A village layout is a pure function of its anchor-chunk seed. `stampVillages`
+(`src/world/gen/village.js`) recomputes every nearby anchor's full op list for
+each chunk and writes only the cells that fall inside that chunk, in a fixed
+phase order (CLEAR → FOUNDATION → PATH → PIECES → LAMP). No chunk reads another
+chunk's blocks; all terrain queries go through the canonical `heightAt`. Verified
+byte-identical (0 diffs) generating a 13×13-chunk region straddling a village in
+ascending vs reversed visit order.
+
+Deviations / simplifications (HIGH tier — the four gates are exact; peripheral
+Java systems are compressed):
+
+1. **Village persistence rides in the chunk record, not a new object store.** The
+   `villageMeta` (including the golem's `alive`/`respawnTimer`) is written into the
+   anchor chunk's save record and re-registered on hydration; villagers/golems
+   persist as ordinary chunk entities. No `DB_VERSION` bump — the field is additive
+   and old records simply hydrate without it. Deterministic gen would rebuild the
+   layout, but not the runtime golem state, which is why the record carries it.
+2. **Building templates are a compact fixed set** (well, 7×7 meeting point with the
+   bell, plus box houses: library/farm/church/smithy/butcher/fletcher/small_house)
+   rather than 12's full structure catalog. Path arms are shorter (20–38) for
+   compactness. The gate stations (lectern, composter, brewing stand = cleric,
+   smoker = butcher, fletching table, smithing table + blast furnace) are all
+   present so every profession can be claimed.
+3. **Only a representative slice of the §9 trade tables is data-driven** per
+   profession (2–4 rows each); the librarian's four enchanted-book rows are fully
+   dynamic via `randomEnchantedBook` (cost `2 + 3·enchLevel`, doubled for treasure,
+   clamped [5,64]). Trade level-up thresholds and the cured-discount push are
+   modelled; per-trade demand/price-drift decay is not.
+4. **The trade screen is a clickable offer list** (`kind: 'trade'` in
+   `containers.js`): each row shows buyA (+buyB) → sell and executes `doTrade`.
+   It reuses the standard player-storage grid below. No trade-slot drag mechanics.
+5. **Composter and lectern have no player UI** (RMB is a no-op); the composter's
+   fill-level nibble and the lectern's book screen are out of scope. Barrel opens
+   the 27-slot chest container; blast furnace / smoker open the standard furnace
+   screen (the 2× smelt-speed / restricted-recipe behaviour is not modelled — they
+   are cosmetic-plus-container here).
+6. **Villager schedule and breeding are simplified.** Villagers wander, claim an
+   adjacent workstation to gain a profession, panic, and trade; they do not run the
+   §8.4 day-phase schedule (work/gather/sleep) or §10 breeding (willingness, baby
+   growth). Babies can exist (`isBaby`) and are excluded from the golem-population
+   count, but no breeding loop produces them in this build.
+7. **Iron-golem village spawn** (`Game.tickVillages`, every 200 ticks): a village
+   with ≥5 adult villagers homed to it (or within 32 blocks of the bell) spawns one
+   golem on open ground near the bell; on the golem's death the village waits 300 s
+   (`respawnTimer`) before another. Natural golem-from-panic spawning is not
+   modelled. The golem's defense AI (target nearest hostile except creepers within
+   16, melee 7–21 + upward toss, knockback- and fall-immune) is full.
+8. **Zombie-villager spawns** as 5% of naturally-spawned zombies (AMENDS 05 §3.2)
+   and on villager death-by-zombie is not wired (only the natural-spawn route).
+   Curing is exact: RMB with a golden apple while the mob has Weakness starts a
+   3–5 min conversion (red particles), ending in a villager that keeps the stored
+   profession/level and gains a cured discount.
+9. **New textures are procedural** (block tiles in `assets/tilePainters.js`, mob
+   skins in `mobs/models.js`) consistent with the existing atlas — emerald ore/block,
+   dirt path, bell, composter, barrel, lectern, blast furnace (+lit), smoker (+lit),
+   fletching table, hay bale; villager/iron-golem/zombie-villager model skins.
+10. **Emerald ore** (AMENDS 02) generates in MOUNTAINS only, Y≈56–96, iron-tier to
+    drop — verified 299 ore blocks in a scan window, all in mountains, none elsewhere.
+    Hay bale gives ×0.2 fall damage; a shovel turns grass/dirt into a dirt path.
+
+Verified 2026-07-18: gate 1 (determinism) via `e6-determinism.mjs` — 0 byte diffs,
+bell + lectern + 4 beds + stations present. Gates 2–4 + emerald ore + the
+golem-population spawn trigger via headless Chrome (`e6.cjs`, `e6smoke.cjs`): 9/9
+browser checks — librarian book trade consumes 5 emeralds + 1 book and yields the
+enchanted book with `tags.enchants`; golem targets a zombie, deals 7–21 + tosses it,
+is knockback/fall-immune; the cure is refused without Weakness, consumes the apple
+with it, and finishes into a librarian villager with a cured discount; `tickVillages`
+spawns exactly one golem for a 5-population village and does not double-spawn.
+
+An adversarial review pass caught four bugs, all fixed and re-verified: (1) the
+trade screen mis-called `iconCss`/`tileForItemId` and crashed on open — now builds
+each chip element via `paintSlotIcon` (`e6dom.cjs`: 4/4, renders + click executes
+`doTrade`); (2) `doTrade` threw the full sell stack on a partial inventory merge,
+duplicating items — now throws only the leftover count; (3) a non-cured villager
+picked up a −1 emerald discount on level-up — the discount is now gated on
+`curedDiscount>0`; (4) gen villagers were never tagged with `homeVillage`, leaving
+the golem population count reliant on the 32-block proximity fallback — spawns now
+carry their anchor key (verified 7/7 homed).
+
 ## E9 — 09-POTIONS: status effects + brewing (2026-07-18)
 
 Built to `09-POTIONS.md` in full: the status-effect engine, the effect catalog,

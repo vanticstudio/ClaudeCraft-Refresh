@@ -257,6 +257,40 @@ html, body {
   font-weight: bold;
 }
 
+/* 12-VILLAGES §9 — villager trade offer list, in the top region of the panel
+   above the player-storage grid. */
+.trade-offers {
+  position: absolute;
+  left: calc(7 * var(--gpx));
+  top: calc(7 * var(--gpx));
+  width: calc(162 * var(--gpx));
+  max-height: calc(66 * var(--gpx));
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: calc(2 * var(--gpx));
+}
+.trade-row {
+  display: flex;
+  align-items: center;
+  gap: calc(3 * var(--gpx));
+  padding: calc(2 * var(--gpx)) calc(4 * var(--gpx));
+  background: #8b8b8b;
+  border: calc(1 * var(--gpx)) solid;
+  border-color: #fefefe #565656 #565656 #fefefe;
+  cursor: pointer;
+  font-size: calc(6 * var(--gpx));
+}
+.trade-row:hover { background: #a4c4e0; }
+.trade-row.locked { opacity: 0.45; cursor: not-allowed; }
+.trade-chip { display: inline-flex; align-items: center; gap: calc(1 * var(--gpx)); }
+.trade-chip .cc-icon {
+  display: inline-block;
+  width: calc(10 * var(--gpx)); height: calc(10 * var(--gpx));
+  image-rendering: pixelated;
+}
+.trade-arrow { color: #3f3f3f; font-weight: bold; }
+
 /* slot: 16 GUI-px inner icon + 1 GUI-px bevel border = 18 pitch.
    Positioned by top-left of the border box = (innerX-1, innerY-1). */
 .slot-abs {

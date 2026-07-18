@@ -243,6 +243,7 @@ export class Game {
       this.world.randomTicks();
       this.dayNight.tick();
       this.mobSpawner?.tick();
+      this.tickVillages();
     }
     this.chunkManager.tick(this.player.pos.x, this.player.pos.z);
     if (this.state !== STATE.LOADING) {
@@ -845,17 +846,80 @@ export class Game {
   }
 
   onChunkGenerated(chunk) {
+    // 12-VILLAGES §2.7 — register a village record for AI/golem/trading + persistence.
+    if (chunk.villageMeta) {
+      this.villages ??= new Map();
+      const key = chunk.villageMeta.anchor.join(',');
+      if (!this.villages.has(key)) this.villages.set(key, chunk.villageMeta);
+    }
     if (chunk.pendingSpawns && !chunk.spawnsDone) {
       for (const rec of chunk.pendingSpawns) {
-        // 10-NETHER §4.9/§5.4 — a fortress emits a spawner block-entity record;
-        // everything else is a mob herd record.
         if (rec.be === 'spawner') this.configureSpawner(rec.x, rec.y, rec.z, rec.mobType);
-        else this.spawnMobAt(rec.type, rec.x, rec.y, rec.z, { persistent: true });
+        else if (rec.type === 'villager') {
+          // 12-VILLAGES §8.6 — gen villagers spawn unemployed near the bell.
+          this.spawnMobAt('villager', rec.x, rec.y, rec.z, { persistent: true, homeVillage: rec.homeVillage ?? null });
+        } else this.spawnMobAt(rec.type, rec.x, rec.y, rec.z, { persistent: true });
       }
       chunk.spawnsDone = true;
       chunk.pendingSpawns = null;
       chunk.modified = true;
     }
+  }
+
+  // 12-VILLAGES §11 — iron-golem population spawn. A village with ≥5 adult
+  // villagers gets one defending golem near the bell, re-spawned 300s after death.
+  tickVillages() {
+    if (!this.villages || this.villages.size === 0) return;
+    if (this.world.time % 200 !== 0) return;
+    for (const meta of this.villages.values()) {
+      const g = meta.golem ??= { alive: false, respawnTimer: 0 };
+      if (g.respawnTimer > 0) g.respawnTimer -= 200;
+      const [bx, by, bz] = meta.bellPos;
+      if (!this.world.isLoaded(bx, bz)) continue;
+      // confirm the tracked golem is still alive; otherwise start the respawn clock.
+      if (g.alive) {
+        const still = this.entities.count(e => e.type === 'iron_golem' &&
+          Math.hypot(e.pos.x - bx, e.pos.z - bz) < 48) > 0;
+        if (!still) { g.alive = false; g.respawnTimer = 6000; }
+        continue;
+      }
+      if (g.respawnTimer > 0) continue;
+      // count adult villagers homed to this village within its radius.
+      const key = meta.anchor.join(',');
+      const pop = this.entities.count(e => e.type === 'villager' && !e.isBaby &&
+        (e.homeVillage === key || Math.hypot(e.pos.x - bx, e.pos.z - bz) < 32));
+      if (pop < 5) continue;
+      const spot = this.golemSpawnSpot(bx, by, bz);
+      if (!spot) continue;
+      const golem = this.spawnMobAt('iron_golem', spot[0], spot[1], spot[2], { persistent: true, homeVillage: key });
+      if (golem) { g.alive = true; g.respawnTimer = 0; }
+    }
+  }
+
+  // find open ground (2-tall air on a solid block) within a small ring of the bell.
+  golemSpawnSpot(bx, by, bz) {
+    const w = this.world;
+    for (let r = 2; r <= 6; r++) {
+      for (let dx = -r; dx <= r; dx++) for (let dz = -r; dz <= r; dz++) {
+        if (Math.abs(dx) !== r && Math.abs(dz) !== r) continue;
+        const x = bx + dx, z = bz + dz;
+        for (let dy = -2; dy <= 2; dy++) {
+          const y = by + dy;
+          if (BLOCKS[w.getBlock(x, y - 1, z)]?.collidable &&
+              !BLOCKS[w.getBlock(x, y, z)]?.collidable &&
+              !BLOCKS[w.getBlock(x, y + 1, z)]?.collidable)
+            return [x + 0.5, y, z + 0.5];
+        }
+      }
+    }
+    return null;
+  }
+
+  // 12-VILLAGES §9.1 — open the villager trade screen.
+  openTrade(villager) {
+    this.tradingVillager = villager;
+    villager.tradingWith = this.player;
+    this.ui?.containers?.open?.('trade');
   }
 
   /** 10-NETHER §6 — set a gen-placed spawner block's block-entity mob type. */
@@ -866,6 +930,13 @@ export class Game {
   }
 
   onChunkHydrated(chunk, record) {
+    // 12-VILLAGES §2.7 — restore the persisted village record (golem timers etc.).
+    if (record.villageMeta) {
+      chunk.villageMeta = record.villageMeta;
+      this.villages ??= new Map();
+      const key = record.villageMeta.anchor.join(',');
+      if (!this.villages.has(key)) this.villages.set(key, record.villageMeta);
+    }
     if (record.entities) {
       for (const rec of record.entities) this.restoreEntity(rec);
     }

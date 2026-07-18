@@ -76,6 +76,7 @@ export class ChunkManager {
       // transferred views are used as-is (zero-copy, 01 §9)
       chunk.install(msg.blocks, msg.heightMap, msg.biomes);
       chunk.pendingSpawns = msg.spawns?.length ? msg.spawns : null;
+      if (msg.villageMeta) chunk.villageMeta = msg.villageMeta;   // 12-VILLAGES §2.7
       this.game?.onChunkGenerated?.(chunk);
     }
   }
