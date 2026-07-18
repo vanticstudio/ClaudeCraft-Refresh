@@ -6,6 +6,7 @@ import {
 import { BLOCKS, B, blockByName, FACING_DIR, WATERLOGGED } from './registry/blocks.js';
 import { ITEMS, idOf, SMELTING, fuelValue } from './registry/items.js';
 import { cloneStack } from './items/tags.js';
+import { explosionKnockbackScale } from './items/effects.js';   // 08 — blast-protection KB scale
 import { World } from './world/World.js';
 import { ChunkManager } from './world/ChunkManager.js';
 import { ChunkState } from './world/Chunk.js';
