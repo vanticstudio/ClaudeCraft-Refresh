@@ -228,3 +228,35 @@ export function customName(stack) {
   const n = stack && stack.tags && stack.tags.name;
   return (typeof n === 'string' && n.length) ? n : null;
 }
+
+/** 11-END §9.4 — pack a 27-slot container into `tags.containerItems` (skips empty
+ *  slots): Array<{slot,id,count,damage?,tags?}>. Returns [] for an empty box. */
+export function packContainer(slots) {
+  const out = [];
+  for (let i = 0; i < slots.length; i++) {
+    const s = slots[i];
+    if (!s) continue;
+    const e = { slot: i, id: s.id, count: s.count };
+    if (s.damage !== undefined) e.damage = s.damage;
+    const t = cloneTags(s.tags);
+    if (t) e.tags = t;
+    out.push(e);
+  }
+  return out;
+}
+
+/** 11-END §9.4 — restore a slot array from `tags.containerItems`. */
+export function unpackContainer(containerItems, n = 27) {
+  const slots = new Array(n).fill(null);
+  if (!Array.isArray(containerItems)) return slots;
+  for (const e of containerItems) {
+    if (e && e.slot >= 0 && e.slot < n) {
+      const s = { id: e.id, count: e.count };
+      if (e.damage !== undefined) s.damage = e.damage;
+      const t = cloneTags(e.tags);
+      if (t) s.tags = t;
+      slots[e.slot] = s;
+    }
+  }
+  return slots;
+}

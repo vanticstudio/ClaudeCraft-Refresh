@@ -3,6 +3,7 @@
 
 import { BLOCKS, B } from '../registry/blocks.js';
 import { getDimension, changeDimension } from './dimensions.js';
+import { END_SPAWN } from './endArena.js';
 import { emitSound, at } from '../audio/engine.js';
 
 const OBSIDIAN = B.OBSIDIAN;          // 33
@@ -137,9 +138,12 @@ export function portalNeighborUpdate(world, x, y, z, state) {
  * at 80 ticks.
  */
 const TRANSFER_AT = 80;
+const END_PORTAL = B.END_PORTAL;   // 162
 export function tickPortal(game) {
   const p = game.player;
   if (p.portalCooldown > 0) { p.portalCooldown--; p.portalTimer = 0; return; }
+  // 11-END §5.4 — the end portal is INSTANT (no stand-in delay).
+  if (playerInEndPortal(game, p)) { initiateEndTravel(game); return; }
   const inPortal = playerInPortal(game, p);
   if (inPortal) {
     p.portalTimer = Math.min((p.portalTimer || 0) + 1, TRANSFER_AT);
@@ -156,6 +160,30 @@ function playerInPortal(game, p) {
     if (world.getBlock(x, Math.floor(p.pos.y) + dy, z) === PORTAL) return true;
   }
   return false;
+}
+
+function playerInEndPortal(game, p) {
+  const world = game.world;
+  const x = Math.floor(p.pos.x), z = Math.floor(p.pos.z);
+  for (let dy = 0; dy <= 1; dy++) {
+    if (world.getBlock(x, Math.floor(p.pos.y) + dy, z) === END_PORTAL) return true;
+  }
+  return false;
+}
+
+/**
+ * 11-END §5.4 — end-portal travel. Overworld→End lands on the fixed obsidian
+ * platform (onArrive rebuilds it); End→Overworld returns to the player's bed
+ * spawn else world spawn. changeDimension applies its own re-entry cooldown.
+ */
+export function initiateEndTravel(game) {
+  const p = game.player;
+  if (game.world.activeDim === 2) {
+    const rp = p.spawnPoint ?? game.worldSpawn ?? { x: 0, y: 64, z: 0 };
+    changeDimension(p, 0, { x: rp.x + 0.5, y: rp.y, z: rp.z + 0.5 });
+  } else {
+    changeDimension(p, 2, { x: END_SPAWN.x, y: END_SPAWN.y, z: END_SPAWN.z });
+  }
 }
 
 /** §3.4/§3.5 — compute the scaled destination and change dimension. */

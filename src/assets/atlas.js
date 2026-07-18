@@ -66,6 +66,13 @@ const BLOCK_TILES = [
   'smoker_top', 'smoker_side', 'smoker_front', 'smoker_front_lit',
   'fletching_table_top', 'fletching_table_side', 'hay_bale_top', 'hay_bale_side',
   'emerald_ore', 'emerald_block',
+  // 11-END §14 — End blocks
+  'stone_bricks', 'mossy_stone_bricks', 'cracked_stone_bricks', 'iron_bars',
+  'end_stone', 'end_stone_bricks', 'purpur_block', 'purpur_pillar_top', 'purpur_pillar_side',
+  'end_rod', 'chorus_plant', 'chorus_flower',
+  'end_portal_frame_top', 'end_portal_frame_top_eye', 'end_portal_frame_side',
+  'end_portal', 'end_gateway',
+  'shulker_box_top', 'shulker_box_side', 'shulker_box_bottom',
 ];
 const DESTROY_TILES = Array.from({ length: 10 }, (_, i) => 'destroy_' + i);
 const ITEM_TILES = Object.keys(PAINTERS).filter(n => n.startsWith('item_')).sort();

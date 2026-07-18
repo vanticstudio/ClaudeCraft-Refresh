@@ -5,7 +5,8 @@ import {
 } from './constants.js';
 import { BLOCKS, B, blockByName, FACING_DIR, WATERLOGGED } from './registry/blocks.js';
 import { ITEMS, idOf, SMELTING, fuelValue } from './registry/items.js';
-import { cloneStack } from './items/tags.js';
+import { cloneStack, packContainer } from './items/tags.js';
+import { rollChestLoot } from './world/gen/endLoot.js';
 import { explosionKnockbackScale } from './items/effects.js';   // 08 — blast-protection KB scale
 import { World } from './world/World.js';
 import { ChunkManager } from './world/ChunkManager.js';
@@ -40,6 +41,7 @@ import { RedstoneComponents, installComponentHooks } from './redstone/components
 import { RedstoneContainers } from './redstone/containersRedstone.js';
 import { getDimension } from './world/dimensions.js';
 import { findOrCreatePortal } from './world/Portal.js';
+import { buildObsidianPlatform, END_SPAWN } from './world/endArena.js';
 import { installNetherBehaviors, tickSpawner } from './world/nether.js';
 import { tickBrewing } from './world/brewing.js';
 import { addEffect as engineAddEffect, applyInstant as engineApplyInstant } from './status/effects.js';
@@ -275,6 +277,17 @@ export class Game {
           this.player.prevPos.x = stand.x; this.player.prevPos.y = stand.y; this.player.prevPos.z = stand.z;
           this.player.portalCooldown = 300;
           this.chunkManager.rebuildNow([]);   // any edited chunks re-mesh next frame
+        } else if (this.pendingEndArrival) {
+          // 11-END §5.5/§5.6 — build the fixed obsidian platform now that chunks
+          // exist, then drop the player on it facing the island.
+          this.pendingEndArrival = false;
+          buildObsidianPlatform(this);
+          this.player.setPos(END_SPAWN.x, END_SPAWN.y, END_SPAWN.z);
+          this.player.prevPos.x = END_SPAWN.x; this.player.prevPos.y = END_SPAWN.y; this.player.prevPos.z = END_SPAWN.z;
+          this.player.yaw = END_SPAWN.yaw; this.player.prevYaw = END_SPAWN.yaw; this.player.pitch = 0;
+          this.player.vel.x = this.player.vel.y = this.player.vel.z = 0;
+          this.player.portalCooldown = 300;
+          this.chunkManager.rebuildNow([]);
         } else {
           this.snapPlayerToGround();
         }
@@ -583,6 +596,10 @@ export class Game {
         : kind === 'spawner' ? { type: 'spawner', data: {
           mobType: 'blaze', delay: 20, minDelay: 200, maxDelay: 800,
           spawnCount: 4, maxNearby: 6, activationRange: 16, spawnRange: 4 } }
+        // 11-END §9.4 — shulker box (27 slots, distinct type for spill branching).
+        : kind === 'shulker_box' ? { type: 'shulker_box', data: { slots: new Array(27).fill(null) } }
+        // 11-END §11 — end gateway (paired-teleport block-entity).
+        : kind === 'end_gateway' ? { type: 'end_gateway', data: { partner: null } }
         : { type: 'furnace', data: { slots: new Array(3).fill(null), burn: 0, fuelTotal: 0, cook: 0, xpBank: 0 } };
       chunk.blockEntities.set(i, be);
       chunk.modified = true;
@@ -659,6 +676,16 @@ export class Game {
 
   spillBlockEntity(be, x, y, z) {
     const data = be.data;
+    // 11-END §9.4 — a shulker box drops ONE item retaining its 27 slots in
+    // tags.containerItems (not a loose spill). Both break + explosion route here.
+    if (be.type === 'shulker_box') {
+      const containerItems = packContainer(data.slots ?? []);
+      const stack = { id: B.SHULKER_BOX, count: 1 };
+      if (containerItems.length) stack.tags = { containerItems };
+      this.dropStackAt(stack, x + 0.5, y + 0.5, z + 0.5);
+      if (data?.slots) data.slots.fill(null);
+      return;
+    }
     if (data?.slots) {
       for (const s of data.slots) if (s) this.dropStackAt(s, x + 0.5, y + 0.5, z + 0.5);
       data.slots.fill(null);
@@ -855,6 +882,7 @@ export class Game {
     if (chunk.pendingSpawns && !chunk.spawnsDone) {
       for (const rec of chunk.pendingSpawns) {
         if (rec.be === 'spawner') this.configureSpawner(rec.x, rec.y, rec.z, rec.mobType);
+        else if (rec.be === 'chest') this.rollGenChest(rec.x, rec.y, rec.z, rec.loot);
         else if (rec.type === 'villager') {
           // 12-VILLAGES §8.6 — gen villagers spawn unemployed near the bell.
           this.spawnMobAt('villager', rec.x, rec.y, rec.z, { persistent: true, homeVillage: rec.homeVillage ?? null });
@@ -929,6 +957,14 @@ export class Game {
     if (be?.data) be.data.mobType = mobType;
   }
 
+  // 11-END §15 — fill a gen-placed chest from a loot table, seeded by position so
+  // save/reload is stable (the BE persists once rolled, so it never re-rolls).
+  rollGenChest(x, y, z, table) {
+    if (this.world.getBlock(x, y, z) !== 37) return;   // chest id
+    const be = this.getBlockEntity(x, y, z);
+    if (be?.data?.slots) rollChestLoot(be.data.slots, table, this.world.seedString ?? this.world.seed ?? 0, x, y, z);
+  }
+
   onChunkHydrated(chunk, record) {
     // 12-VILLAGES §2.7 — restore the persisted village record (golem timers etc.).
     if (record.villageMeta) {
@@ -1000,6 +1036,8 @@ export class Game {
       this.explode(x + 0.5, y + 0.5, z + 0.5, 5);                // §10.2 power-5 (fire is a documented nicety)
       return;
     }
+    // 11-END §7 — the End denies sleep (no explosion, no spawn set).
+    if (getDimension(this.world.activeDim)?.noSleep) { this.toast('You may not rest here'); return; }
     p.spawnPoint = { x, y, z };            // always set on click (06 §5.7)
     if (!this.dayNight.canSleepNow()) {
       this.toast('You can only sleep at night');

@@ -450,6 +450,31 @@ P.fletching_table_side = (c, x, y, r) => { planks(c, x, y, r, '#b89a5a'); rect(c
 P.hay_bale_top = (c, x, y, r) => { noise(c, x, y, r, '#c8a828', 8); border(c, x, y, '#8a7018'); rect(c, x, y, 7, 0, 2, 16, '#8a7018'); rect(c, x, y, 0, 7, 16, 2, '#8a7018'); };
 P.hay_bale_side = (c, x, y, r) => { noise(c, x, y, r, '#d4b432', 6); for (let i = 2; i < 16; i += 4) rect(c, x, y, 0, i, 16, 1, '#a88a20'); rect(c, x, y, 3, 0, 2, 16, '#7a6414'); rect(c, x, y, 11, 0, 2, 16, '#7a6414'); };
 
+// ============ 11-END §14 — End blocks ============
+// stone-brick 4×4 masonry grid.
+function brickGrid(c, x, y, r, base) {
+  noise(c, x, y, r, base, 8);
+  for (let i = 0; i <= 16; i += 4) { rect(c, x, y, 0, i - (i === 16 ? 1 : 0), 16, 1, '#565656'); rect(c, x, y, i - (i === 16 ? 1 : 0), 0, 1, 16, '#565656'); }
+}
+P.stone_bricks = (c, x, y, r) => brickGrid(c, x, y, r, '#7f7f7f');
+P.mossy_stone_bricks = (c, x, y, r) => { brickGrid(c, x, y, r, '#7f7f7f'); speckle(c, x, y, r, '#5d7a4a', 0.25); };
+P.cracked_stone_bricks = (c, x, y, r) => { brickGrid(c, x, y, r, '#787878'); for (let i = 0; i < 6; i++) px(c, x, y, 2 + ((r() * 12) | 0), 2 + ((r() * 12) | 0), '#3f3f3f'); };
+P.iron_bars = (c, x, y, r) => { for (const bx of [1, 5, 9, 13]) rect(c, x, y, bx, 0, 1, 16, '#a8a8a8'); rect(c, x, y, 0, 0, 16, 1, '#a8a8a8'); rect(c, x, y, 0, 15, 16, 1, '#a8a8a8'); noise(c, x, y, r, '#00000000', 2); };
+P.end_stone = (c, x, y, r) => { blotch(c, x, y, r, '#dbe2a4', '#c8cf8e', 10); speckle(c, x, y, r, '#eef2c0', 0.06); };
+P.end_stone_bricks = (c, x, y, r) => { blotch(c, x, y, r, '#dbe2a4', '#c8cf8e', 8); for (let i = 0; i <= 16; i += 4) { rect(c, x, y, 0, Math.min(i, 15), 16, 1, '#b5bc7f'); rect(c, x, y, Math.min(i, 15), 0, 1, 16, '#b5bc7f'); } };
+P.purpur_block = (c, x, y, r) => { noise(c, x, y, r, '#a878a8', 6); for (let i = 0; i < 5; i++) { const bx = 2 + ((r() * 10) | 0), by = 2 + ((r() * 10) | 0); rect(c, x, y, bx, by, 3, 3, '#c39cc3'); px(c, x, y, bx, by, '#8a5f8a'); } };
+P.purpur_pillar_side = (c, x, y, r) => { noise(c, x, y, r, '#a878a8', 6); rect(c, x, y, 3, 0, 2, 16, '#8a5f8a'); rect(c, x, y, 12, 0, 2, 16, '#8a5f8a'); };
+P.purpur_pillar_top = (c, x, y, r) => rings(c, x, y, r, '#c39cc3', '#a878a8');
+P.end_rod = (c, x, y, r) => { rect(c, x, y, 0, 0, 16, 16, '#00000000'); rect(c, x, y, 7, 2, 2, 12, '#f6f0fa'); rect(c, x, y, 7, 1, 2, 1, '#d67fff'); rect(c, x, y, 5, 12, 6, 3, '#a878a8'); };
+P.chorus_plant = (c, x, y, r) => { noise(c, x, y, r, '#5c4a72', 8); border(c, x, y, '#46375a'); speckle(c, x, y, r, '#7a6396', 0.10); };
+P.chorus_flower = (c, x, y, r) => { noise(c, x, y, r, '#f4eef8', 6); border(c, x, y, '#5c4a72'); rect(c, x, y, 6, 6, 4, 4, '#c39cc3'); };
+P.end_portal_frame_top = (c, x, y, r) => { P.end_stone(c, x, y, r); rect(c, x, y, 4, 4, 8, 8, '#3a5f4a'); rect(c, x, y, 6, 6, 4, 4, '#2a4636'); };
+P.end_portal_frame_top_eye = (c, x, y, r) => { P.end_portal_frame_top(c, x, y, r); rect(c, x, y, 5, 5, 6, 6, '#7fe3c8'); rect(c, x, y, 7, 6, 2, 4, '#143028'); };
+P.end_portal_frame_side = (c, x, y, r) => { P.end_stone(c, x, y, r); rect(c, x, y, 0, 5, 16, 4, '#46375a'); };
+P.shulker_box_side = (c, x, y, r) => { noise(c, x, y, r, '#976b97', 6); rect(c, x, y, 0, 8, 16, 1, '#6e4a6e'); for (const [px_, py_] of [[1, 1], [13, 1], [1, 13], [13, 13]]) rect(c, x, y, px_, py_, 2, 2, '#c39cc3'); };
+P.shulker_box_top = (c, x, y, r) => { noise(c, x, y, r, '#a878a8', 6); rect(c, x, y, 3, 3, 10, 10, '#c39cc3'); border(c, x, y, '#6e4a6e'); };
+P.shulker_box_bottom = (c, x, y, r) => { noise(c, x, y, r, '#7a5a7a', 6); border(c, x, y, '#5a3a5a'); };
+
 P.crafting_table_top = (c, x, y, r) => {
   planks(c, x, y, r, '#a76e35');
   for (let i = 0; i < 16; i++) {
@@ -727,16 +752,32 @@ const furnaceLitFrame = (flick) => (c, x, y, r) => {
   for (let i = 0; i < 8; i++)
     px(c, x, y, 5 + r() * 6, 9 + r() * 5, flick ? '#ff9a00' : '#ffd23c');
 };
+// 11-END §14 — end_portal / end_gateway drifting starfield (2-frame twinkle).
+const endStarFrame = (dark) => (c, x, y, r) => {
+  rect(c, x, y, 0, 0, 16, 16, '#0a0714');
+  const cols = ['#8fd8c8', '#d67fff', '#ffffff'];
+  for (let i = 0; i < 60; i++) {
+    const sx = (r() * 16) | 0, sy = (r() * 16) | 0;
+    if (((sx + sy) & 1) === (dark ? 1 : 0)) continue;   // alternate visible set per frame
+    px(c, x, y, sx, sy, cols[(r() * 3) | 0]);
+  }
+  if (dark) rect(c, x, y, 4, 4, 8, 8, '#000000');       // gateway dark core hint
+};
 export const ANIMATED = {
   water: [waterFrame, (c, x, y, r) => { r(); waterFrame(c, x, y, r); }],
   lava: [lavaFrame, (c, x, y, r) => { r(); lavaFrame(c, x, y, r); }],
   fire: [fireFrame, (c, x, y, r) => { r(); fireFrame(c, x, y, r); }],
   furnace_front_lit: [furnaceLitFrame(false), furnaceLitFrame(true)],
+  end_portal: [endStarFrame(false), endStarFrame(true)],
+  end_gateway: [(c, x, y, r) => { endStarFrame(false)(c, x, y, r); rect(c, x, y, 4, 4, 8, 8, '#000000'); },
+                (c, x, y, r) => { endStarFrame(true)(c, x, y, r); rect(c, x, y, 3, 3, 10, 10, '#000000'); }],
 };
 P.water = ANIMATED.water[0];
 P.lava = ANIMATED.lava[0];
 P.fire = ANIMATED.fire[0];
 P.furnace_front_lit = ANIMATED.furnace_front_lit[0];
+P.end_portal = ANIMATED.end_portal[0];
+P.end_gateway = ANIMATED.end_gateway[0];
 
 // --- destroy stages ----------------------------------------------------------
 // One deterministic crack pattern; stage i draws a prefix of it.
@@ -1240,6 +1281,14 @@ P.item_glass_bottle = (c, x, y) => {
 P.item_potion = (c, x, y) => bottleBase(c, x, y, '#385DC6');
 P.item_splash_potion = (c, x, y) => { bottleBase(c, x, y, '#385DC6'); rect(c, x, y, 5, 2, 6, 1, '#8A8A8A'); };
 P.item_lingering_potion = (c, x, y) => { bottleBase(c, x, y, '#385DC6'); px(c, x, y, 6, 14, '#8A8A8A'); px(c, x, y, 8, 15, '#8A8A8A'); px(c, x, y, 10, 14, '#8A8A8A'); };
+
+// 11-END §14 — item sprites (auto-collected via 'item_' prefix).
+P.item_eye_of_ender = (c, x, y) => { disc(c, x, y, 8, 8, 6, '#7fe3c8'); rect(c, x, y, 7, 5, 2, 6, '#143028'); px(c, x, y, 6, 6, '#c8fff0'); px(c, x, y, 10, 6, '#c8fff0'); };
+P.item_chorus_fruit = (c, x, y) => { for (const [cx, cy, rr] of [[6, 6, 3], [10, 7, 2], [7, 10, 2], [10, 10, 2]]) disc(c, x, y, cx, cy, rr, '#5c4a72'); px(c, x, y, 6, 6, '#7a6396'); px(c, x, y, 10, 10, '#7a6396'); };
+P.item_popped_chorus_fruit = (c, x, y) => { for (const [cx, cy, rr] of [[6, 6, 3], [10, 7, 2], [7, 10, 2], [10, 10, 2]]) disc(c, x, y, cx, cy, rr, '#c39cc3'); px(c, x, y, 6, 6, '#f4eef8'); px(c, x, y, 10, 10, '#f4eef8'); };
+P.item_shulker_shell = (c, x, y) => { rect(c, x, y, 2, 8, 12, 4, '#976b97'); for (let i = 0; i < 8; i++) rect(c, x, y, 2 + i * 12 / 8, 4, 2, 5, '#8a5f8a'); rect(c, x, y, 3, 3, 10, 3, '#a878a8'); px(c, x, y, 5, 4, '#c39cc3'); };
+P.item_elytra = (c, x, y) => { for (const s of [-1, 1]) { const bx = 8 + s * 1; for (let i = 0; i < 12; i++) rect(c, x, y, bx + s * (i < 6 ? 0 : 1), 2 + i, s > 0 ? 5 : -5 + 5, 1, '#4a4a52'); } rect(c, x, y, 2, 3, 5, 11, '#4a4a52'); rect(c, x, y, 9, 3, 5, 11, '#4a4a52'); for (let i = 4; i < 14; i += 3) { rect(c, x, y, 2, i, 5, 1, '#8a8a96'); rect(c, x, y, 9, i, 5, 1, '#8a8a96'); } rect(c, x, y, 7, 2, 2, 6, '#2a2a30'); };
+P.item_elytra_tattered = (c, x, y) => { P.item_elytra(c, x, y); for (const [px_, py_] of [[3, 6], [4, 10], [11, 5], [12, 9], [10, 12]]) rect(c, x, y, px_, py_, 2, 2, '#00000000'); };
 P.item_spider_eye = (c, x, y) => { disc(c, x, y, 8, 8, 4, '#7a1f24'); disc(c, x, y, 8, 8, 2, '#c85a1a'); px(c, x, y, 8, 8, '#1a1a1a'); };
 P.item_fermented_spider_eye = (c, x, y) => { disc(c, x, y, 8, 8, 4, '#3a5a34'); disc(c, x, y, 8, 8, 2, '#6a8a3a'); px(c, x, y, 8, 8, '#1a1a1a'); };
 P.item_golden_apple = (c, x, y) => { disc(c, x, y, 8, 9, 4, '#fcd94a'); px(c, x, y, 8, 4, '#6a4a20'); rect(c, x, y, 6, 6, 2, 2, '#fff2a0'); };

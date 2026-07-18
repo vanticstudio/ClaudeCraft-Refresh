@@ -1,5 +1,6 @@
 // Mob factory + hostile runtime spawn cycle (05 §3).
 import { BLOCKS, B } from '../../registry/blocks.js';
+import { getDimension } from '../../world/dimensions.js';
 import { Zombie } from './Zombie.js';
 import { Skeleton } from './Skeleton.js';
 import { Creeper } from './Creeper.js';
@@ -10,9 +11,10 @@ import { Cow, Pig, Sheep, Chicken } from './passive.js';
 import { Ghast } from './nether/Ghast.js';
 import { Blaze, ZombifiedPiglin, WitherSkeleton, MagmaCube, Piglin } from './nether/mobs.js';
 import { Villager, IronGolem, ZombieVillager } from './villager.js';
+import { Shulker } from './Shulker.js';   // 11-END §9
 
 export const HOSTILE_TYPES = new Set(['zombie', 'skeleton', 'creeper', 'spider', 'enderman',
-  'ghast', 'blaze', 'wither_skeleton', 'magma_cube', 'zombie_villager']);   // golem/villager neutral
+  'ghast', 'blaze', 'wither_skeleton', 'magma_cube', 'zombie_villager', 'shulker']);   // golem/villager neutral
 
 const CTORS = {
   zombie: Zombie, skeleton: Skeleton, creeper: Creeper, spider: Spider,
@@ -20,6 +22,7 @@ const CTORS = {
   ghast: Ghast, blaze: Blaze, zombified_piglin: ZombifiedPiglin,
   wither_skeleton: WitherSkeleton, magma_cube: MagmaCube, piglin: Piglin,
   villager: Villager, iron_golem: IronGolem, zombie_villager: ZombieVillager,   // 12-VILLAGES
+  shulker: Shulker,   // 11-END §9
 };
 
 export function createMob(world, type, x, y, z, opts = {}) {
@@ -32,19 +35,17 @@ export function createMob(world, type, x, y, z, opts = {}) {
   return mob;
 }
 
-// spawn weights (05 §3.2, MC exact)
-const SPAWN_WEIGHTS = [
-  ['zombie', 95], ['skeleton', 100], ['creeper', 100], ['spider', 100], ['enderman', 10],
-];
-const WEIGHT_TOTAL = SPAWN_WEIGHTS.reduce((s, [, w]) => s + w, 0);
-
-function weightedPick(rng) {
-  let r = rng() * WEIGHT_TOTAL;
-  for (const [type, w] of SPAWN_WEIGHTS) {
-    if (r < w) return type;
-    r -= w;
-  }
-  return 'zombie';
+// spawn weights (05 §3.2, MC exact). Dimension-keyed per the descriptor's
+// spawnTable (11-END AMENDS 05 §3.2 — dim 2 is enderman-only).
+const SPAWN_TABLES = {
+  overworld: [['zombie', 95], ['skeleton', 100], ['creeper', 100], ['spider', 100], ['enderman', 10]],
+  end: [['enderman', 1]],   // §6.5 sole entry
+};
+function weightedPick(rng, table) {
+  const total = table.reduce((s, [, w]) => s + w, 0);
+  let r = rng() * total;
+  for (const [type, w] of table) { if (r < w) return type; r -= w; }
+  return table[0][0];
 }
 
 // spawnable ground: any opaque full-cube terrain block EXCEPT glass/leaves
@@ -69,6 +70,12 @@ export class MobSpawner {
     const w = game.world;
     const rng = w.rng;
     const p = game.player;
+    // resolve the per-dimension roster; a null spawnTable (overworld) uses the
+    // overworld table. The Nether roster comes from fortress gen-spawners, not
+    // the wave — so a nether table falls back to no wave spawns (skip).
+    const dimTable = getDimension(w.activeDim)?.spawnTable;
+    if (dimTable === 'nether') return;   // §7.2 — nether uses gen-spawners, not the wave
+    const table = SPAWN_TABLES[dimTable === 'end' ? 'end' : 'overworld'];
 
     for (let i = 0; i < 8; i++) {
       const ang = rng() * 2 * Math.PI;
@@ -81,7 +88,7 @@ export class MobSpawner {
       const y = 1 + Math.floor(rng() * top);
       if (!this.validSpawnPos(x, y, z, null)) continue;
 
-      let species = weightedPick(rng);
+      let species = weightedPick(rng, table);
       // 12-VILLAGES AMENDS 05 §3.2 — 5% of spawned zombies become zombie villagers.
       if (species === 'zombie' && rng() < 0.05) species = 'zombie_villager';
       const packSize = species === 'enderman' ? 1 + Math.floor(rng() * 2) : 1 + Math.floor(rng() * 4);

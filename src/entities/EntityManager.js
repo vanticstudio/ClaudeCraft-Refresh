@@ -39,6 +39,10 @@ export class EntityManager {
         if (entity.deathAnimTicks) entity.deathTime++;
         continue;
       }
+      // 11-END AMENDS 01 §13.2 — reap any non-player entity that falls into the
+      // void floor (below Y −64). Covers items/mobs/projectiles knocked off End
+      // islands regardless of their own per-class kill plane.
+      if (entity.pos.y < -64) { entity.dead = true; entity.deathTime = entity.deathAnimTicks ?? 0; continue; }
       // freeze outside SIM_RADIUS or in ungenerated chunks (01 §12/§13.2)
       const ecx = Math.floor(entity.pos.x) >> 4, ecz = Math.floor(entity.pos.z) >> 4;
       if (p && Math.max(Math.abs(ecx - p.cx), Math.abs(ecz - p.cz)) > SIM_RADIUS) continue;

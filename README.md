@@ -75,6 +75,29 @@ autosaves to the browser's IndexedDB every 30 seconds — close the tab and
 
 *This section is updated as new features land.*
 
+- **2026-07-18** — **The End: strongholds, elytra, shulkers (expansion phase E10, `11`)**:
+  the endgame is in. Craft an **eye of ender** (ender pearl + blaze powder) and throw
+  it — it climbs and drifts toward the world's one **stronghold** (a stone-brick maze
+  1,200–2,000 blocks out, with **libraries** full of bookshelves and chests holding
+  guaranteed enchanted books). Deep inside is the **end portal room**: fill all **12
+  frames** with eyes and the portal ignites, dropping you onto a fixed **obsidian
+  platform in The End** — a void-purple dimension of floating **end-stone islands**
+  ringed by **10 obsidian pillars**, with a static starfield sky, no day or night, and
+  no sleeping ("you may not rest here"). Only **endermen** spawn on the main island.
+  Beyond the central island lie the **outer islands**: chunky end-stone with **chorus
+  plants** (break a stem and the whole tree collapses; eat the fruit and you **teleport**
+  a few blocks — even on a full stomach), and **end cities** built of **purpur** and
+  glowing **end rods**, guarded by **shulkers** — armored box-mobs that fire homing
+  **bullets** giving you **Levitation** (drift up… then fall). Shulkers drop **shells**
+  for the **shulker box**, a portable container that **keeps its contents when you break
+  it**. City loot yields the **elytra**: strap it to your chest slot, jump mid-fall, and
+  **glide** — pitch down to gain speed (over 60 m/s in a dive), level out for a ~10:1
+  glide, pull up to trade speed for height; a hard wall is lethal, and the wings wear
+  out (repair them with leather on an anvil, or Mending). New blocks: stone bricks
+  (+ mossy/cracked), iron bars, end stone (+ bricks), purpur block/pillar, end rod,
+  chorus plant/flower, and the shulker box. *(The dragon fight, the exit portal's
+  activation, and end gateways arrive with the bosses update — the arena generates
+  ready for them.)*
 - **2026-07-18** — **Villages, trading & iron golems (expansion phase E6, `12`)**:
   the world now grows **villages** — clusters of houses, farms, paths, a central
   well and a **meeting-point bell** — that generate **identically no matter which

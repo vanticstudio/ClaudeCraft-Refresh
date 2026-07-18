@@ -45,6 +45,9 @@ export function repairMaterials(target) {
   if (!it || !it.durability) return [];
   // §8.4: "bow, shears, flint_and_steel | no material — combine-only".
   if (it.kind === 'bow' || it.kind === 'shears' || it.kind === 'flint_and_steel') return [];
+  // 11-END AMENDS 08 §8.4 — elytra repairs with leather (108 durability/leather,
+  // max 4 = full 432); 08's generic unit-repair then applies unchanged.
+  if (it.name === 'elytra') return [330];
   return REPAIR_BY_MATERIAL[it.name.split('_')[0]] ?? [];
 }
 

@@ -5,29 +5,37 @@
 
 import { createGenerator } from '../world/gen/terrain.js';
 import { createNetherGenerator } from '../world/gen/nether.js';
+import { createEndGenerator } from '../world/gen/end.js';
 
 let gen = null;          // overworld (dim 0)
 let netherGen = null;    // 10-NETHER dim 1
+let endGen = null;       // 11-END dim 2
 
 self.onmessage = (e) => {
   const msg = e.data;
   if (msg.type === 'init') {
     gen = createGenerator(msg.seed);
     netherGen = createNetherGenerator(msg.seed);   // §2.2 — disjoint stream namespace
+    endGen = createEndGenerator(msg.seed);         // 11-END §6 — 'end:' streams
     self.postMessage({ type: 'ready', worldSpawn: gen.findWorldSpawn() });
   } else if (msg.type === 'generate') {
     try {
-      // §2.2 — dispatch gen by dimension. (dim 2 / End is 11's.)
-      const g = msg.dim === 1 ? netherGen : gen;
+      // §2.2 — dispatch gen by dimension.
+      const g = msg.dim === 2 ? endGen : msg.dim === 1 ? netherGen : gen;
       const r = g.generateChunk(msg.cx, msg.cz);
+      // 11-END step 6.5 — the overworld gen returns `states` (stronghold frame
+      // nibbles); nether/end don't, so guard + transfer only when present.
+      const transfer = [r.blocks.buffer, r.heightMap.buffer, r.biomes.buffer];
+      if (r.states) transfer.push(r.states.buffer);
       self.postMessage(
         {
           type: 'chunk', cx: msg.cx, cz: msg.cz, jobId: msg.jobId,
           blocks: r.blocks, heightMap: r.heightMap, biomes: r.biomes,
+          states: r.states ?? null,
           spawns: r.spawns,
           villageMeta: r.villageMeta ?? null,   // 12-VILLAGES §2.7 (structured-clone, not transferred)
         },
-        [r.blocks.buffer, r.heightMap.buffer, r.biomes.buffer],
+        transfer,
       );
     } catch (err) {
       self.postMessage({

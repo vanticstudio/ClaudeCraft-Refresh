@@ -343,12 +343,14 @@ export class DayNight {
     // fog-colored void, dense short fog, no time darkening, and the ambient floor.
     const dim = getDimension(this.world.activeDim);
     const netherLike = dim && dim.sky?.kind === 'nether';
+    // 11-END §7 — static void-purple sky: its own gradient + faint fog, no day cycle.
+    const endLike = dim && dim.sky?.kind === 'end';
     if (dim && !dim.hasSkyLight) {
       if (!underFluid) {
-        this.fogColor.setHex(netherLike ? dim.sky.clearColor : 0x000000);
+        this.fogColor.setHex((netherLike || endLike) ? dim.sky.clearColor : 0x000000);
         const R = 128;
-        fogNear = 0;
-        fogFar = netherLike ? dim.sky.fogFar * R : R;
+        fogNear = endLike ? 0.5 * R : 0;              // §7 near 0.5·R
+        fogFar = (netherLike || endLike) ? dim.sky.fogFar * R : R;
       }
       skyDarkenF = 0;
       this.skyTint.setRGB(1, 1, 1);
@@ -356,6 +358,8 @@ export class DayNight {
     } else {
       sharedUniforms.uDimAmbient.value = 0;
     }
+    // §7 — the End's scene lights are constant (DirectionalLight 0.12 / Ambient 0.25).
+    if (endLike) { sunIntensity = 0.12; ambient = 0.25; }
 
     // 09-POTIONS §6.5 — Night Vision sky-channel floor, flash-blinking below 10 s.
     sharedUniforms.uNightVision.value = nightVisionScale(this.game.player);
@@ -382,10 +386,10 @@ export class DayNight {
     this.sky.update({
       camera, angle,
       // 10-NETHER §13.1 — flat fog-colored void, no sun/moon/stars in no-sky dims.
-      zenith: (underFluid || netherLike) ? this.fogColor : this.kf.zenith,
-      horizon: (underFluid || netherLike) ? this.fogColor : this.kf.horizon,
-      starAlpha: netherLike ? 0 : starBrightness(t) * (1 - this.rainLevel),
-      sunAlpha: netherLike ? 0 : (1 - this.rainLevel),
+      zenith: endLike ? new THREE.Color(dim.sky.zenith) : (underFluid || netherLike) ? this.fogColor : this.kf.zenith,
+      horizon: endLike ? new THREE.Color(dim.sky.horizon) : (underFluid || netherLike) ? this.fogColor : this.kf.horizon,
+      starAlpha: (netherLike || endLike) ? 0 : starBrightness(t) * (1 - this.rainLevel),
+      sunAlpha: (netherLike || endLike) ? 0 : (1 - this.rainLevel),
       sunrise: sunriseColor(t),
       cloudTint: (0.16 + 0.84 * sunIntensity) * (1 - 0.3 * this.rainLevel),
       sunIntensity, ambient,
@@ -396,7 +400,13 @@ export class DayNight {
       isSnowAt: (x, z) => this.isSnowAtColumn(x, z),
       dtSec,
     });
-    if (sunDir.y <= 0) this.sky.sunLight.intensity = sunIntensity * 0.25;   // moonlight
+    if (endLike) {
+      // §7 — pin the End's constant scene lights (defeat the day-cycle moonlight dim).
+      this.sky.sunLight.intensity = 0.12;
+      this.sky.ambient.intensity = 0.25;
+    } else if (sunDir.y <= 0) {
+      this.sky.sunLight.intensity = sunIntensity * 0.25;   // moonlight
+    }
   }
 
   serialize() {

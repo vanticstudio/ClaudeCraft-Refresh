@@ -12,6 +12,8 @@
 // Inactive dimensions live on disk and hydrate on return (the spec explicitly
 // allows this). A descriptor is pure data + flags every existing system reads.
 
+import { regenObsidianPlatform } from './endArena.js';
+
 const DIMENSIONS = new Map();
 
 export function registerDimension(id, descriptor) { DIMENSIONS.set(id, descriptor); }
@@ -26,6 +28,15 @@ export const NETHER_SKY = {
   fogColor: 0x330808,          // nether_wastes default; per-biome tint applied live
   fogNear: 0.0, fogFar: 0.55,  // §13.1 claustrophobic
   clearColor: 0x330808,
+};
+// 11-END §7 — static void-purple sky: gradient zenith #100A18 → horizon #1B1426,
+// fog #14101E, faint grain. No sun/moon/stars/clouds/day-cycle.
+export const END_SKY = {
+  kind: 'end',
+  fogColor: 0x14101E,
+  fogNear: 0.0, fogFar: 1.0,   // ×128 render-distance far (§7)
+  clearColor: 0x14101E,
+  zenith: 0x100A18, horizon: 0x1B1426,
 };
 
 // dim 0 — Overworld (02 owns gen). Registered here so the registry is complete
@@ -49,8 +60,18 @@ registerDimension(1, {
   scale: 8, evaporatesWater: true, explodesBeds: true, lavaFast: true,
   spawnTable: 'nether',        // §7.2 — resolved by the spawner
 });
-// dim 2 (End) is registered by 11-END with hasSkyLight:false, ambientLight:0.00,
-// scale:1, and onArrive: regenObsidianPlatform.
+// dim 2 — The End (11-END §7). No sky light, static purple sky, no bed sleep,
+// enderman-only spawns; arrival rebuilds the fixed obsidian platform (§5.5/§5.6).
+registerDimension(2, {
+  id: 2, key: 'the_end',
+  minY: 0, maxY: 127, bedrockRoof: false, ceilingY: 127,
+  hasSkyLight: false, ambientLight: 0.10,   // §7 brightness floor ≈ light level 3
+  sky: END_SKY,
+  scale: 1, evaporatesWater: false, explodesBeds: false, lavaFast: false,
+  noSleep: true,               // §7 — "You may not rest here" (no explosion)
+  spawnTable: 'end',           // §6.5 enderman-only wave
+  onArrive: regenObsidianPlatform,
+});
 
 /**
  * §2.5 — the single dimension-change entry point every portal calls.
