@@ -7,10 +7,11 @@ import { igniteAt } from '../world/fire.js';
 import { ITEMS, idOf } from '../registry/items.js';
 import { raycastBlocks } from '../world/raycast.js';
 import { LivingEntity } from '../entities/Entity.js';
+import { EyeOfEnder } from '../entities/EyeOfEnder.js';   // 11-END §3
 import { emitSound, startLoop, at } from '../audio/engine.js';
 import { AABB } from '../math/aabb.js';
 import { KEYBINDS } from '../constants.js';
-import { cloneStack, tagsEqual, getEnchantLvl } from '../items/tags.js';
+import { cloneStack, tagsEqual, getEnchantLvl, unpackContainer } from '../items/tags.js';
 import { ENCH } from '../items/enchants.js';
 import { EFFECT, effectLevel, addEffect, applyInstant } from '../status/effects.js';
 import { POTIONS } from '../status/potions.js';
@@ -727,6 +728,10 @@ export class Interaction {
     const held = p.itemIn(hand);
     if (!held) return false;
 
+    // 11-END §3/§5.2 — eye of ender: fill a targeted empty frame, else launch it
+    // (overworld only). Handled before placement since it uses the block hit.
+    if (held.kind === 'eye_of_ender') return this.useEyeOfEnder(hand, hit);
+
     // 3: placeable block. Per §7.3 a place that FAILS still consumes the
     // attempt and blocks the offhand — only "no block to place against" passes.
     if (held.place != null && hit) { this.tryPlace(held, hit, hand); return true; }
@@ -823,6 +828,12 @@ export class Interaction {
       case 'barrel':
         g.openContainer('chest', hit.x, hit.y, hit.z);
         emitSound('block.barrel.open', at(hit.x + 0.5, hit.y + 0.5, hit.z + 0.5));
+        break;
+      // 11-END §9.4 — a shulker box opens its own 27-slot screen (no opaque-above
+      // check — vanilla approximation) and plays the chest-open sound.
+      case 'shulker':
+        g.openContainer('shulker_box', hit.x, hit.y, hit.z);
+        emitSound('block.chest.open', at(hit.x + 0.5, hit.y + 0.5, hit.z + 0.5));
         break;
       // §7.3/§7.5 — composter and lectern have no player UI in this build (see DEVIATIONS).
       case 'composter': case 'lectern': break;
@@ -942,6 +953,54 @@ export class Interaction {
     }
   }
 
+  // 11-END §3/§5.2 — eye of ender RMB: fill a targeted empty frame (any dim), else
+  // launch a navigation eye (overworld only; no-op elsewhere, item kept).
+  useEyeOfEnder(hand, hit) {
+    const p = this.player, w = this.world, g = this.game;
+    if (hit && w.getBlock(hit.x, hit.y, hit.z) === B.END_PORTAL_FRAME) {
+      const st = w.getState(hit.x, hit.y, hit.z);
+      if (!(st & 4)) {   // §5.2 — fill only an empty frame (eye bit 2)
+        w.setBlock(hit.x, hit.y, hit.z, B.END_PORTAL_FRAME, { state: st | 4, byPlayer: true });
+        if (!p.creative) p.consumeIn(hand, 1);
+        emitSound('block.portal.fill', at(hit.x + 0.5, hit.y + 0.5, hit.z + 0.5));
+        this.swing();
+        this.checkEndPortalActivation(hit.x, hit.y, hit.z);   // §5.3
+      }
+      return true;
+    }
+    if (w.activeDim !== 0) return true;   // §3 — overworld only
+    const eye = this.eyePos(), look = this.lookDir();
+    g.entities.add(new EyeOfEnder(w, eye.x + look.x * 0.5, eye.y + look.y * 0.5, eye.z + look.z * 0.5, p));
+    emitSound('eye_of_ender.launch', at(eye.x, eye.y, eye.z));
+    if (!p.creative) p.consumeIn(hand, 1);
+    this.swing();
+    return true;
+  }
+
+  // §5.3 — on every eye insertion, scan candidate 3×3 interior centers for a
+  // completed 12-frame ring (5×5 minus corners, all eyes seated); fill the 9
+  // interior cells with end_portal and fire the global activation sound.
+  checkEndPortalActivation(fx, fy, fz) {
+    const w = this.world;
+    const filled = (x, z) => w.getBlock(x, fy, z) === B.END_PORTAL_FRAME && (w.getState(x, fy, z) & 4);
+    for (let cx = fx - 2; cx <= fx + 2; cx++) {
+      for (let cz = fz - 2; cz <= fz + 2; cz++) {
+        let ok = true;
+        for (let i = -2; i <= 2 && ok; i++)
+          for (let j = -2; j <= 2 && ok; j++)
+            if ((Math.abs(i) === 2) !== (Math.abs(j) === 2)) {   // the 12 ring cells (XOR)
+              if (!filled(cx + i, cz + j)) ok = false;
+            }
+        if (!ok) continue;
+        for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++)   // §5.3 — 9 interior cells
+          w.setBlock(cx + i, fy, cz + j, B.END_PORTAL, { byPlayer: true });
+        emitSound('block.portal.activate', null);   // §16 — global, distance-independent
+        return true;
+      }
+    }
+    return false;
+  }
+
   tryPlace(held, hit, hand = 'main') {
     const p = this.player;
     const w = this.world;
@@ -992,6 +1051,14 @@ export class Interaction {
     }
 
     w.setBlock(x, y, z, blockId, { state, byPlayer: true });
+    // 11-END §9.4 — restore a placed shulker box's retained contents.
+    if (blockId === B.SHULKER_BOX) {
+      const ci = p.stackIn(hand)?.tags?.containerItems;
+      if (ci) {
+        const be = this.game.getBlockEntity(x, y, z);
+        if (be?.data) be.data.slots = unpackContainer(ci, 27);
+      }
+    }
     // Reaching here IS the success path — six guards above return false first.
     this.emitPlace(blockId, x, y, z);
     // No creative guard here: gameMode is the GameMode int enum now, so the old

@@ -147,6 +147,12 @@ const PAINT = {
     px(c, 4, 6, '#5a5048', 2, 2); px(c, 10, 6, '#5a5048', 2, 2);  // eyes
     px(c, 6, 9, '#6a7a4a', 4, 3);                        // vine patch
   },
+  // 11-END §9 — shulker shell (purpur-toned) with a lid seam + a small face.
+  shulker: (c, s, r) => {
+    noiseFill(c, s, '#976b97', 6, r);
+    px(c, 0, Math.floor(s / 2), '#6e4a6e', s, 1);        // lid seam
+    px(c, 5, 6, '#3a2a3a', 2, 2); px(c, 9, 6, '#3a2a3a', 2, 2);   // eyes
+  },
 };
 
 export function mobTexture(name) {

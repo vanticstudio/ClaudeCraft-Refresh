@@ -184,6 +184,13 @@ export class ChunkMesher {
         case 'comparator': this.emitBox(x, y, z, blk, st, [0, 0, 0, 1, 2 / 16, 1], false); break;
         case 'piston_head': this.emitBox(x, y, z, blk, st, [0, 0, 0, 1, 1, 1], true); break;
         case 'hopper': this.emitBox(x, y, z, blk, st, [0, 0, 0, 1, 1, 1], true); break;
+        // 11-END §2.2 — custom End shapes.
+        case 'iron_bars': this.emitPane(x, y, z, blk, st); break;
+        case 'end_rod': this.emitEndRod(x, y, z, blk, st); break;
+        case 'chorus_plant': this.emitChorus(x, y, z, blk, st); break;
+        case 'chorus_flower': this.emitBox(x, y, z, blk, st, [1 / 16, 0, 1 / 16, 15 / 16, 14 / 16, 15 / 16], true); break;
+        case 'end_portal': this.emitEndPortal(x, y, z, blk, st, false); break;
+        case 'end_gateway': this.emitEndPortal(x, y, z, blk, st, true); break;
         // 09-POTIONS §7.2 — brewing stand: a low base + a central post.
         case 'brewing_stand':
           this.emitBox(x, y, z, blk, st, [1 / 16, 0, 1 / 16, 15 / 16, 2 / 16, 15 / 16], true);
@@ -478,6 +485,95 @@ export class ChunkMesher {
         this.emitBox(x, y, z, blk, st, [bx0, ry0, bz0, bx1, ry1, bz1], false);
       }
     }
+  }
+
+  // 11-END §2.2 — iron_bars: 2/16 center post + flat panes toward connecting
+  // neighbors (iron_bars or opaque cube), fence-style scan.
+  emitPane(x, y, z, blk, st) {
+    this.emitBox(x, y, z, blk, st, [7 / 16, 0, 7 / 16, 9 / 16, 1, 9 / 16], false);
+    const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+    for (const [dx, dz] of dirs) {
+      const nb = BLOCKS[this.blockAt(x + dx, y, z + dz)];
+      if (!(nb.shape === 'iron_bars' || nb.opaque)) continue;
+      let b;
+      if (dx === 1) b = [8 / 16, 0, 7 / 16, 1, 1, 9 / 16];
+      else if (dx === -1) b = [0, 0, 7 / 16, 8 / 16, 1, 9 / 16];
+      else if (dz === 1) b = [7 / 16, 0, 8 / 16, 9 / 16, 1, 1];
+      else b = [7 / 16, 0, 0, 9 / 16, 1, 8 / 16];
+      this.emitBox(x, y, z, blk, st, b, false);
+    }
+  }
+
+  // 11-END §2.2 — end_rod: 4/16 rod along its facing axis + 6/16 base knob.
+  // state bits0-2: 0 up, 1 down, 2 N(−Z), 3 S(+Z), 4 W(−X), 5 E(+X).
+  emitEndRod(x, y, z, blk, st) {
+    const f = (st & 7);
+    if (f <= 1) {   // vertical
+      this.emitBox(x, y, z, blk, st, [6 / 16, 0, 6 / 16, 10 / 16, 1, 10 / 16], false);
+      const ky = f === 0 ? 0 : 15 / 16;
+      this.emitBox(x, y, z, blk, st, [5 / 16, ky, 5 / 16, 11 / 16, ky + 1 / 16, 11 / 16], false);
+    } else if (f === 2 || f === 3) {   // along Z
+      this.emitBox(x, y, z, blk, st, [6 / 16, 6 / 16, 0, 10 / 16, 10 / 16, 1], false);
+    } else {   // along X
+      this.emitBox(x, y, z, blk, st, [0, 6 / 16, 6 / 16, 1, 10 / 16, 10 / 16], false);
+    }
+  }
+
+  // 11-END §2.2 — chorus_plant: 10/16 core box + 6/16 arms toward chorus/end_stone.
+  emitChorus(x, y, z, blk, st) {
+    this.emitBox(x, y, z, blk, st, [3 / 16, 3 / 16, 3 / 16, 13 / 16, 13 / 16, 13 / 16], false);
+    const dirs6 = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+    for (const [dx, dy, dz] of dirs6) {
+      const nid = this.blockAt(x + dx, y + dy, z + dz);
+      const nb = BLOCKS[nid];
+      if (!(nb.shape === 'chorus_plant' || nid === 160 /*flower*/ || nid === 154 /*end_stone*/)) continue;
+      let b = [5 / 16, 5 / 16, 5 / 16, 11 / 16, 11 / 16, 11 / 16];
+      if (dx === 1) b = [11 / 16, 5 / 16, 5 / 16, 1, 11 / 16, 11 / 16];
+      else if (dx === -1) b = [0, 5 / 16, 5 / 16, 5 / 16, 11 / 16, 11 / 16];
+      else if (dy === 1) b = [5 / 16, 11 / 16, 5 / 16, 11 / 16, 1, 11 / 16];
+      else if (dy === -1) b = [5 / 16, 0, 5 / 16, 11 / 16, 5 / 16, 11 / 16];
+      else if (dz === 1) b = [5 / 16, 5 / 16, 11 / 16, 11 / 16, 11 / 16, 1];
+      else b = [5 / 16, 5 / 16, 0, 11 / 16, 11 / 16, 5 / 16];
+      this.emitBox(x, y, z, blk, st, b, false);
+    }
+  }
+
+  // 11-END §2.2/§14 — end_portal: horizontal starfield quad at 12/16; end_gateway
+  // adds a full dark core. Rendered translucent via the water builder.
+  emitEndPortal(x, y, z, blk, st, gateway) {
+    const [sky, bl] = this.ownLight(x, y, z);
+    const tile = this.tileFor(blk, st, 2);
+    if (gateway) {
+      // full-cube dark core into the water (translucent) builder — reuse the box
+      // path but re-route: emit each face manually into builders.water.
+      this.emitWaterCube(x, y, z, tile, sky, bl);
+    } else {
+      this.emitFlatFace(builders.water, x, y, z, 2, tile, 12 / 16, sky, bl, 220);
+    }
+  }
+
+  // Full cube into the translucent water builder (end_gateway core).
+  emitWaterCube(x, y, z, tile, skyV, blkV) {
+    const bld = builders.water;
+    const uvr = this.tileUV, t4 = tile * 4;
+    const U0 = uvr[t4], V0 = uvr[t4 + 1], U1 = uvr[t4 + 2], V1 = uvr[t4 + 3];
+    const r = Math.round(skyV * 17), g = Math.round(blkV * 17);
+    for (let f = 0; f < 6; f++) {
+      const n = FACE_NORMALS[f];
+      const shade = FACE_SHADE[f], bcol = Math.round(255 * shade);
+      bld.ensure(4, 6);
+      const verts = V4;
+      for (let c = 0; c < 4; c++) {
+        const co = FACE_CORNERS[f][c];
+        const uu = FACE_UVS[f][c][0], vv = FACE_UVS[f][c][1];
+        verts[c] = bld.vertex(
+          x + co[0], y + co[1], z + co[2], n[0], n[1], n[2],
+          U0 + (U1 - U0) * uu, V0 + (V1 - V0) * vv, r, g, bcol, 235,
+        );
+      }
+      bld.quad(verts[0], verts[1], verts[2], verts[3], false);
+    }
+    this.trackY(y, y + 1);
   }
 
   // Generic box emitter: flat own-cell light, directional shade, cropped UVs.

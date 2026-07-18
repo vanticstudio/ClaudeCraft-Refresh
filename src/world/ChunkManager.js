@@ -74,7 +74,7 @@ export class ChunkManager {
       const chunk = this.world.chunks.get(chunkKey(msg.cx, msg.cz));
       if (!chunk || chunk.state !== ChunkState.REQUESTED || key !== chunk.key) return;   // stale
       // transferred views are used as-is (zero-copy, 01 §9)
-      chunk.install(msg.blocks, msg.heightMap, msg.biomes);
+      chunk.install(msg.blocks, msg.heightMap, msg.biomes, msg.states ?? null);   // 11-END: stronghold frame states
       chunk.pendingSpawns = msg.spawns?.length ? msg.spawns : null;
       if (msg.villageMeta) chunk.villageMeta = msg.villageMeta;   // 12-VILLAGES §2.7
       this.game?.onChunkGenerated?.(chunk);

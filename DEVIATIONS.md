@@ -4,6 +4,103 @@ Deviations and ambiguity rulings. (The base-spec `.md` files were removed from
 the working tree during repo cleanup; the pre-UPDATE deviation log for the
 initial build lives in git history — `git show 8441ac9:DEVIATIONS.md`.)
 
+## E10 — 11-END: stronghold, End dim, cities, shulkers, elytra (2026-07-18)
+
+Built on E7's committed dimension engine. **The CRITICAL constraint held**: dim 2
+`the_end` is registered into 10's existing registry (`registerDimension(2, …)` in
+`dimensions.js`) with `onArrive: regenObsidianPlatform`; all End travel goes through
+10's `changeDimension → Game.changeActiveDimension`; the End generator is dispatched
+by the same terrain worker keyed on `msg.dim === 2` and returns the same
+`{blocks,heightMap,biomes,spawns}` contract as the Nether. No parallel
+dimension/portal/gen/save engine was created. Save keying (`dim:key` prefix) and the
+`dimMeta` blob are reused unchanged (no `SAVE_VERSION` bump needed).
+
+**Gates verified.** (1) Eyes → stronghold: `strongholdXZ(seed)` is byte-identical on
+every thread; the single stronghold sits 1200–2000 blocks out with exactly one
+12-frame portal room (node test, 3 seeds, 0 diffs). (2) 12-eye portal activates →
+End on dim 2: seating the 12th eye flips the 3×3 interior to `end_portal`, stepping in
+lands on the fixed obsidian platform at Y48. (3) Shulker bullet applies Levitation I
+(09). (4) Elytra glide ≈ 28 m/s level-glide, deploys on jump-edge, durability drains,
+wall-crash damages. (5) Return works (exit portal → overworld). 13/13 browser checks +
+node determinism.
+
+Deviations / simplifications (HIGH tier — gates + the portal room + the §10.4 elytra
+transcription are EXACT; peripheral systems compressed):
+
+1. **Stronghold piece variety is a solid deterministic subset** (start = straight
+   6-block descent not a spiral; five-way crossing = 4 exits; altar/fountain/library
+   are dead-ends; library is a single bookshelf-lined room — duplex/single variants
+   and per-door oak_door/iron_bars variety cut; internal doorways are open arches).
+   Guarantees hold by construction: ≥10 corridors, ≥1 crossing, 1–4 altar chests,
+   ≤2 libraries with a guaranteed enchanted book, exactly one portal room, all boxes
+   Y14–46 within 96 blocks. The complex is flat at floor Y34 (pieces don't
+   continuously slope). Portal room kept EXACT (11×8×16, 12 inward frames on the
+   5×5-minus-corners ring, 10%/frame pre-fill via `states`, 3×3 lava pool, iron-bars
+   grate, no spawner).
+2. **Chorus worldgen is a simplified procedural tree** (a stem column with side
+   branches + age-5 flowers) rather than the §8.2 16-iteration growth simulation.
+   **Live** chorus growth (`chorusGrow` random tick, §8.4 odds) and the §8.5 support
+   cascade (`chorusSupport` neighbor-update) ARE implemented, so planted flowers grow
+   and felled trees collapse.
+3. **End cities are a compact tower grammar** (base platform + a 3-floor base tower
+   with purpur walls, pillar corners, end-rod lights, a parkour spiral, a decorative
+   shulker box, and TWO top-floor loot chests: one standard `end_city` chest (§15.3
+   with 08-enchanted gear) and one `end_ship` treasure chest carrying a **guaranteed
+   elytra** (§15.4) — the ship's elytra chest simplified to a city treasure chest since
+   the full §12.5 ship isn't generated. City placement, loot, and shulker population are
+   deterministic per region seed. (Each loot record's cell exactly matches its chest
+   block so it rolls on first load.)
+4. **End gateways**: the `end_gateway` block, its `{partner}` block-entity, and the 20
+   seeded gateway positions (`endGatewayPositions`) are in place, but the spawn +
+   teleport behavior (§11) is dormant — the spec assigns the `spawnGateway(k)` trigger
+   to 13-BOSSES (post-dragon). Wired far enough for 13 to drive it; the pearl-through-
+   gap teleport is not yet active.
+5. **The dragon fight is 13's** (§1) — the arena generates dormant: 10 obsidian pillars
+   (exact heights/radii/cages via the seeded shuffle), the exit-portal statics (12
+   bedrock rim + column, portal cells AIR until 13), and the crystal/egg/gateway
+   positions are exported (`endArena`/`endShared`) for 13. No dragon, crystals, or egg
+   here.
+6. **Elytra durability never breaks**: at 1 remaining it stops functioning (`gliding`
+   forced false) and stays equipped tattered (`flightEnabled = durability−damage > 1`),
+   matching §10.1. Repairs with leather (108/leather, AMENDS 08 §8.4) via the anvil;
+   Mending applies through 08's generic path. No firework boost, no manual cancel.
+7. **The portal/gateway blocks route through the translucent (water) mesher builder**
+   with new custom emitter cases (`iron_bars` pane lattice, `end_rod`, `chorus_plant`
+   arms, `end_portal` horizontal quad, `end_gateway` dark core) added to `ChunkMesher`.
+   The `end_portal`/`end_gateway` starfield is a 2-frame atlas twinkle (the §14 UV
+   scroll approximated like water/lava).
+8. **MobSpawner is now dimension-aware** (AMENDS 05 §3.2): a `spawnTable` per descriptor
+   drives the roster — dim 2 = enderman-only; the Nether wave is skipped (its roster
+   comes from gen-spawners). Shulkers never wave-spawn (end-city records only).
+9. **Textures/models are procedural** (End block tiles + item sprites in
+   `tilePainters.js`, shulker skin in `mobs/models.js`) consistent with the atlas.
+10. **Void reap** (AMENDS 01 §13.2): `EntityManager` reaps any non-player entity below
+    Y−64 (belt-and-suspenders over each entity's own kill plane). Chorus fruit is
+    edible at full hunger and teleports ≤8 blocks on eat (§8.6). F3 shows the dim.
+
+11. **Shulker closed-state arrow deflect** (§9.2 reflect ×−0.3) is not modelled — a
+    closed shulker instead absorbs arrows through its 20 natural-armor points (it
+    survives closed hits either way). **Sound-event names** use `block.portal.*` where
+    §16 names them `portal.*` (internally consistent: the `def` matches the emit).
+
+An Opus review confirmed both CRITICAL mandates clean — dim 2 reuses 10's engine (no
+parallel dimension/portal/gen/save machinery) and the §10.4 elytra transcription is
+exact (it solved the level-glide fixed point at ≈30.2 m/s, so the 28 m/s gate reading
+is sub-equilibrium, not an error). It also caught two real bugs, both fixed and
+re-verified: (a) end-city loot records didn't align with their chest blocks, so city
+chests generated empty — realigned (node: 2/2 records land on chest cells); (b) the
+elytra had no survival source — added the `end_ship` guaranteed-elytra treasure chest
+(node: an `end_ship` roll contains an elytra). Plus three minor fixes: worldgen chorus
+flowers now write state-5 so they're static (node: 192 gen flowers all age 5, 0 at
+age 0); the §8.4 `branched` branch-count term is applied; `cityCache` is seed-scoped;
+elytra deploy reads `KEYBINDS.jump` (rebindable) instead of a hardcoded `'Space'`.
+
+Verified 2026-07-18: node determinism (End gen 0 diffs across 2 instances; stronghold
+0 diffs, 12 frames, dist 1200–2000; pillar shuffle stable; city loot/elytra/chorus-age
+fixes) + headless Chrome (`e10.cjs`): 13/13 — Levitation, 20-armor closed shulker,
+elytra deploy/28 m/s/durability/wall-crash, shulker-box retention + restore, 12-frame
+activation, dim-2 travel onto the platform (no skylight), overworld return.
+
 ## E6 — 12-VILLAGES: villages, trading, iron golem, curing (2026-07-18)
 
 Built after E4 (enchanted books) and E9 (potions) so the librarian's book trades

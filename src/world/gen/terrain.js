@@ -8,6 +8,7 @@ import { carveCheese, carveWorms, lavaFlood } from './caves.js';
 import { placeOresAndPockets } from './ores.js';
 import { decorate, computeHeightMap, rollHerd } from './features.js';
 import { ID, BIOMES } from './biomes.js';
+import { createStrongholdStamper } from './stronghold.js';
 
 export function createGenerator(seed) {
   // Accept the raw user seed string or an already-hashed 32-bit int (saves
@@ -16,6 +17,8 @@ export function createGenerator(seed) {
     ? (seed >>> 0)
     : hashString(String(seed ?? ''));
   const ctx = createNoiseCtx(worldSeed);
+  // 11-END AMENDS 02 §13.1 step 6.5 — the single overworld stronghold.
+  const stronghold = createStrongholdStamper(worldSeed);
 
   // 02 §7 — column composition
   function fillTerrain(blocks, cx, cz, colD) {
@@ -67,12 +70,16 @@ export function createGenerator(seed) {
     carveWorms(ctx, blocks, cx, cz);
     lavaFlood(blocks);
     placeOresAndPockets(ctx, blocks, cx, cz);
+    // 11-END step 6.5 — rasterize the stronghold (after ores, before decoration).
+    // `states` carries end_portal_frame facing/eye nibbles into the chunk.
+    const states = new Uint8Array(32768);
+    const spawns = rollHerd(ctx, cx, cz);
+    stronghold.stampChunk(blocks, cx, cz, spawns, states);
     const village = decorate(ctx, blocks, cx, cz, colD);   // 12-VILLAGES: stamps + meta
     const heightMap = computeHeightMap(blocks);
     const biomes = Uint8Array.from(colD.biome);         // copy: cache stays live
-    const spawns = rollHerd(ctx, cx, cz);
     if (village?.spawns?.length) for (const s of village.spawns) spawns.push(s);
-    return { blocks, heightMap, biomes, spawns, villageMeta: village?.villageMeta ?? null };
+    return { blocks, heightMap, biomes, states, spawns, villageMeta: village?.villageMeta ?? null };
   }
 
   // 02 §12 — world spawn: rings of 8-block steps out to radius 256

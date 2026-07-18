@@ -5,13 +5,15 @@
 
 import { BLOCKS, B } from '../registry/blocks.js';
 import { ITEMS, idOf } from '../registry/items.js';
+import { cloneStack, tagsEqual } from '../items/tags.js';
 import { FACE6_DIR, FACE6_OPP } from './dirs.js';
 import { emitSound, at } from '../audio/engine.js';
 import { AABB } from '../math/aabb.js';
 
 const maxStack = id => ITEMS.get(id)?.stack ?? 64;
 const slotCountFor = id =>
-  (id === B.HOPPER ? 5 : (id === B.CHEST ? 27 : (id === B.FURNACE || id === B.FURNACE_LIT ? 3 : 9)));
+  (id === B.HOPPER ? 5 : (id === B.CHEST || id === B.BARREL || id === B.SHULKER_BOX ? 27
+    : (id === B.FURNACE || id === B.FURNACE_LIT ? 3 : 9)));   // 11-END §9.4 — shulker box is 27
 
 /**
  * §8 — the comparator fullness signal for a container at (x,y,z).
@@ -231,17 +233,20 @@ export class RedstoneContainers {
       if (rule === 'furnaceFuel') return i === 1;
       return true;
     };
-    // merge into an existing matching stack first
+    // merge into an existing matching stack first (11-END §9.4 — must match tags
+    // too, or a hopper would merge two differently-tagged items, e.g. two shulker
+    // boxes with different contents)
     for (let i = 0; i < n; i++) {
       if (!allowed(i)) continue;
       const s = dst[i];
-      if (s && s.id === stack.id && (s.damage ?? 0) === (stack.damage ?? 0) && s.count < maxStack(s.id)) {
+      if (s && s.id === stack.id && (s.damage ?? 0) === (stack.damage ?? 0) && tagsEqual(s, stack) && s.count < maxStack(s.id)) {
         s.count++; return true;
       }
     }
     for (let i = 0; i < n; i++) {
       if (!allowed(i)) continue;
-      if (!dst[i]) { dst[i] = { id: stack.id, count: 1, ...(stack.damage ? { damage: stack.damage } : {}) }; return true; }
+      // carry tags (a moved shulker box keeps tags.containerItems) via cloneStack
+      if (!dst[i]) { dst[i] = { ...cloneStack(stack), count: 1 }; return true; }
     }
     return false;
   }

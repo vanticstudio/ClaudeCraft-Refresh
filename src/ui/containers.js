@@ -622,7 +622,7 @@ export class Containers {
       inventory: 'Inventory', crafting: 'Crafting', furnace: 'Furnace', chest: 'Chest',
       enchanting: 'Enchant', anvil: 'Repair & Name', grindstone: 'Repair & Disenchant',
       dispenser: 'Dispenser', dropper: 'Dropper', hopper: 'Hopper', smithing: 'Smithing Table',
-      brewing: 'Brewing Stand', trade: 'Villager',
+      brewing: 'Brewing Stand', trade: 'Villager', shulker_box: 'Shulker Box',
     }[this.kind];
     panel.innerHTML = `<div class="panel-title">${title}</div>`;
     this.panel = panel;
@@ -735,14 +735,18 @@ export class Containers {
       defs.push(this.smithingResultDef(134, 35));
       this.addArrow(panel, 106, 34);
       defs.push(...this.playerStorageDefs());
-    } else if (this.kind === 'chest') {
+    } else if (this.kind === 'chest' || this.kind === 'shulker_box') {
+      // 11-END §9.4 — the shulker box reuses the chest's 27-slot UI. A shulker-box
+      // ITEM may not be placed inside a shulker box (box-in-box rejected).
       const be = this.be.data;
+      const rejectBoxInBox = this.kind === 'shulker_box';
       for (let row = 0; row < 3; row++) {
         for (let col = 0; col < 9; col++) {
           const i = row * 9 + col;
           defs.push({
             x: 8 + col * 18, y: 18 + row * 18, region: 'container',
             get: () => be.slots[i], set: v => { be.slots[i] = v; this.markBeDirty(); },
+            canPut: rejectBoxInBox ? (s => s && s.id !== B.SHULKER_BOX) : undefined,
           });
         }
       }
@@ -1378,7 +1382,7 @@ export class Containers {
       return bySel(['brewIngredient']);
     }
     // from player storage:
-    if (this.kind === 'chest' || this.kind === 'dispenser' || this.kind === 'dropper' || this.kind === 'hopper')
+    if (this.kind === 'chest' || this.kind === 'shulker_box' || this.kind === 'dispenser' || this.kind === 'dropper' || this.kind === 'hopper')
       return bySel(['container']);
     // 08 §4.2 — lapis goes to the lapis slot, an enchantable item to the item slot.
     if (this.kind === 'enchanting') {
@@ -1558,6 +1562,7 @@ export class Containers {
         enchanting: [B.ENCHANTING_TABLE], anvil: [B.ANVIL], grindstone: [B.GRINDSTONE],
         dispenser: [83], dropper: [84], hopper: [85],
         smithing: [B.SMITHING_TABLE], brewing: [B.BREWING_STAND],
+        shulker_box: [B.SHULKER_BOX], trade: undefined,
       }[this.kind];
       const stillThere = EXPECT ? EXPECT.includes(id) : true;
       if (d > 8 || !stillThere) { this.game.closeContainerScreen?.(); return; }

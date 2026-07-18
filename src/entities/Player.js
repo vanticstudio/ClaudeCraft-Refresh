@@ -5,7 +5,7 @@ import { BLOCKS, B, matOf, isWaterCellAt } from '../registry/blocks.js';
 import { ITEMS } from '../registry/items.js';
 import { collidesAny, overlapsBlockId } from '../physics/collision.js';
 import { AABB } from '../math/aabb.js';
-import { emitSound, audio } from '../audio/engine.js';
+import { emitSound, at, audio } from '../audio/engine.js';
 import { GameMode, normalizeGameMode, KEYBINDS } from '../constants.js';
 import { tagsEqual, cloneStack, getEnchantLvl } from '../items/tags.js';
 import { ENCH } from '../items/enchants.js';
@@ -44,6 +44,8 @@ export class Player extends LivingEntity {
     this.sneaking = false;
     this.sprinting = false;
     this.flying = false;
+    this.gliding = false;               // 11-END §10 — elytra glide (transient, never persisted)
+    this.glideTicks = 0;
     this.gameMode = GameMode.SURVIVAL;  // 18 §1.1 enum: 0 survival | 1 creative
     this.pendingGameMode = null;        // set by F4; applied in tick() (§1.4)
     this.jumpCooldown = 0;
@@ -390,6 +392,34 @@ export class Player extends LivingEntity {
       addEffect(this, EFFECT.ABSORPTION, 0, 2400);                                 // Absorption I 2:00
       addEffect(this, EFFECT.REGENERATION, 1, 100);                               // Regeneration II 0:05
     }
+    // 11-END §8.6 — chorus fruit teleports the eater up to 8 blocks.
+    else if (item.teleportOnEat) this.chorusTeleport();
+  }
+
+  // 11-END §8.6 — enderman-style teleport: 16 tries in a ±8 box, seek down to a
+  // standable cell (solid below + 2 air, non-fluid). Zeroes velocity/fallDistance.
+  chorusTeleport() {
+    const w = this.world, rng = w.rng;
+    const ox = this.pos.x, oy = this.pos.y, oz = this.pos.z;
+    for (let a = 0; a < 16; a++) {
+      const tx = Math.floor(ox + (rng() - 0.5) * 16);
+      const ty = Math.max(1, Math.min(126, Math.floor(oy) + ((rng() * 16) | 0) - 8));
+      const tz = Math.floor(oz + (rng() - 0.5) * 16);
+      for (let d = 0; d <= 8; d++) {
+        const y = ty - d;
+        if (y < 1) break;
+        const below = BLOCKS[w.getBlock(tx, y - 1, tz)];
+        if (below.collidable && !below.fluid &&
+            !BLOCKS[w.getBlock(tx, y, tz)].collidable && !BLOCKS[w.getBlock(tx, y + 1, tz)].collidable) {
+          emitSound('chorus.teleport', at(ox, oy, oz));
+          this.setPos(tx + 0.5, y, tz + 0.5);
+          this.prevPos.x = this.pos.x; this.prevPos.y = this.pos.y; this.prevPos.z = this.pos.z;
+          this.vel.x = this.vel.y = this.vel.z = 0; this.fallDistance = 0;
+          emitSound('chorus.teleport', at(this.pos.x, this.pos.y, this.pos.z));
+          return;
+        }
+      }
+    }
   }
 
   // -------------------------------------------------- tick (03 §4 order)
@@ -469,10 +499,14 @@ export class Player extends LivingEntity {
     this.eyeSubmerged = isWaterCellAt(eyeBlock,
       this.world.getState(Math.floor(eye.x), Math.floor(eye.y), Math.floor(eye.z)));
 
+    // 11-END §10.2 — elytra deploy/stop, evaluated before the movement branch.
+    this.tickElytra(input);
+
     // 6. movement branch
     const velYBefore = this.vel.y;
     const y0 = this.pos.y;
     if (this.flying) this.flightMove(input);
+    else if (this.gliding) this.elytraMove(input);   // §10.3 — precedes fluids
     else if (this.inLava) this.lavaMove(input);
     else if (this.inWater) this.waterMove(input);
     else this.landMove(input);
@@ -487,7 +521,12 @@ export class Player extends LivingEntity {
     // trackFall() zeroes fallDistance unconditionally on the landing tick, so the
     // landing sound has to read it first.
     const fdBefore = this.fallDistance;
-    if (!this.flying) {
+    if (this.gliding && this.vel.y > -0.5) {
+      // 11-END §10.5 (AMENDS 03 §12.2) — a shallow glide pins fallDistance at 1.0
+      // (ceil(1−3)≤0, no damage) but keeps it above the 0.5 landing-sound floor;
+      // steep dives (vel.y ≤ −0.5) resume normal accumulation via trackFall next.
+      this.fallDistance = 1.0;
+    } else if (!this.flying) {
       this.trackFall(velYBefore, this.pos.y - y0);
     } else {
       this.fallDistance = 0;
@@ -550,8 +589,10 @@ export class Player extends LivingEntity {
     // flight FOV identical to walking, since both its arms reduced to `sprinting`.
     // 09-POTIONS AMENDS 03 §18.3 — Speed/Slowness shift FOV ±0.05·L, clamped.
     const fovFx = 0.05 * effectLevel(this, EFFECT.SPEED) - 0.05 * effectLevel(this, EFFECT.SLOWNESS);
+    const glideFast = this.gliding && Math.hypot(this.vel.x, this.vel.z) > 1.0;   // §10.6
     const targetFov = this.flying
       ? (this.sprinting ? 1.21 : 1.10)          // 1.10² for sprint-fly (approx)
+      : glideFast ? 1.10
       : Math.max(0.85, Math.min(1.30, (this.sprinting ? 1.10 : 1.0) + fovFx));
     this.fovScale += (targetFov - this.fovScale) * 0.5;
 
@@ -691,6 +732,74 @@ export class Player extends LivingEntity {
     this.vel.y *= (input.jump || input.sneak) ? 0.91 : 0.6;
     this.vel.y = Math.min(0.375, Math.max(-0.375, this.vel.y));
     this.fallDistance = 0;
+    this.snapTinyVel();
+  }
+
+  // 11-END §10.2 — evaluate elytra deploy (jump-key edge) and auto-stop.
+  tickElytra(input) {
+    if (this.gliding) {
+      if (this.onGround || this.inWater || this.inLava || this.flying) this.gliding = false;
+      return;
+    }
+    const chest = this.armor[1];
+    const def = chest && ITEMS.get(chest.id);
+    const working = !!def?.elytra && (def.durability - (chest.damage ?? 0)) > 1;   // §10.1 flightEnabled
+    const edge = input.pressed && input.pressed.has && input.pressed.has(KEYBINDS.jump);
+    if (edge && working && !this.onGround && !this.inWater && !this.inLava &&
+        !this.onLadder && !this.flying && this.vel.y < 0.1 &&
+        effectLevel(this, EFFECT.LEVITATION) === 0) {   // §10.2 Levitation blocks deploy
+      this.gliding = true;
+      this.glideTicks = 0;
+      this.sprinting = false;                            // §7.2 deploy clears sprint
+      emitSound('elytra.deploy', null);
+    }
+  }
+
+  // 11-END §10.4 — per-tick glide physics, transcribed from the decompiled Java
+  // LivingEntity.travel() fall-flying branch (our pitch is +up; our look vector is
+  // unit-length so vanilla's min(1,|look|/0.4) factor is identically 1).
+  elytraMove(input) {
+    const th = this.pitch;                               // radians, + up
+    const cp = Math.cos(this.pitch), sp = Math.sin(this.pitch);
+    const look = { x: -Math.sin(this.yaw) * cp, y: sp, z: -Math.cos(this.yaw) * cp };
+    const hLook = Math.hypot(look.x, look.z);
+    const hSpeed = Math.hypot(this.vel.x, this.vel.z);   // sampled BEFORE the update
+    const cos2 = cp * cp;
+    const v = this.vel;
+
+    v.y += 0.08 * (-1 + cos2 * 0.75);                    // gravity −0.08, lift up to +0.06
+
+    if (v.y < 0 && hLook > 0) {                          // falling → forward speed
+      const d = v.y * -0.1 * cos2;
+      v.x += look.x * d / hLook; v.y += d; v.z += look.z * d / hLook;
+    }
+    if (th > 0 && hLook > 0) {                           // pitched up → altitude
+      const g = hSpeed * Math.sin(th) * 0.04;
+      v.x -= look.x * g / hLook; v.y += g * 3.2; v.z -= look.z * g / hLook;
+    }
+    if (hLook > 0) {                                     // align velocity to look
+      v.x += (look.x / hLook * hSpeed - v.x) * 0.1;
+      v.z += (look.z / hLook * hSpeed - v.z) * 0.1;
+    }
+    v.x *= 0.99; v.y *= 0.98; v.z *= 0.99;               // drag
+
+    this.move(v.x, v.y, v.z);                            // sets hitWall/onGround, zeroes clipped axes
+
+    if (this.hitWall) {                                  // §10.4 kinetic wall crash
+      const hAfter = Math.hypot(v.x, v.z);
+      const dmg = (hSpeed - hAfter) * 10 - 3;
+      if (dmg > 0) this.hurt(Math.ceil(dmg), 'fly_into_wall');   // armor-bypassing (05 §14.2)
+    }
+    if (this.onGround) this.gliding = false;             // landing ends the glide
+
+    this.glideTicks++;                                   // §10.1 durability: 1 per second
+    if (this.glideTicks % 20 === 0) {
+      const chest = this.armor[1], def = chest && ITEMS.get(chest.id);
+      if (def?.elytra) {
+        chest.damage = (chest.damage ?? 0) + 1;
+        if (chest.damage >= def.durability - 1) { chest.damage = def.durability - 1; this.gliding = false; }  // tattered at 1 (never breaks)
+      }
+    }
     this.snapTinyVel();
   }
 
@@ -936,6 +1045,7 @@ export class Player extends LivingEntity {
     this.vel.x = this.vel.y = this.vel.z = 0;
     this.fireTicks = 0; this.fallDistance = 0; this.invulnTicks = 0;
     this.sprinting = false; this.sneaking = false; this.flying = false;
+    this.gliding = false;   // 11-END §10 — transient
     this.usingItem = null;
     this.dead = false;
     this.yaw = 0; this.pitch = 0;   // facing −Z
@@ -996,6 +1106,7 @@ export class Player extends LivingEntity {
     // AMENDS 01 §16.1 / 18 §1.2 — pre-EC saves stored the string form.
     this.gameMode = normalizeGameMode(rec.gameMode);
     this.flying = false;                  // AMENDS 03 §2.4: transient, never persisted
+    this.gliding = false;                 // 11-END §10 — transient, never persisted
     this.selectedSlot = rec.selectedSlot ?? 0;
     this.spawnPoint = rec.spawnPoint ?? null;
     if (rec.inventory) rec.inventory.forEach((s, i) => { this.inventory[i] = s || null; });

@@ -1,5 +1,7 @@
 // F3 debug overlay (01 §15.3): fps, pos, chunks, light, draw calls. 4 Hz.
 import { BIOME_NAMES } from '../world/gen/biomes.js';
+
+const DIM_NAMES = { 0: 'overworld', 1: 'nether', 2: 'the_end' };   // 11-END — F3 dim label
 import { GameMode } from '../constants.js';
 
 export class DebugOverlay {
@@ -40,7 +42,7 @@ export class DebugOverlay {
     this.el.textContent =
 `ClaudeCraft F3 | ${g.debug.fps} fps ${g.debug.frameMs.toFixed(1)} ms
 XYZ ${p.pos.x.toFixed(2)} / ${p.pos.y.toFixed(2)} / ${p.pos.z.toFixed(2)}
-chunk ${x >> 4},${z >> 4} facing ${facing} biome ${biome}
+chunk ${x >> 4},${z >> 4} facing ${facing} biome ${biome} dim ${DIM_NAMES[g.world.activeDim] ?? g.world.activeDim}
 light sky ${g.world.getSkyLight(x, y, z)} block ${g.world.getBlockLight(x, y, z)} darken ${g.world.skyDarken}
 chunks R${counts.requested} G${counts.generated} L${counts.lit} M${counts.meshed} F${counts.failed} | remeshQ ${g.chunkManager.remeshQueue.size}
 draws ${info.render.calls} tris ${(info.render.triangles / 1000).toFixed(0)}k geoms ${info.memory.geometries}

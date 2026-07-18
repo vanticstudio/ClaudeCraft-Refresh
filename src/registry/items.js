@@ -68,8 +68,11 @@ const NO_BLOCK_ITEM = new Set([
   B.NETHER_PORTAL, B.SPAWNER, B.NETHER_WART,
   // 12-VILLAGES §1.1 — dirt_path is shovel-created; lit variants place from base.
   B.DIRT_PATH, B.BLAST_FURNACE_LIT, B.SMOKER_LIT,
+  // 11-END §2.2 — end_portal/end_gateway have no block-item.
+  B.END_PORTAL, B.END_GATEWAY,
 ]);
-const DEBUG_ONLY = new Set([B.BEDROCK, B.GLOWSTONE, B.WOOL_RED, B.WOOL_BLUE, B.WOOL_BLACK]);
+const DEBUG_ONLY = new Set([B.BEDROCK, B.GLOWSTONE, B.WOOL_RED, B.WOOL_BLUE, B.WOOL_BLACK,
+  B.END_PORTAL_FRAME]);   // 11-END §2.2 — frame is debug-palette-only
 
 for (const block of BLOCKS) {
   if (!block || NO_BLOCK_ITEM.has(block.id)) continue;
@@ -253,6 +256,16 @@ for (let slot = 0; slot < 4; slot++) {
 // the netherite_block BLOCK-item (auto-registered at id 142) is also lava-immune (§9.4)
 ITEMS.get(B.NETHERITE_BLOCK).lavaImmune = true;
 
+// --- 11-END §2.3 — items 420-424 ---
+// eye_of_ender: RMB launches it (overworld) or fills a frame (custom, §3/§5.2).
+defItem(420, 'eye_of_ender', { kind: 'eye_of_ender', stack: 64 });
+// chorus_fruit: food, edible at full hunger, teleports on eat (§8.6).
+defItem(421, 'chorus_fruit', { kind: 'food', hunger: 4, saturation: 2.4, alwaysEdible: true, eatCooldown: 20, teleportOnEat: true });
+defItem(422, 'popped_chorus_fruit', {});                 // §13 crafting material
+defItem(423, 'shulker_shell', {});                       // §9.1 shulker drop
+// elytra: chest-slot armor, 0 defense; glide via §10. flightEnabled once durability>1.
+defItem(424, 'elytra', { kind: 'armor', stack: 1, durability: 432, armorSlot: 1, armorPoints: 0, toughness: 0, elytra: true });
+
 export const idOf = name => {
   const v = NAME_TO_ID.get(name);
   if (v === undefined) throw new Error(`unknown item/block name: ${name}`);
@@ -345,6 +358,15 @@ shaped(B.EMERALD_BLOCK, 1, ['EEE', 'EEE', 'EEE'], { E: [435] });   // 9 emerald 
 shapeless(435, 9, [[B.EMERALD_BLOCK]]);                            // block → 9 emerald
 shaped(B.HAY_BALE, 1, ['WWW', 'WWW', 'WWW'], { W: [336] });        // 9 wheat → hay_bale
 shapeless(336, 9, [[B.HAY_BALE]]);                                 // hay_bale → 9 wheat
+
+// ========================= 11-END §13 — crafting =========================
+shapeless(420, 1, [[334], [392]]);                                // eye_of_ender = ender_pearl + blaze_powder
+shaped(B.STONE_BRICKS, 4, ['SS', 'SS'], { S: [B.STONE] });        // 4 stone → 4 stone_bricks
+shaped(B.END_STONE_BRICKS, 4, ['EE', 'EE'], { E: [B.END_STONE] });
+shaped(B.PURPUR_BLOCK, 4, ['PP', 'PP'], { P: [422] });            // popped_chorus_fruit
+shaped(B.PURPUR_PILLAR, 2, ['B', 'B'], { B: [B.PURPUR_BLOCK] });
+shaped(B.END_ROD, 4, ['B', 'P'], { B: [391], P: [422] });         // blaze_rod + popped
+shaped(B.SHULKER_BOX, 1, ['S', 'C', 'S'], { S: [423], C: [B.CHEST] });
 
 // --- 10-NETHER §1.3 ---
 // §9: 4 netherite_scrap + 4 gold_ingot → 1 netherite_ingot (shapeless); block ↔ 9 ingot
@@ -450,6 +472,9 @@ export const SMELTING = new Map([
   [310, { out: 311, xp: 0.35 }],      // chicken
   [312, { out: 313, xp: 0.35 }],      // mutton
   [316, { out: 317, xp: 0.35 }],      // potato
+  // 11-END §13 — chorus_fruit → popped; stone_bricks → cracked (both 0.1 XP)
+  [421, { out: 422, xp: 0.1 }],
+  [B.STONE_BRICKS, { out: B.CRACKED_STONE_BRICKS, xp: 0.1 }],
 ]);
 
 // ========================= FUEL (06 §11.3) =========================

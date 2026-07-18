@@ -1095,6 +1095,119 @@ defBlock(182, 'emerald_block', {                   // §6.2 storage
   tiles: all('emerald_block'),
 });
 
+// 11-END §8.4 — chorus flower growth (random tick, wiki-exact odds). age bits0-2.
+function chorusGrow(world, x, y, z, state) {
+  const age = state & 7;
+  if (age >= 5 || world.getBlock(x, y + 1, z) !== 0) return;   // dead / capped never age
+  let stem = 0;
+  while (stem < 5 && world.getBlock(x, y - 1 - stem, z) === 159) stem++;
+  const belowStem = world.getBlock(x, y - 1 - stem, z);
+  const onEndStone = belowStem === 154;
+  const branched = belowStem === 0;   // §8.4 — the stem hangs off a side arm
+  const pUp = stem <= 1 ? 1.0 : stem === 2 ? (onEndStone ? 0.6 : 0.5)
+    : stem === 3 ? (onEndStone ? 0.4 : 0.25) : (stem === 4 && onEndStone ? 0.2 : 0.0);
+  const H4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+  const clearAbove = world.getBlock(x, y + 2, z) === 0 && H4.every(([dx, dz]) => world.getBlock(x + dx, y + 1, z + dz) === 0);
+  if (world.rng() < pUp && clearAbove) {
+    world.setBlock(x, y, z, 159);                        // this → plant
+    world.setBlock(x, y + 1, z, 160, { state: age });    // above → flower (same age)
+    return;
+  }
+  if (age < 4) {
+    let grew = false;
+    const tries = 1 + ((world.rng() * 4) | 0) - (branched ? 1 : 0);   // §8.4: 1-4 unbranched, 0-3 branched
+    for (let t = 0; t < tries; t++) {
+      const [dx, dz] = H4[(world.rng() * 4) | 0];
+      const cx = x + dx, cz = z + dz;
+      if (world.getBlock(cx, y, cz) === 0 && world.getBlock(cx, y - 1, cz) === 0 &&
+          H4.filter(([ex, ez]) => !(ex === -dx && ez === -dz)).every(([ex, ez]) => world.getBlock(cx + ex, y, cz + ez) === 0)) {
+        world.setBlock(cx, y, cz, 160, { state: age + 1 }); grew = true;
+      }
+    }
+    if (grew) { world.setBlock(x, y, z, 159); return; }
+  }
+  world.setBlock(x, y, z, 160, { state: 5 });            // no growth → dead
+}
+
+// 11-END §8.5 — chorus support: a plant/flower survives iff the block below is
+// end_stone or chorus_plant, OR a horizontal neighbor is chorus_plant. Otherwise
+// it breaks (plant → 50% fruit, flower → nothing) and cascades via neighbor updates.
+function chorusSupport(world, x, y, z) {
+  const below = world.getBlock(x, y - 1, z);
+  let ok = below === 154 || below === 159;   // end_stone / chorus_plant
+  if (!ok) for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) if (world.getBlock(x + dx, y, z + dz) === 159) { ok = true; break; }
+  if (ok) return;
+  const id = world.getBlock(x, y, z);
+  world.setBlock(x, y, z, 0);   // AIR — issues neighbor updates so the tree collapses top-down
+  if (id === 159 && world.rng() < 0.5) world.game?.spawnItemByName?.('chorus_fruit', 1, x + 0.5, y + 0.5, z + 0.5);
+}
+
+// ===================== 11-END §2 — End blocks (150–164) =====================
+// stone-brick family (150–152) — stronghold masonry, all plain cubes.
+defBlock(150, 'stone_bricks', { hardness: 1.5, blast: 6.0, tool: 'pickaxe', tier: 0, drops: gated(dropSelf('stone_bricks')), tiles: all('stone_bricks') });
+defBlock(151, 'mossy_stone_bricks', { hardness: 1.5, blast: 6.0, tool: 'pickaxe', tier: 0, drops: gated(dropSelf('mossy_stone_bricks')), tiles: all('mossy_stone_bricks') });
+defBlock(152, 'cracked_stone_bricks', { hardness: 1.5, blast: 6.0, tool: 'pickaxe', tier: 0, drops: gated(dropSelf('cracked_stone_bricks')), tiles: all('cracked_stone_bricks') });
+// iron_bars (153) — pane lattice, connects like fence to solids/panes (§2.2).
+defBlock(153, 'iron_bars', {
+  shape: 'iron_bars', bucket: 'cutout', opaque: false, opacity: 0,
+  hardness: 5.0, blast: 6.0, tool: 'pickaxe', tier: 0,
+  collisionBox: [0, 0, 0, 1, 1, 1],   // §2.2 full-height 1.0 collision (approx)
+  drops: gated(dropSelf('iron_bars')), tiles: all('iron_bars'),
+});
+defBlock(154, 'end_stone', { hardness: 3.0, blast: 9.0, tool: 'pickaxe', tier: 0, drops: gated(dropSelf('end_stone')), tiles: all('end_stone') });
+defBlock(155, 'end_stone_bricks', { hardness: 3.0, blast: 9.0, tool: 'pickaxe', tier: 0, drops: gated(dropSelf('end_stone_bricks')), tiles: all('end_stone_bricks') });
+defBlock(156, 'purpur_block', { hardness: 1.5, blast: 6.0, tool: 'pickaxe', tier: 0, drops: gated(dropSelf('purpur_block')), tiles: all('purpur_block') });
+defBlock(157, 'purpur_pillar', { hardness: 1.5, blast: 6.0, tool: 'pickaxe', tier: 0, drops: gated(dropSelf('purpur_pillar')), tiles: column('purpur_pillar_top', 'purpur_pillar_side') });
+// end_rod (158) — emissive rod, placeable on any solid face, pops on support loss (§2.2).
+defBlock(158, 'end_rod', {
+  shape: 'end_rod', bucket: 'cutout', opaque: false, opacity: 0, collidable: false,
+  hardness: 0, blast: 0, emission: 14, needsSupport: 'attach',
+  drops: dropSelf('end_rod'), tiles: all('end_rod'),
+});
+// chorus_plant (159) / chorus_flower (160) — §8 outer-island vegetation.
+defBlock(159, 'chorus_plant', {
+  shape: 'chorus_plant', bucket: 'cutout', opaque: false, opacity: 0,
+  hardness: 0.4, blast: 0.4, tool: 'axe',
+  collisionBox: [2 / 16, 0, 2 / 16, 14 / 16, 1, 14 / 16],
+  drops: ctx => (ctx.rng() < 0.5 ? [{ name: 'chorus_fruit', count: 1 }] : []),
+  neighborUpdate: chorusSupport, tiles: all('chorus_plant'),
+});
+defBlock(160, 'chorus_flower', {
+  shape: 'chorus_flower', bucket: 'cutout', opaque: false, opacity: 0,
+  hardness: 0.4, blast: 0.4, tool: 'axe', randomTick: chorusGrow,
+  collisionBox: [1 / 16, 0, 1 / 16, 15 / 16, 14 / 16, 15 / 16],
+  drops: dropSelf('chorus_flower'),   // player-mined drops self; support-loss pop drops nothing
+  neighborUpdate: chorusSupport, tiles: all('chorus_flower'),
+});
+// end_portal_frame (161) — unbreakable; eye bit2 in state; cube with eye overlay (§5.2).
+defBlock(161, 'end_portal_frame', {
+  hardness: -1, blast: 3600000, opaque: true,
+  drops: noDrop,
+  tiles: all('end_stone'),
+  tilesFor: (state, face) => (face === 2
+    ? ((state & 4) ? 'end_portal_frame_top_eye' : 'end_portal_frame_top')
+    : (face === 3 ? 'end_stone' : 'end_portal_frame_side')),
+});
+// end_portal (162) — horizontal starfield quad, no collision, no block-item (§2.2/§5.4).
+defBlock(162, 'end_portal', {
+  hardness: -1, blast: 3600000, emission: 15,
+  shape: 'end_portal', bucket: 'water', opaque: false, opacity: 0, collidable: false, targetable: false,
+  drops: noDrop, tiles: all('end_portal'),
+});
+// end_gateway (163) — like end_portal but full dark core (§11).
+defBlock(163, 'end_gateway', {
+  hardness: -1, blast: 3600000, emission: 15,
+  shape: 'end_gateway', bucket: 'water', opaque: false, opacity: 0, collidable: false, targetable: false,
+  blockEntity: 'end_gateway', drops: noDrop, tiles: all('end_gateway'),
+});
+// shulker_box (164) — 27-slot container, contents retained on break (§9.4).
+defBlock(164, 'shulker_box', {
+  hardness: 2.0, blast: 2.0, tool: 'pickaxe',
+  opaque: false, bucket: 'opaque', blockEntity: 'shulker_box', interactable: 'shulker',
+  drops: noDrop,   // break routes through spillBlockEntity → item with tags.containerItems
+  tiles: column('shulker_box_top', 'shulker_box_side', 'shulker_box_bottom'),
+});
+
 // =======================================================================
 // Material classes — the `Mat` column (16-AUDIO AMENDS 06 §2, table 16 §3.1).
 //
@@ -1139,8 +1252,13 @@ const MAT = {
     'soul_sand', 'soul_soil', 'nether_wart_block', 'warped_wart_block', 'shroomlight',
     'crimson_fungus', 'warped_fungus', 'crimson_roots', 'warped_roots', 'nether_wart',
     'brown_mushroom', 'red_mushroom',   // 09-POTIONS §7.1
-    'hay_bale'],   // 12-VILLAGES
+    'hay_bale',   // 12-VILLAGES
+    'chorus_plant', 'chorus_flower'],   // 11-END (plant-like → grass voice)
   glass: ['glass', 'ice', 'glowstone'],
+  // 11-END §3.1 — the End family (stone-brick/end-stone/purpur/rods/portals default to 'end').
+  end: ['stone_bricks', 'mossy_stone_bricks', 'cracked_stone_bricks', 'iron_bars',
+    'end_stone', 'end_stone_bricks', 'purpur_block', 'purpur_pillar', 'end_rod',
+    'end_portal_frame', 'end_portal', 'end_gateway', 'shulker_box'],
   wool: ['wool_white', 'wool_red', 'wool_blue', 'wool_black', 'cactus'],
   snow: ['snow_layer', 'snow_block'],
   fluid: ['water', 'lava'],

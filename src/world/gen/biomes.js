@@ -45,15 +45,17 @@ export const BIOMES = {
   OCEAN: 0, BEACH: 1, RIVER: 2, PLAINS: 3, FOREST: 4,
   BIRCH_FOREST: 5, DESERT: 6, SAVANNA: 7, TAIGA: 8,
   SNOWY_TUNDRA: 9, MOUNTAINS: 10,
+  THE_END: 11,   // 11-END AMENDS 02 §6.1 — dim-2 only; never selected by overworld biomeAt
 };
 
 export const BIOME_NAMES = [
   'ocean', 'beach', 'river', 'plains', 'forest', 'birch_forest',
   'desert', 'savanna', 'taiga', 'snowy_tundra', 'mountains',
+  'the_end',
 ];
 
 // Base temperature per biome id (runtime rain-vs-snow, 04 §12.4)
-export const BIOME_TEMPS = [0.5, 0.8, 0.5, 0.8, 0.7, 0.6, 2.0, 1.2, 0.25, 0.0, 0.18];
+export const BIOME_TEMPS = [0.5, 0.8, 0.5, 0.8, 0.7, 0.6, 2.0, 1.2, 0.25, 0.0, 0.18, 0.5];
 
 const { OCEAN, BEACH, RIVER, PLAINS, FOREST, BIRCH_FOREST, DESERT, SAVANNA,
         TAIGA, SNOWY_TUNDRA, MOUNTAINS } = BIOMES;

@@ -5,7 +5,7 @@
 // jitter, replicate, loop, muffle }. Defaults when a column is blank: bus 'sfx',
 // refDist 1, maxDist 16, cap 2, jitter on, replicate = positional.
 import {
-  BUFFERS, noiseBurst, thud, pluck, blip, sweep, crackle, chime, hiss, gulp, whoosh,
+  BUFFERS, noiseBurst, thud, pluck, blip, sweep, crackle, chime, hiss, gulp, whoosh, drone,
 } from './primitives.js';
 
 export const P = { FAR: 0, NEAR: 1, PLAYER: 2, UI: 3 };
@@ -339,6 +339,46 @@ def('entity.lingering_potion.break', {
   bus: 'sfx', maxDist: 16, capKey: 'potion_break', priority: P.NEAR, replicate: true,
   recipe: (v, t, p, g) => { blip(v, t, { wave: 'square', freq: 1600, dur: 0.06, gain: 0.3 * g }); return hiss(v, t, { freq: 2600, dur: 0.28, gain: 0.35 * g, pitch: p }); },
 });
+// 11-END §16 — End sound events.
+def('eye_of_ender.launch', { bus: 'sfx', maxDist: 16, capKey: 'eye_launch', priority: P.NEAR, replicate: true,
+  recipe: (v, t, p, g) => { whoosh(v, t, { dur: 0.4, gain: 0.4 * g, pitch: p }); return chime(v, t + 0.05, { freq: 1400, ratio: 2.0, index: 3, dur: 0.25, gain: 0.25 * g, pitch: p }); } });
+def('eye_of_ender.drop', { bus: 'sfx', maxDist: 16, capKey: 'eye_drop', priority: P.NEAR, replicate: true,
+  recipe: (v, t, p, g) => pluck(v, t, { freq: 420, dur: 0.12, gain: 0.35 * g, pitch: p }) });
+def('eye_of_ender.shatter', { bus: 'sfx', maxDist: 16, capKey: 'eye_shatter', priority: P.NEAR, replicate: true,
+  recipe: (v, t, p, g) => { chime(v, t, { freq: 2600, ratio: 3.98, index: 3, dur: 0.2, gain: 0.3 * g, pitch: p }); return noiseBurst(v, t, { src: 'white', filter: 'bp', freq: 3000, Q: 2, dur: 0.12, gain: 0.3 * g, pitch: p }); } });
+def('block.portal.fill', { bus: 'sfx', maxDist: 16, capKey: 'portal_fill', priority: P.NEAR, replicate: true,
+  recipe: (v, t, p, g) => { thud(v, t, { f0: 200, f1: 90, dur: 0.12, gain: 0.4 * g, pitch: p }); return blip(v, t + 0.06, { wave: 'sine', freq: 700, dur: 0.1, gain: 0.2 * g }); } });
+def('block.portal.activate', { bus: 'sfx', maxDist: 64, refDist: 8, cap: 1, capKey: 'portal_activate', priority: P.NEAR, replicate: false, distanceOnly: false,
+  recipe: (v, t, p, g) => { drone(v, t, { freqs: [55, 82, 110], dur: 2.4, gain: 0.5 * g, lpFreq: 900 }); return sweep(v, t, { src: 'osc', wave: 'sawtooth', f0: 120, f1: 300, dur: 1.2, gain: 0.3 * g, pitch: p }); } });
+def('block.portal.travel', { bus: 'sfx', maxDist: 16, capKey: 'portal_travel', priority: P.PLAYER, replicate: false,
+  recipe: (v, t, p, g) => { sweep(v, t, { src: 'noise', f0: 2600, f1: 400, dur: 0.5, gain: 0.35 * g, pitch: p, filter: { Q: 2 } }); return whoosh(v, t, { dur: 0.5, gain: 0.3 * g, pitch: p }); } });
+def('gateway.beam', { bus: 'sfx', maxDist: 64, refDist: 8, capKey: 'gateway_beam', priority: P.NEAR, replicate: true,
+  recipe: (v, t, p, g) => drone(v, t, { freqs: [110, 165, 220], dur: 1.6, gain: 0.4 * g, lpFreq: 1200 }) });
+def('gateway.travel', { bus: 'sfx', maxDist: 16, capKey: 'gateway_travel', priority: P.PLAYER, replicate: false,
+  recipe: (v, t, p, g) => { sweep(v, t, { src: 'noise', f0: 3200, f1: 500, dur: 0.4, gain: 0.35 * g, pitch: p * 1.2, filter: { Q: 2 } }); return whoosh(v, t, { dur: 0.4, gain: 0.3 * g, pitch: p * 1.2 }); } });
+def('chorus.grow', { bus: 'sfx', maxDist: 16, capKey: 'chorus_grow', priority: P.NEAR, replicate: true,
+  recipe: (v, t, p, g) => pluck(v, t, { freq: 160, dur: 0.2, gain: 0.35 * g, pitch: p * 0.8 }) });
+def('chorus.teleport', { bus: 'sfx', maxDist: 24, capKey: 'chorus_tp', priority: P.NEAR, replicate: true,
+  recipe: (v, t, p, g) => { sweep(v, t, { src: 'osc', wave: 'sine', f0: 1600, f1: 150, dur: 0.3, gain: 0.35 * g, pitch: p }); return hiss(v, t, { freq: 2400, dur: 0.15, gain: 0.25 * g, pitch: p }); } });
+def('chorus.break', { bus: 'sfx', maxDist: 16, capKey: 'chorus_break', priority: P.NEAR, replicate: true,
+  recipe: (v, t, p, g) => gulp(v, t, { dur: 0.14, gain: 0.35 * g, pitch: p }) });
+def('shulker.open', { bus: 'sfx', maxDist: 16, capKey: 'shulker_lid', priority: P.NEAR, replicate: true,
+  recipe: (v, t, p, g) => sweep(v, t, { src: 'osc', wave: 'sawtooth', f0: 300, f1: 500, dur: 0.35, gain: 0.35 * g, pitch: p, filter: { type: 'lp', freq: 700, Q: 2 } }) });
+def('shulker.close', { bus: 'sfx', maxDist: 16, capKey: 'shulker_lid', priority: P.NEAR, replicate: true,
+  recipe: (v, t, p, g) => sweep(v, t, { src: 'osc', wave: 'sawtooth', f0: 500, f1: 300, dur: 0.35, gain: 0.35 * g, pitch: p, filter: { type: 'lp', freq: 700, Q: 2 } }) });
+def('shulker.shoot', { bus: 'sfx', maxDist: 16, capKey: 'shulker_shoot', priority: P.NEAR, replicate: true,
+  recipe: (v, t, p, g) => { blip(v, t, { wave: 'square', freq: 900, dur: 0.05, gain: 0.3 * g }); return hiss(v, t, { freq: 2200, dur: 0.1, gain: 0.25 * g, pitch: p }); } });
+def('shulker.teleport', { bus: 'sfx', maxDist: 16, capKey: 'shulker_tp', priority: P.NEAR, replicate: true,
+  recipe: (v, t, p, g) => sweep(v, t, { src: 'noise', f0: 2000, f1: 600, dur: 0.2, gain: 0.3 * g, pitch: p, filter: { Q: 2 } }) });
+def('shulker.hurt_closed', { bus: 'sfx', maxDist: 16, capKey: 'shulker_hurt', priority: P.NEAR, replicate: true,
+  recipe: (v, t, p, g) => chime(v, t, { freq: 2400, ratio: 2.76, index: 2, dur: 0.12, gain: 0.35 * g, pitch: p }) });
+def('shulker_bullet.pop', { bus: 'sfx', maxDist: 16, capKey: 'bullet_pop', priority: P.NEAR, replicate: true,
+  recipe: (v, t, p, g) => { blip(v, t, { wave: 'square', freq: 1400, dur: 0.04, gain: 0.3 * g }); return noiseBurst(v, t, { src: 'white', filter: 'bp', freq: 2600, Q: 1.5, dur: 0.08, gain: 0.25 * g, pitch: p }); } });
+def('elytra.deploy', { bus: 'sfx', maxDist: 16, capKey: 'elytra_deploy', priority: P.PLAYER, replicate: false,
+  recipe: (v, t, p, g) => whoosh(v, t, { dur: 0.3, gain: 0.4 * g, pitch: p }) });
+def('item.elytra.loop', { bus: 'sfx', loop: true, maxDist: 16, capKey: 'elytra_loop', priority: P.PLAYER, replicate: false,
+  recipe: (v, t, p, g) => whoosh(v, t, { dur: 0.5, gain: 0.3 * g, pitch: p, loop: true }) });
+
 // 12-VILLAGES §12.3 — village sound events.
 def('block.bell.use', {
   bus: 'sfx', maxDist: 48, refDist: 4, capKey: 'bell', priority: P.NEAR, replicate: true,
