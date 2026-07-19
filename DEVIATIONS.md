@@ -42,6 +42,39 @@ already passed when each phase landed. Ship-time decisions and residual deviatio
    static web build — it runs separately and needs a `wss://` URL for internet play
    over https (§2.4, auto-upgraded/validated on the Host/Join screen).
 
+## UPDATE-polish §1 — right-click block placement (2026-07-19)
+
+**Symptom:** "right-click places nothing." Per the prompt, `tryPlace()` was already
+correct (an earlier commit fixed replaceable targets), so the bug had to be upstream.
+
+**Investigation (instrumented the whole chain):** input → `pressBuf[2]`/`rightPressed`,
+the tick gate (`interaction.js` ~L142), the E3 five-step `use()` pipeline + hand
+routing, and `held.place`/`currentHit`/`tryPlace`'s return. The **normal placement
+path works end-to-end** — with real mouse events (`mousedown` button 2, pointer-lock
+or not) `use()` fires, routes to `useHand('main')`, and `tryPlace` places on the
+correct adjacent cell; holding places at a cadence; interactables, offhand
+placement, and place-after-eat all work. The v1.1.0 report predates the E-phase
+`use()` restructure + the replaceable-targets fix, both of which are present now.
+
+**The real upstream bail point (prompt suspect 2 — `p.usingItem` stuck truthy).**
+The use-channel (`p.usingItem`) was only cleared on RMB **release** or channel
+**completion**. A bow draw never self-completes while the button is held, so
+**drawing a bow (or starting to eat) and then switching hotbar slot to a block
+WITHOUT releasing right-click** left `usingItem` truthy — and the RMB gate
+`(… ) && !p.usingItem` (interaction.js:142) then swallowed every right-click, i.e.
+"right-click places nothing" until the button was released.
+
+**Fix (base specs frozen):** `updateUseChannel` now cancels a **stale** channel —
+if the acting hand no longer holds the item that started it (bow→block switch,
+food dropped/consumed elsewhere, etc.), `usingItem` is cleared the same tick so
+placement/interaction resume immediately. Normal eat/drink/bow are unaffected (the
+held item still matches, so the channel is sustained). Verified headless: the full
+§1 acceptance (single place / holding cadence / crafting-table open / place-after-
+eat / offhand place), a stale-channel regression (stale bow channel with a block in
+hand + RMB held → cleared → places; sustained bow/eat with the matching item held →
+not cancelled), and inventory RMB deposit-one (`containers.js` button-2 branch —
+cursor 8→7, one item deposited, totals conserved).
+
 ## E11 — 13-BOSSES + beacon (2026-07-19)
 
 Built on E10's End arena + E7's wither skulls/soul blocks + E9's status engine.
