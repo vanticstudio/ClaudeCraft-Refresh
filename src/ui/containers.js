@@ -4,7 +4,7 @@
 // Geometry: absolute GUI-px on a 176×166 reference panel (Java 1.20 survival
 // coordinates), scaled uniformly by --gpx. Slot (x,y) = top-left INNER corner.
 import { ITEMS, RECIPES, SMELTING, fuelValue, idOf, smithingUpgrade, SMITHING_UPGRADES } from '../registry/items.js';
-import { iconCss, tileForItemId, paintSlotIcon } from './hud.js';
+import { paintItemIcon, paintSlotIcon } from './hud.js';   // UPDATE-polish §4 — 3D-aware icon painter
 import { emitSound, at, audio } from '../audio/engine.js';
 import { beaconPrimaryOptions } from '../world/Beacon.js';   // 13-BOSSES §9.4
 import { TAB, buildPalette, searchPalette, visibleTabs } from './creativeTabs.js';
@@ -1110,7 +1110,7 @@ export class Containers {
         b.textContent = t.glyph;
       } else {
         const icon = document.createElement('div');
-        iconCss(icon, tileForItemId(this.game, t.icon));
+        paintItemIcon(icon, this.game, t.icon);
         b.appendChild(icon);
       }
       b.addEventListener('mousedown', e => {

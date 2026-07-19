@@ -655,3 +655,14 @@ html, body {
 
 .net-hint { max-width: 420px; color: #bbb; font-size: 13px; line-height: 1.5; text-align: center; margin-bottom: 6px; }
 .net-hint code { background: rgba(255,255,255,0.1); padding: 1px 4px; border-radius: 2px; color: #cfe; }
+
+/* UPDATE-polish §4 — cached isometric 3D block icons (backgroundImage data URL) */
+.icon3d {
+  width: calc(16 * var(--px));
+  height: calc(16 * var(--px));
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+  image-rendering: pixelated;
+}
+.slot-abs > .icon3d { position: absolute; inset: 0; }
+.cv-tab > .icon3d { width: calc(16 * var(--gpx)); height: calc(16 * var(--gpx)); }
