@@ -1,8 +1,8 @@
 // Theme-music layer — the single file-based music module (16-AUDIO §4A), shared
 // by the title screen (19-MAIN-MENU §4) and, later, the soft in-game background.
 // Everything else in the audio system is synthesized; this layer is 16-AUDIO
-// §5's one scoped exception and carries the copyright ship-gate (see
-// scripts/gen-theme-manifest.mjs + vite.config.js's theme-music-ship-gate).
+// §5's one scoped exception. The playlist comes from whatever audio sits in
+// public/theme-music/ (see scripts/gen-theme-manifest.mjs).
 //
 // E1 (16-AUDIO) is built and main.js constructs this with E1's { context, musicBus }
 // (`externalBus`), so in every real path we ride E1's graph and never touch its

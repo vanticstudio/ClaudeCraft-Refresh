@@ -1,22 +1,21 @@
-// Generates src/audio/themeManifest.js from the theme-music tracks available
-// (16-AUDIO §4A.1 — "no hardcoded count; the player adapts to however many
-// tracks are present"). Runs from `predev` / `prebuild`; safe with no folder.
+// Generates src/audio/themeManifest.js from the theme-music tracks present on
+// disk (16-AUDIO §4A.1 — "no hardcoded count; the player adapts to however many
+// tracks are present"). Runs from `predev` / `prebuild`, and from vite.config.js
+// directly so it also works under bare `npx vite` / `npx vite build`.
 //
-// COPYRIGHT SHIP-GATE (16-AUDIO §4A, 17-SHIP §3.5, 19-MAIN-MENU §0)
-// Two track sources, deliberately asymmetric so a placeholder leak is
-// structurally impossible rather than raced-against:
+// Drop any supported audio file into public/theme-music/ and it plays. There is
+// no declaration step, no allowlist and no gate — the repo ships with that
+// folder empty and every user supplies their own music.
 //
-//   CC-assets/CC-sounds/   dev placeholders (C418 OST). OUTSIDE publicDir, so
-//                          Vite never copies them to dist/. Served in dev only,
-//                          by the theme-music-dev-serve middleware.
-//   public/theme-music/    the shipped set. Vite copies this normally, so only
-//                          original/licensed tracks may live here — every file
-//                          must be declared in public/theme-music/CLEARED.json.
-//
-// A production build therefore reads ONLY public/theme-music, and withholds even
-// that unless CLEARED.json accounts for every file. With no cleared tracks the
-// manifest is empty and the theme layer ships off, per 17-SHIP §3.5.
-import { readdir, readFile, writeFile, mkdir } from 'node:fs/promises';
+// Two track sources:
+//   public/theme-music/     the real drop zone. Inside publicDir, so Vite copies
+//                           it to dist/ and these play in dev AND in a build.
+//   CC-assets/CC-sounds/    optional local scratch folder, OUTSIDE publicDir and
+//                           gitignored. Served in dev by the theme-music-dev-serve
+//                           middleware. Vite never copies it, so these are listed
+//                           in dev only — including them in a build manifest
+//                           would emit URLs that 404.
+import { readdir, writeFile, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, extname } from 'node:path';
@@ -25,9 +24,8 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SHIP_DIR = join(ROOT, 'public', 'theme-music');
 const DEV_DIR = join(ROOT, 'CC-assets', 'CC-sounds');
 const OUT = join(ROOT, 'src', 'audio', 'themeManifest.js');
-// Exported: vite.config.js's ship gate polices exactly these, and the two must
-// not drift — an extension this list knows but the gate does not would ship
-// undeclared, and vice versa.
+// Exported: vite.config.js watches/tidies exactly these extensions, and the two
+// must not drift.
 export const AUDIO_EXT = new Set(['.mp3', '.ogg', '.oga', '.m4a', '.aac', '.wav', '.opus', '.flac', '.webm']);
 
 async function audioFiles(dir) {
@@ -37,77 +35,44 @@ async function audioFiles(dir) {
     .sort();                       // stable order; the player shuffles at runtime
 }
 
-/** public/theme-music/CLEARED.json → Set of filenames declared original/licensed. */
-async function clearedSet() {
-  const f = join(SHIP_DIR, 'CLEARED.json');
-  if (!existsSync(f)) return new Set();
-  try {
-    const json = JSON.parse(await readFile(f, 'utf8'));
-    // shape: { "tracks": [ { "file": "x.mp3", "license": "original | CC0 | …" } ] }
-    return new Set((json?.tracks ?? []).filter(t => t?.file && t?.license).map(t => t.file));
-  } catch (err) {
-    console.warn(`[theme-manifest] CLEARED.json unreadable (${err.message}) — treating as NOT cleared.`);
-    return new Set();
-  }
-}
-
 /**
  * Writes src/audio/themeManifest.js.
  * @param {object} [opts]
- * @param {boolean} [opts.build] apply the ship gate (build semantics)
+ * @param {boolean} [opts.build] omit the dev-only CC-assets scratch folder
  * @param {boolean} [opts.quiet]
- * @returns {Promise<{count:number, cleared:boolean, uncleared:string[]}>}
+ * @returns {Promise<{count:number, tracks:string[]}>}
  */
 export async function generateThemeManifest({ build: isBuild = false, quiet = false } = {}) {
   const log = (...a) => { if (!quiet) console.log(...a); };
   const shipFiles = await audioFiles(SHIP_DIR);
-  const cleared = await clearedSet();
-  const uncleared = shipFiles.filter(f => !cleared.has(f));
 
-  let tracks;
-  if (isBuild) {
-    // ship set only, and only if fully cleared
-    tracks = uncleared.length ? [] : shipFiles;
-    if (uncleared.length) {
-      console.warn(
-        `\n\x1b[33m[theme-manifest] SHIP GATE: ${uncleared.length} of ${shipFiles.length} track(s) in ` +
-        `public/theme-music/ are not declared in CLEARED.json.\n` +
-        `  Emitting an EMPTY manifest — the build ships with the theme layer OFF (17-SHIP §3.5).\n` +
-        `  Uncleared: ${uncleared.slice(0, 3).join(', ')}${uncleared.length > 3 ? `, +${uncleared.length - 3} more` : ''}\x1b[0m\n`);
-    } else if (!shipFiles.length) {
-      log('[theme-manifest] no cleared tracks in public/theme-music/ — theme layer ships off (17-SHIP §3.5).');
-    }
-  } else {
-    // dev: cleared tracks first, then the placeholders served by the dev middleware
-    const devFiles = await audioFiles(DEV_DIR);
-    tracks = [...shipFiles, ...devFiles];
-    if (devFiles.length) {
-      log(`[theme-manifest] ${devFiles.length} DEV PLACEHOLDER(S) from CC-assets/CC-sounds/ ` +
-        '— local only; never bundled or served by a build.');
-    }
+  // A build lists only what Vite actually copies into dist/.
+  const devFiles = isBuild ? [] : await audioFiles(DEV_DIR);
+  if (devFiles.length) {
+    log(`[theme-manifest] ${devFiles.length} track(s) from CC-assets/CC-sounds/ — dev only ` +
+      '(outside publicDir, so never copied into a build).');
   }
+  const tracks = [...shipFiles, ...devFiles];
 
   // URLs are BASE_URL-relative (base:'./'); the player resolves them against
   // document.baseURI. Encode so spaces/#/? in filenames survive fetch().
   const urls = tracks.map(f => `theme-music/${encodeURIComponent(f)}`);
 
   const body = `// GENERATED by scripts/gen-theme-manifest.mjs — do not edit by hand.
-// ${isBuild ? 'build' : 'dev'} · ${urls.length} track(s)${
-  isBuild && uncleared.length ? ' · ship gate: uncleared tracks withheld' : ''}
+// ${isBuild ? 'build' : 'dev'} · ${urls.length} track(s)
 // Paths are relative to import.meta.env.BASE_URL and URL-encoded.
 export const THEME_TRACKS = ${JSON.stringify(urls, null, 2)};
-export const THEME_CLEARED = ${shipFiles.length > 0 && uncleared.length === 0};
 `;
 
   await mkdir(dirname(OUT), { recursive: true });
   await writeFile(OUT, body);
   log(`[theme-manifest] ${urls.length} track(s) → src/audio/themeManifest.js`);
-  return { count: urls.length, cleared: shipFiles.length > 0 && !uncleared.length, uncleared };
+  return { count: urls.length, tracks: urls };
 }
 
 // CLI: `node scripts/gen-theme-manifest.mjs [--build]`. vite.config.js calls
-// generateThemeManifest() directly at buildStart/configureServer, so the gate
-// holds even when the npm pre* hooks are bypassed (`npx vite build`).
+// generateThemeManifest() directly at buildStart/configureServer, so the manifest
+// is correct even when the npm pre* hooks are bypassed.
 if (import.meta.url === `file://${process.argv[1]}`) {
   generateThemeManifest({ build: process.argv.includes('--build') || process.env.NODE_ENV === 'production' })
     .catch(err => { console.error('[theme-manifest]', err); process.exit(1); });

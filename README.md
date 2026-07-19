@@ -126,12 +126,12 @@ all and makes zero network connections.
 
 ## Audio & copyright
 
-All sound effects and background music are **synthesized in the browser** — there
-are no audio files in the shipped build. The optional file-based theme-music layer
-(`public/theme-music/`) ships **off** unless you add your own original or licensed
-tracks and declare them in `public/theme-music/CLEARED.json`; a build-time gate
-withholds any undeclared track and keeps it out of `dist/`. No copyrighted or
-Minecraft/C418 audio is bundled or served.
+All sound effects and background music are **synthesized in the browser** — the
+repo ships with no audio files at all. The optional file-based theme-music layer
+is a clean slate: drop any `.mp3` (or `.ogg`/`.wav`/`.flac`/…) into
+`public/theme-music/` and it plays, in dev and in a build alike. No config, no
+registration step — the player adapts to however many tracks are there and
+shuffles them. See `public/theme-music/README.md`.
 
 ## Browser support
 
@@ -162,6 +162,24 @@ Studios; it is referenced here only to describe the genre this project recreates
 ## Additions log
 
 *This section is updated as new features land.*
+
+- **2026-07-19** — **Theme music: drop a file in and it plays.** The licence
+  gate is gone. `public/theme-music/` is now a plain drop zone — any supported
+  audio file plays in dev *and* ships in a build, with no declaration step. The
+  repo still ships the folder empty, so it's a clean slate for each user's own
+  music. Removed `CLEARED.json`, `scripts/clear-theme-tracks.mjs`, the
+  `npm run theme:clear` script, the `theme-music-ship-gate` plugin and the
+  `THEME_CLEARED` export; the build plugin now only regenerates the manifest and
+  keeps `dist/theme-music/` to audio. Also fixed a stale-manifest bug underneath
+  it that made dropped-in tracks look silently rejected: the playlist was
+  generated only by npm's `predev` hook — one shot at server start — so adding a
+  track while the dev server ran, or launching via `npx vite` (which skips `pre*`
+  scripts), left an empty playlist while the file sat in the folder. A new
+  `theme-music-dev-manifest` plugin regenerates at startup and watches
+  `public/theme-music/` + `CC-assets/CC-sounds/`, debounced so copying an album
+  in rewrites once, then hot-reloads the page. Verified end to end: a build with
+  two undeclared tracks ships both to `dist/theme-music/` and serves them at
+  200.
 
 - **2026-07-19** — **3D item icons.** Inventory, hotbar, creative-palette and trade
   icons for full-cube blocks are now proper **isometric 3D renders** — top face lit,
@@ -412,9 +430,10 @@ Studios; it is referenced here only to describe the genre this project recreates
   phase **freezes the bit-7 layout**; the contract is documented at the head of
   `src/registry/blocks.js`. *(§7's 4-frame animated tiles are deferred — see
   DEVIATIONS.md.)*
-- **2026-07-17** — **Theme-music drop zone is Vercel-ready**: drop original or
-  licensed tracks into `public/theme-music/`, run `npm run theme:clear --
-  --license "…"` to record provenance, and they play locally *and* on the deploy.
+- **2026-07-17** — *(superseded 2026-07-19 — the gate and `theme:clear` were
+  removed; just drop files in.)* **Theme-music drop zone is Vercel-ready**: drop
+  original or licensed tracks into `public/theme-music/`, run `npm run theme:clear
+  -- --license "…"` to record provenance, and they play locally *and* on the deploy.
   Fixed two defects that would each have shipped a broken build: the folder was
   gitignored (tracks would play in dev then be absent from Vercel), and the ship
   gate counted `README.md` as an undeclared track and deleted the folder while
@@ -456,9 +475,8 @@ Studios; it is referenced here only to describe the genre this project recreates
   Music / SFX sliders, and the 16-AUDIO §4A theme-music player (shuffled, no
   immediate repeats, RAM-guarded preload, 1.5 s/0.8 s fades, 10–20 s gaps,
   gesture-started, fades out on world load). Renamed VoxelCraft → ClaudeCraft.
-  **Menu tracks are gated:** the C418 files in `CC-assets/CC-sounds/` are local
-  dev placeholders that can never reach a build — see DEVIATIONS.md "Audio
-  copyright ship-gate" before shipping music.
+  *(The "menu tracks are gated" note here is superseded — the gate was removed
+  2026-07-19 and those placeholder files are long gone from the tree.)*
 - **2026-07-17** — Sky/sun render fix: sun, moon and sunset band now depth-test
   against terrain (leaves/hills occlude them; the "grey blob at spawn" was the
   moon drawing through the ground), horizon visibility gates at `dir.y > −0.3`,

@@ -7,19 +7,17 @@ dist/
 .idea/
 .vscode/
 
-# ---- Audio copyright ship-gate (16-AUDIO §4A, 17-SHIP §3.5, 19-MAIN-MENU §0) ----
-# Never commit unlicensed audio. This directory held the C418 OST as a local dev
-# placeholder; the files were deleted 2026-07-17. Nothing licensed belongs here —
-# the shipped set lives in public/theme-music/.
-# NOTE: these were already committed in b74a1b5 — ignoring them does NOT untrack
-# them. See DEVIATIONS.md "Menu music" for the history-removal command.
+# ---- Theme music (16-AUDIO §4A) ----
+# Local scratch folder for tracks you want to hear in dev without adding them to
+# the repo. Outside publicDir, so Vite never copies it into a build.
+# NOTE: this once held the C418 OST and those files were committed in b74a1b5 —
+# they were deleted 2026-07-17, but ignoring a path does NOT untrack it. See
+# DEVIATIONS.md "Menu music" for the history-removal command.
 CC-assets/CC-sounds/
 
-# public/theme-music/ IS COMMITTED — Vercel builds from the repo, so anything not
-# in git is simply absent from the deploy (tracks would play locally, then vanish
-# in production). Only original/licensed audio may be placed here, and every file
-# must be declared in public/theme-music/CLEARED.json or the ship gate withholds
-# the whole set. See public/theme-music/README.md.
+# public/theme-music/ IS COMMITTED, and ships empty — a clean slate for each user
+# to drop their own music into. Anything committed there lands in every clone, so
+# please don't push tracks you don't hold the rights to.
 
-# Generated from public/theme-music/ by scripts/gen-theme-manifest.mjs at pre{dev,build}.
+# Generated from the theme-music folders by scripts/gen-theme-manifest.mjs.
 src/audio/themeManifest.js

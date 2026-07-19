@@ -1,73 +1,52 @@
-# `public/theme-music/` — the shipped menu-music set
+# `public/theme-music/` — background music
 
-Drop **original or properly-licensed** audio files here. That's it — no code
-changes, no hardcoded track list. The player adapts to however many tracks are
-present (16-AUDIO §4A.1) and shuffles them at runtime.
-
-Supported: `.mp3` `.ogg` `.oga` `.m4a` `.aac` `.wav` `.opus` `.flac` `.webm`
-
-## Dropping tracks in
-
-**1. Copy the files here.**
+Drop audio files in here and they play. That's the whole thing — no config, no
+registration step, no hardcoded track list. The player adapts to however many
+tracks are present (16-AUDIO §4A.1) and shuffles them at runtime.
 
 ```
-public/theme-music/dunes.mp3
-public/theme-music/mesa-night.mp3
-```
-
-**2. They play locally immediately.**
-
-```
+cp ~/Music/*.mp3 public/theme-music/
 npm run dev
 ```
 
-`predev` regenerates `src/audio/themeManifest.js` from this folder, and Vite
-serves `public/` natively — press start and the menu plays them, shuffled, with
-1.5 s fade-in / 0.8 s fade-out and a 10–20 s gap between tracks.
+Supported: `.mp3` `.ogg` `.oga` `.m4a` `.aac` `.wav` `.opus` `.flac` `.webm`
 
-**3. To make them SHIP, declare each one in `CLEARED.json`.**
+The dev server watches this folder, so adding or removing tracks while it is
+running regenerates the playlist and reloads the page — no restart. Press start
+and the menu plays them, shuffled, with 1.5 s fade-in / 0.8 s fade-out and a
+10–20 s gap between tracks. `npm run build` copies whatever is here into
+`dist/theme-music/` unchanged.
 
-```json
-{
-  "tracks": [
-    { "file": "dunes.mp3",      "license": "original — © Vantic Studio 2026" },
-    { "file": "mesa-night.mp3", "license": "Epidemic Sound, subscription #12345" }
-  ]
-}
-```
+The repo ships this folder **empty** — it is a clean slate for whatever you want
+to listen to.
 
-Then `npm run build`. Every file in this folder must appear in `CLEARED.json`
-with a non-empty `license`, or the gate emits an **empty manifest** and the build
-ships with the theme layer off — all of it, not just the undeclared file. The
-build prints exactly what's missing.
+## Where files can live
 
-## Why the declaration step is manual
+| Folder | In git? | Plays in dev | Plays in a build |
+| --- | --- | --- | --- |
+| `public/theme-music/` | yes | ✅ | ✅ |
+| `CC-assets/CC-sounds/` | no — gitignored | ✅ | ✗ not copied to `dist/` |
 
-`CLEARED.json` is the licence record. It is a human asserting provenance for each
-file — the one thing tooling cannot check. A build can verify that a file *is
-declared*; it cannot verify that the declaration is *true*.
+`CC-assets/CC-sounds/` is a local scratch folder. Use it for music you want to
+hear while working but don't want to add to the repo. Create it, drop files in,
+restart the dev server. Since Vite never copies it into `dist/`, listing it in a
+build would just produce URLs that 404 — so builds read `public/theme-music/`
+only.
 
-This exists because the placeholder set previously here was the copyrighted C418
-Minecraft soundtrack. Renaming those files and stripping their ID3 tags changed
-every byte-level hash while leaving the audio frames identical — so "the file
-looks different" is not evidence of anything. If you want to check a candidate
-track against known audio, hash the **MPEG frames** (skipping ID3v2 at the head
-and ID3v1 at the tail), not the whole file.
+Nothing else in the audio system loads files: SFX and the in-game generative
+composer (16-AUDIO §4) are 100 % synthesized at runtime, so an empty folder is a
+fully supported configuration — the menu is simply silent, with no 404s and no
+console errors.
 
-## No tracks? Nothing breaks.
+## A note for contributors
 
-An empty folder is a fully supported, tested configuration:
-
-- the menu is silent, with no 404s and no console errors;
-- **in-game music still plays** — 16-AUDIO §4's generative composer is
-  synthesized at runtime and needs zero assets;
-- all SFX are unaffected (they are 100 % synthesized, always).
-
-This is the current shipping configuration.
+Music you add locally is your own business. Please just don't **commit** tracks
+to this repo that you don't hold the rights to — it's a shared, public tree, and
+audio pushed here lands in everyone's clone.
 
 ## Options → Theme music
 
 - **Off** — no theme layer; the synth composer plays in-game.
 - **Menu only** *(default)* — theme on the title screen, synth composer in-game.
-- **Menu + gameplay** — theme layer both places. With no cleared tracks this
+- **Menu + gameplay** — theme layer both places. With no tracks present this
   falls back to the synth composer rather than going silent.

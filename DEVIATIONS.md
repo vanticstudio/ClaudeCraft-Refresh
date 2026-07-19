@@ -13,19 +13,26 @@ nether/end, villages/bosses/fire-water, creative/audio + a production-preview bo
 rather than hand-re-running every individual checklist line — the per-item gates
 already passed when each phase landed. Ship-time decisions and residual deviations:
 
-1. **Menu theme music ships OFF.** The optional file-based theme layer (16-AUDIO
-   §4A) requires original/cleared tracks declared in `public/theme-music/CLEARED.json`.
-   None are provided, so `gen-theme-manifest` emits an empty manifest and the
-   theme layer is off (17-SHIP §3.5); the generative synth music still plays. All
-   SFX + in-game music are 100% synthesized — the shipped `dist/` contains no audio
-   files.
+1. **Menu theme music ships with no tracks.** The optional file-based theme layer
+   (16-AUDIO §4A) is a user-supplied drop zone: `public/theme-music/` ships empty,
+   so `gen-theme-manifest` emits an empty manifest and the layer is inert until
+   someone adds audio; the generative synth music plays regardless. Any supported
+   file dropped in that folder plays in dev and ships in a build — there is no
+   clearance step. *(The 17-SHIP §3.5 copyright ship-gate that previously enforced
+   a `CLEARED.json` allowlist was removed 2026-07-19: the project is a local,
+   open-source game distributed with zero audio, so the gate policed a `dist/`
+   nobody redistributes while adding friction for every contributor testing music.
+   See item 2 — the meaningful residual risk is git history, not the build.)*
 2. **C418 placeholder tracks removed from the tree.** 14 numbered `*.mp3` (the
    Minecraft/C418 OST dev placeholders) had been committed into
    `public/theme-music/`; they are removed from HEAD here. They remain in **git
-   history** — before making the repository public, scrub them with
-   `git filter-repo --path public/theme-music --path CC-assets --invert-paths` (or
-   BFG) and force-push, or keep the repo private. The live Vercel build is already
-   clean (the vite ship-gate deletes any undeclared track from `dist/`).
+   history** (commit `b74a1b5`) — **before making the repository public**, scrub
+   them with `git filter-repo --path public/theme-music --path CC-assets
+   --invert-paths` (or BFG) and force-push, or keep the repo private. HEAD and any
+   fresh build are clean: the working tree has contained no audio since
+   2026-07-17, and `public/theme-music/` ships empty. This is now the *only*
+   copyright item outstanding — a `git clone` still reconstructs those 14 files
+   from history, which no build-time check can affect.
 3. **Repo name.** The GitHub remote is `vanticstudio/Minecraft-spec`. All *in-app*
    branding is **ClaudeCraft** (window title, title screen, README, package name);
    renaming the GitHub repository itself is the operator's action.
