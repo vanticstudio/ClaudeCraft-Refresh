@@ -365,7 +365,16 @@ export class Game {
 
     const dt = performance.now() - tickStart;
     if (dt > 40 && this.state !== STATE.LOADING) {
-      if (++this.slowTicks >= 2) console.warn(`[game] slow tick: ${dt.toFixed(1)} ms`);
+      // Throttled to one line per 10 s: a sustained slow patch (a weak GPU, a
+      // huge redstone build) fires this every tick, and an unthrottled warn
+      // buries every other console message at 20 lines/second.
+      if (++this.slowTicks >= 2) {
+        const now = performance.now();
+        if (now - (this._lastSlowWarn ?? -Infinity) > 10000) {
+          this._lastSlowWarn = now;
+          console.warn(`[game] slow tick: ${dt.toFixed(1)} ms (further slow-tick warnings muted for 10 s)`);
+        }
+      }
     } else this.slowTicks = 0;
   }
 
