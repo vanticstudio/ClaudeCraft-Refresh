@@ -37,8 +37,10 @@ export class XpOrb extends Entity {
 
     // 14 AMENDS 05 §15 / §5.4 — home to and be collected by the NEAREST player
     // (host-authoritative; runs only on the host since puppets never tick).
+    // 18 §7.2 — orbs are neither drawn to nor collected by a creative player
+    // ("they simply despawn"); XP is frozen and hidden in creative (§4.3).
     const player = this.world.game?.nearestPlayerTo?.(this.pos.x, this.pos.y, this.pos.z) ?? this.world.game?.player;
-    if (player && !player.dead) {
+    if (player && !player.dead && !player.creative) {
       const dx = player.pos.x - this.pos.x;
       const dy = (player.pos.y + player.height / 2) - (this.pos.y + 0.25);
       const dz = player.pos.z - this.pos.z;

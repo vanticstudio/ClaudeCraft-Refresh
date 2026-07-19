@@ -880,8 +880,9 @@ export class Player extends LivingEntity {
 
   updateSprint(input) {
     if (input.pressed.has('KeyW')) {
-      // double-tap start (03 §7.1)
-      if (this.ticksSinceForward <= 7 && this.onGround && this.canSprint(input)) {
+      // double-tap start (03 §7.1). 18 §2.2 lists "double-tap W" as a sprint-FLY
+      // trigger too, so the ground test has to admit a flying player.
+      if (this.ticksSinceForward <= 7 && (this.onGround || this.flying) && this.canSprint(input)) {
         this.sprinting = true;
       }
       this.ticksSinceForward = 0;
@@ -913,7 +914,10 @@ export class Player extends LivingEntity {
   // -------------------------------------------------- environment (03 §10–13)
 
   tickEnvironment() {
-    if (this.creative) { this.air = 300; this.fireTicks = 0; return; }
+    // 18 §4.3 — air and fire are frozen in creative. The early-out still runs the
+    // void check: 18 §4.1/§1.5 make the void the ONE source creative does not
+    // nullify (beforeHurt lets source 'void' through for exactly this reason).
+    if (this.creative) { this.air = 300; this.fireTicks = 0; this.tickVoid(); return; }
     const t = this.age;
 
     // drowning (03 §10.2)
@@ -969,9 +973,13 @@ export class Player extends LivingEntity {
       if (t % 10 === 0) this.hurt(1, 'suffocate');
     }
 
-    // void (03 §13.2)
+    this.tickVoid();
+  }
+
+  /** 03 §13.2 void plane. Split out because creative reaches it too (18 §4.1). */
+  tickVoid() {
     if (this.pos.y < -64) { this.die('void'); return; }
-    if (this.pos.y < -8 && t % 10 === 0) this.hurt(4, 'void');
+    if (this.pos.y < -8 && this.age % 10 === 0) this.hurt(4, 'void');
   }
 
   // -------------------------------------------------- damage / death (03 §20)

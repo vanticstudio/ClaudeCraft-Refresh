@@ -273,6 +273,13 @@ export class Hud {
     const p = this.game.player;
     if (!p) return;
 
+    // 18 §1.4 — setGameMode fires Game.onGameModeChanged → rebuild(), but that is
+    // not the only writer of the field: a save load (03 §2.4 deserialize) and a
+    // 14 §4.2 playerState snapshot both assign gameMode directly, so a creative
+    // world would load still showing survival's hearts/hunger. One boolean
+    // compare per frame catches every such path.
+    if (!!p.creative !== this.creative) this.rebuild();
+
     // 13-BOSSES §1 — ease the boss bars every frame (independent of the survival rows).
     this.game.ui?.bossBar?.update?.();
 
