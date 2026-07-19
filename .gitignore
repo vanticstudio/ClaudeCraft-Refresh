@@ -1,6 +1,11 @@
 node_modules/
 dist/
+.vercel/
 .DS_Store
+*.log
+*~
+.idea/
+.vscode/
 
 # ---- Audio copyright ship-gate (16-AUDIO §4A, 17-SHIP §3.5, 19-MAIN-MENU §0) ----
 # Never commit unlicensed audio. This directory held the C418 OST as a local dev

@@ -8,6 +8,22 @@ const RELAY_KEY = 'voxelcraft.relayUrl';
 const relayUrl = () => { try { return localStorage.getItem(RELAY_KEY) || DEFAULT_RELAY_URL; } catch { return DEFAULT_RELAY_URL; } };
 const saveRelay = u => { try { localStorage.setItem(RELAY_KEY, u); } catch {} };
 
+// 17-SHIP §2.4 — a page served over https can only open wss:// sockets (mixed
+// content silently blocks ws://). Normalise the scheme: default it, auto-upgrade
+// ws://→wss:// on https (localhost is a secure context and stays ws://), and
+// surface a clear error rather than a silent failure.
+function normalizeRelayUrl(raw) {
+  let url = (raw || '').trim();
+  if (!url) return { error: 'Enter a relay URL — run `npm run relay` locally, or paste a wss:// tunnel URL (see README).' };
+  if (!/^wss?:\/\//i.test(url)) url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + url;
+  const isLocal = /^wss?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/i.test(url);
+  if (location.protocol === 'https:' && /^ws:\/\//i.test(url)) {
+    if (isLocal) return { error: 'This page is served over HTTPS but the relay is ws://localhost — run the game locally (npm run dev) for a localhost relay, or use a wss:// tunnel.' };
+    return { url: 'wss://' + url.slice(5), warning: 'Upgraded ws:// → wss:// (this site is served over HTTPS).' };
+  }
+  return { url };
+}
+
 const ERR = {
   version: 'Version mismatch — host runs a different game build.',
   'relay-version': 'Relay version mismatch.',
@@ -36,6 +52,7 @@ export class NetMenus {
     root.innerHTML = `
       <div id="screen-host" class="screen net-screen">
         <h1>Host Game</h1>
+        <div class="net-hint">Multiplayer needs a WebSocket relay. Run <code>npm run relay</code> locally (default below), or expose one at a <code>wss://</code> URL — see the README.</div>
         <label>Relay URL <input id="host-relay" spellcheck="false"></label>
         <label>Your name <input id="host-name" maxlength="16" spellcheck="false"></label>
         <div class="net-row"><button id="host-go">Create World &amp; Host</button><button id="host-back">Back</button></div>
@@ -43,6 +60,7 @@ export class NetMenus {
       </div>
       <div id="screen-join" class="screen net-screen">
         <h1>Join Game</h1>
+        <div class="net-hint">Enter the host's join code and the same relay URL they're using (a <code>wss://</code> URL when playing over the internet).</div>
         <label>Your name <input id="join-name" maxlength="16" spellcheck="false"></label>
         <label>Join code <input id="join-code" maxlength="6" spellcheck="false" style="text-transform:uppercase"></label>
         <label>Relay URL <input id="join-relay" spellcheck="false"></label>
@@ -96,7 +114,10 @@ export class NetMenus {
   showJoin() { this.hideAll(); this.el.joinMsg.textContent = ''; this.el.join.classList.add('visible'); }
 
   _doHost() {
-    const url = this.el.hostRelay.value.trim() || DEFAULT_RELAY_URL;
+    const norm = normalizeRelayUrl(this.el.hostRelay.value);
+    if (norm.error) { this.el.hostMsg.textContent = norm.error; return; }
+    if (norm.warning) this.el.hostMsg.textContent = norm.warning;
+    const url = norm.url;
     const name = sanitizeName(this.el.hostName.value);
     saveRelay(url); setLocalPlayerName(name);
     this.game.localPlayerName = name;
@@ -105,10 +126,12 @@ export class NetMenus {
   }
 
   _doJoin() {
-    const url = this.el.joinRelay.value.trim() || DEFAULT_RELAY_URL;
     const code = this.el.joinCode.value.trim().toUpperCase();
-    const name = sanitizeName(this.el.joinName.value);
     if (code.length !== 6) { this.el.joinMsg.textContent = 'Enter a 6-character code.'; return; }
+    const norm = normalizeRelayUrl(this.el.joinRelay.value);
+    if (norm.error) { this.el.joinMsg.textContent = norm.error; return; }
+    const url = norm.url;
+    const name = sanitizeName(this.el.joinName.value);
     saveRelay(url); setLocalPlayerName(name);
     this.game.localPlayerName = name;
     this.showConnecting('Connecting…');
