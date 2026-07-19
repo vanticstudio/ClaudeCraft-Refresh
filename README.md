@@ -163,6 +163,14 @@ Studios; it is referenced here only to describe the genre this project recreates
 
 *This section is updated as new features land.*
 
+- **2026-07-19** — **Fix: continuous worldgen (removed the far-out "flat" edge).** The
+  world's noise cache packed coordinates into a fixed-width key that wrapped past
+  roughly a million blocks out, so two very distant regions could share a cache slot
+  and one would render as a stale copy of the other. The key range is now widened well
+  beyond any distance you could ever travel, so terrain and biomes keep varying no
+  matter how far you go — and generation is byte-for-byte unchanged within the old
+  range, so existing worlds are untouched.
+
 - **2026-07-19** — **Multiplayer co-op (expansion phase E12, `14`)**: play the same
   world with 2–8 friends over a tiny WebSocket relay. Start it with `npm run relay`
   (defaults to `ws://localhost:8971`), then from the title screen pick **Host

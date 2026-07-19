@@ -110,10 +110,27 @@ function makeLRU(cap) {
   };
 }
 
-// Numeric keys: lattice ix,iz ∈ ±262144 covers |x|,|z| ≤ 1,048,575 (world border)
-const key2 = (ix, iz) => (ix + 262144) * 524288 + (iz + 262144);
-const key3 = (ix, iy, iz) => ((ix + 262144) * 33 + iy) * 524288 + (iz + 262144);
-const chunkKeyN = (cx, cz) => cx * 131072 + cz;
+// UPDATE-polish §2 — collision-free lattice memo keys. These are pure MEMO keys
+// (the values are seed-derived simplex fbm, independent of the key), so widening
+// the range never changes gen within the old range: both encodings are bijections
+// there, so the same lattice points hit/miss identically and compute identical
+// values (verified byte-identical). The OLD range was ix,iz ∈ ±262144 (|x|,|z| ≤
+// ~1,048,575); beyond it `iz+262144` wrapped and two far-apart lattice points
+// could ALIAS to one key — returning a stale neighbour's value if both were ever
+// sampled in one session ("degenerates to a constant / flat" at the border).
+//
+// New ranges (all comfortably inside Number's 2^53 safe-integer bound):
+//   key2: ix,iz ∈ [−2^25, 2^25)  → |x|,|z| ≤ ~134,217,727   (max key 2^52 + 2^26)
+//   key3: ix,iz ∈ [−2^22, 2^22)  → |x|,|z| ≤ ~16,777,215     (33× y factor limits it)
+// Both are ≫ any reachable distance (134M blocks ≈ a month of non-stop flight), so
+// generation is effectively unbounded and continuous everywhere a player can go.
+const K2_OFF = 33554432, K2_STRIDE = 67108864;              // 2^25, 2^26
+const K3_OFF = 4194304, K3_STRIDE = 8388608;               // 2^22, 2^23
+const key2 = (ix, iz) => (ix + K2_OFF) * K2_STRIDE + (iz + K2_OFF);
+const key3 = (ix, iy, iz) => ((ix + K3_OFF) * 33 + iy) * K3_STRIDE + (iz + K3_OFF);
+// The per-chunk column LRU had the same wrap (`cz` aliased at |z| ≥ ~1M). cx,cz ∈
+// [−2^23, 2^23) → |x|,|z| ≤ ~134,217,727 chunks*16; max key 2^48, safe.
+const chunkKeyN = (cx, cz) => (cx + 8388608) * 16777216 + (cz + 8388608);
 
 export function createNoiseCtx(worldSeed) {
   // One sub-seed per system (02 §2.2)

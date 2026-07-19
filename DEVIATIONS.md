@@ -42,6 +42,45 @@ already passed when each phase landed. Ship-time decisions and residual deviatio
    static web build — it runs separately and needs a `wss://` URL for internet play
    over https (§2.4, auto-upgraded/validated on the Host/Join screen).
 
+## UPDATE-polish §2 — continuous worldgen / ice-ring edge (2026-07-19)
+
+**Symptom (reported):** travel far over open ocean in any direction → a ring of ice,
+then endless flat ice.
+
+**Diagnosis (sampled the real gen — `c`, `e`, `t0`, `height`, `biome` — every ~200 b
+along ±X, ±Z and diagonals, 5 seeds, out to 60k and far beyond):**
+- **No reproducible ice-ring within reachable distance.** Terrain stays varied — 8–11
+  distinct biomes per 50k per direction, height 49–99, worst *continuous* frozen-ocean
+  ("ice") run ≤ 800 b, ocean runs ≤ 2800 b. The noise is simplex fbm (stationary, no
+  radial bias), so there is **no monotonic cold/ocean trend** — cold + ocean appear as
+  normal scattered patches, not "forever." So it is **not** the low-frequency climate
+  trend (fix option b); rebalancing the climate noise would only break determinism +
+  existing saves for no benefit, so the noise stack is left untouched.
+- **The real latent bug is the border key collision the prompt points to (fix option a).**
+  The lattice memo keys `key2`/`key3` and the column-cache key `chunkKeyN` (noise.js)
+  packed `iz`/`cz` into a fixed-width field (`(ix+262144)*524288 + (iz+262144)`), so
+  beyond `|z| ≈ 1,048,575` the `iz` term **wrapped** and two far-apart lattice/chunk
+  points could **alias to one key** — a memo hit then returned a stale neighbour's value
+  ("degenerate to a constant / flat"). In practice it only manifests if a single gen
+  session samples both colliding partners (~1M+ blocks apart), so it is rarely reached,
+  but it is a genuine correctness bug and the stated root cause.
+
+**Fix (base specs frozen; 02 §2 seed-stream discipline preserved):** widened the memo-key
+encodings so they are **collision-free far beyond any reachable distance** — `key2` covers
+`|x|,|z| ≤ ~134M`, `key3`/`chunkKeyN` `≤ ~16.7M`, all inside Number's 2^53 safe-integer
+bound (a month-plus of non-stop flight to reach either). These are **pure memo keys** —
+the stored values are seed-derived simplex fbm, independent of the key — and both old and
+new encodings are bijections within the old ±1M range, so gen there is **byte-identical**
+(verified: a 2400-point height/biome/temp fingerprint across 3 seeds is unchanged →
+determinism holds, no existing world/save shifts). Beyond the old border the keys no
+longer alias, so generation is continuous and correct everywhere a player can travel.
+
+**Verified:** §2 acceptance (fly/sample 20–50k in 5 directions → 10–11 biomes, height
+range 50–72, no ice ring, no flat plane; same seed reproduces identically); the ±1M
+fingerprint is unchanged; the new keys are collision-free over ±30M/±15M random samples
+and stay safe-integer; and a browser boot confirms the worker gen path builds a varied
+world (67 chunks meshed, zero failed, no errors).
+
 ## E11 — 13-BOSSES + beacon (2026-07-19)
 
 Built on E10's End arena + E7's wither skulls/soul blocks + E9's status engine.
