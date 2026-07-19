@@ -163,6 +163,15 @@ Studios; it is referenced here only to describe the genre this project recreates
 
 *This section is updated as new features land.*
 
+- **2026-07-19** — **3D item icons.** Inventory, hotbar, creative-palette and trade
+  icons for full-cube blocks are now proper **isometric 3D renders** — top face lit,
+  the two visible sides shaded like the world — instead of flat single-tile sprites.
+  Each icon is rendered once by a tiny offscreen pass from the exact same per-face
+  textured cube the world uses, then cached forever (zero per-frame cost). Tools,
+  food and sprite-shaped blocks (torches, flowers, doors) keep their classic flat
+  art, and the enchantment shimmer now clips to the new isometric silhouette. The
+  held block in first person was already a true textured cube — unchanged.
+
 - **2026-07-19** — **Fix: right-click block placement.** Right-click could stop
   placing blocks entirely if you drew a bow (or started eating) and then switched
   to a block **without releasing the button** — the use-channel stayed "in use" and

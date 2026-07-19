@@ -62,22 +62,31 @@ export function glintTile() {
  * `frame` advances at 4 Hz (see Hud/Containers); the offset is §11's
  * ((frame*2) % 16, frame % 16).
  */
-export function paintGlintIcon(canvas, atlas, tile, frame) {
+export function paintGlintIcon(canvas, atlas, tile, frame, srcCanvas = null) {
+  // UPDATE-polish §4 — size-generic: 16×16 for flat atlas sprites (k = 1,
+  // byte-identical to the original), or larger (48×48) when `srcCanvas` carries
+  // a cached isometric 3D block icon; the shimmer scales by k so its speed and
+  // period match at every size.
+  const S = canvas.width, k = S / 16;
   const g = canvas.getContext('2d');
-  g.clearRect(0, 0, 16, 16);
+  g.clearRect(0, 0, S, S);
   g.imageSmoothingEnabled = false;
-  const col = tile & 31, row = tile >> 5;
-  g.drawImage(atlas.canvas, col * 16, row * 16, 16, 16, 0, 0, 16, 16);
+  if (srcCanvas) {
+    g.drawImage(srcCanvas, 0, 0, S, S);
+  } else {
+    const col = tile & 31, row = tile >> 5;
+    g.drawImage(atlas.canvas, col * 16, row * 16, 16, 16, 0, 0, S, S);
+  }
 
   // source-atop keeps only the pixels that land ON the icon — that clip is the
   // whole trick: without it the shimmer would paint the empty slot corners too.
   g.save();
   g.globalCompositeOperation = 'source-atop';
   g.globalAlpha = 0.4;
-  const ox = (frame * 2) % 16, oy = frame % 16;
+  const ox = ((frame * 2) % 16) * k, oy = (frame % 16) * k;
   const t = glintTile();
   for (let dx = -1; dx <= 0; dx++) {
-    for (let dy = -1; dy <= 0; dy++) g.drawImage(t, ox + dx * 16, oy + dy * 16);
+    for (let dy = -1; dy <= 0; dy++) g.drawImage(t, ox + dx * 16 * k, oy + dy * 16 * k, 16 * k, 16 * k);
   }
   g.restore();
 }

@@ -142,6 +142,50 @@ across consecutive real frames; the cloud-drift offset advances smoothly every f
 no code change was made — touching the working render path would only risk a regression.
 (Unlike §1/§2, where the already-working main path hid a genuine edge-case bug that was fixed.)
 
+## UPDATE-polish §4 — 3D held + inventory item rendering (2026-07-19)
+
+**Held viewmodel — already per-spec, verified, not re-implemented.** The held block has
+been a real 3D cube since the base build: `Game.updateViewmodel` uses `blockCubeGeometry`
+(a BoxGeometry whose six faces carry `BLOCKS[id].tileIndex` per-face atlas tiles, cached
+per id) at yaw 45° below the eye line, and tools/items use an angled flat quad
+(`tileSpriteGeometry`, rotation (0.25, −π/2+0.35, 0.44)). Verified structurally headless
+(BoxGeometry / 24 verts / per-face UV sets differ; PlaneGeometry rotated for tools). §4's
+real gap was the **inventory icons**, which were flat 2D atlas CSS backgrounds.
+
+**Inventory/menu icons — cached isometric 3D renders (new `src/ui/blockIcons.js`).**
+- A lazy offscreen 64×64 `THREE.WebGLRenderer` (alpha, ortho camera on the (1,1,1) axis —
+  the classic GUI dimetric, yaw 45° / pitch ≈35.26°) renders the SAME `blockCubeGeometry`
+  the world and viewmodel use, so icon faces can never drift from world rendering. Per-face
+  GUI shading (top 1.0 / X-sides 0.80 / Z-sides 0.62) comes from six `MeshBasicMaterial`s
+  over BoxGeometry's face groups — no lights, no color-space surprises, and the shared
+  cached geometry is never mutated.
+- Rendered **once per block id**, cached as both a 2D canvas (glint source) and a data URL
+  (CSS `background-image`); slots reuse the cache forever. Memory ceiling ≈ all ~190 block
+  ids × (16 KB canvas + ~4 KB URL) ≈ 4 MB; nothing renders per frame (500 cached lookups
+  measure 0.00 ms).
+- **Which items go 3D:** exactly full-cube blocks — `kind === 'block'`, placeable, no
+  explicit flat `sprite` art, and the block's registry `shape === 'cube'` (the default).
+  Sprite-shaped blocks (torch, flowers, doors, rails-class), partial shapes (slab-like,
+  skulls, dragon egg, beacon…) and all tools/items keep their flat atlas sprite, matching
+  §4's block-vs-item distinction.
+- All icon paints funnel through the new `hud.paintItemIcon` (used by `paintSlotIcon` and
+  the creative-tab strip), so HUD hotbar, containers, creative palette and trade chips all
+  agree; both flip directions (block ⇄ item) clear the other mode's state.
+
+**Glint (08 §11) preserved.** `paintGlintIcon` is size-generalized (k = size/16; at k = 1 it
+is byte-identical to the old painter) and takes an optional source canvas: a glinted BLOCK
+slot composites the shimmer over the 3D icon at 48×48 with the same source-atop silhouette
+clip; glinted flat items keep the 16×16 path. Verified: corner transparent (clip holds),
+shimmer scales, un-glinting restores the plain 3D icon.
+
+**Verified (headless, 16 checks):** icon3d class + data-URL for blocks / atlas sprite for
+items / clean flips; pixel checks — transparent isometric corners, opaque faces, top
+brighter than both sides, sides distinct, grass top green (per-face tiles proven); cache
+identity; glint 16/48 px paths; held block = BoxGeometry with distinct per-face UVs, held
+tool = rotated PlaneGeometry; inventory shows both icon kinds; and an interleaved A/B fps
+run (3D 30/32 avg vs flat 31 avg — within noise, no per-frame cost). 100% procedural — the
+only pixel source is the runtime-painted atlas.
+
 ## E11 — 13-BOSSES + beacon (2026-07-19)
 
 Built on E10's End arena + E7's wither skulls/soul blocks + E9's status engine.

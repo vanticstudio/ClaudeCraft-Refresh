@@ -3,6 +3,7 @@
 import { ITEMS } from '../registry/items.js';
 import { BLOCKS } from '../registry/blocks.js';
 import { isGlinted, paintGlintIcon } from '../render/glint.js';
+import { icon3dBlockIdFor, blockIconUrl, blockIconCanvas } from './blockIcons.js';   // UPDATE-polish §4
 import { EFFECT, EFFECT_META } from '../status/effects.js';
 const ROMAN = ['', 'I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII'];
 
@@ -27,33 +28,60 @@ export function tileForItemId(game, id) {
 export const glintFrame = { n: 0 };
 
 /**
+ * UPDATE-polish §4 — paint an (unglinted) item icon. Full-cube blocks get the
+ * cached isometric 3D render as the background image; sprite-shaped blocks and
+ * all tools/items keep the flat atlas sprite. Both directions clear the other
+ * mode's state, so a slot can flip block ⇄ item freely.
+ */
+export function paintItemIcon(el, game, itemId) {
+  const bid = icon3dBlockIdFor(itemId);
+  if (bid != null) {
+    el.classList.remove('icon');
+    el.classList.add('icon3d');
+    el.style.backgroundPosition = '';
+    el.style.backgroundImage = `url(${blockIconUrl(bid)})`;
+  } else {
+    el.classList.remove('icon3d');
+    el.style.backgroundImage = '';
+    iconCss(el, tileForItemId(game, itemId));
+  }
+}
+
+/**
  * 08 §11 — paint one slot icon. An enchanted stack gets a <canvas> with the
- * silhouette-clipped shimmer; everything else keeps the plain atlas-background
- * div, which costs nothing.
+ * silhouette-clipped shimmer; everything else keeps the plain background div,
+ * which costs nothing.
  *
  * Both the HUD hotbar and every container slot funnel through here, so the two
  * cannot drift apart on which stacks glint.
  */
 export function paintSlotIcon(el, game, stack) {
-  const tile = tileForItemId(game, stack.id);
   if (!isGlinted(stack)) {
     if (el._glintCanvas) { el._glintCanvas.remove(); el._glintCanvas = null; }
-    iconCss(el, tile);
+    paintItemIcon(el, game, stack.id);
     return;
   }
+  // §4 — a glinted 3D block icon composites at 48×48 (the shimmer clip needs the
+  // isometric silhouette, not the flat tile); flat items keep the 16×16 canvas.
+  const bid = icon3dBlockIdFor(stack.id);
+  const px = bid != null ? 48 : 16;
   let c = el._glintCanvas;
-  if (!c) {
+  if (!c || c.width !== px) {
+    if (c) c.remove();
     c = document.createElement('canvas');
-    c.width = 16; c.height = 16;
+    c.width = px; c.height = px;
     c.className = 'glint-canvas';
     el.appendChild(c);
     el._glintCanvas = c;
   }
-  // The div's own atlas background would show through the canvas's transparent
+  // The div's own background would show through the canvas's transparent
   // pixels, so it must be cleared once the canvas takes over.
   el.classList.remove('icon');
+  el.classList.remove('icon3d');
   el.style.backgroundPosition = '';
-  paintGlintIcon(c, game.atlas, tile, glintFrame.n);
+  el.style.backgroundImage = '';
+  paintGlintIcon(c, game.atlas, tileForItemId(game, stack.id), glintFrame.n,
+    bid != null ? blockIconCanvas(bid) : null);
 }
 
 export class Hud {
