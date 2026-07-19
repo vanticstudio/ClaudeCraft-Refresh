@@ -13,6 +13,11 @@ export const DEFAULTS = Object.freeze({
   musicMode: 'menu',       // §4A: 'off' | 'menu' | 'full'
   mouseSensitivity: 1.0,   // 03 §18.1 — range 0.1–3.0
   viewBobbing: true,       // 03 §18.4
+  // UPDATE-polish §5 — settings-tab additions. Creative mode is deliberately NOT
+  // here: gameMode is per-world state persisted in the save (a global override
+  // would corrupt survival worlds); the settings toggle drives the live player.
+  renderDistance: 8,       // chunks, 4–16 — drives RENDER_RADIUS at runtime
+  debugOverlay: false,     // F3 overlay state (F3 key stays a shortcut)
 });
 
 export function loadOptions() {

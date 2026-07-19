@@ -109,6 +109,22 @@ export class Menus {
             <input type="checkbox" id="opt-viewBobbing">
             <output></output>
           </label>
+          <!-- UPDATE-polish §5 — game controls: render distance / debug / creative -->
+          <label class="cc-row">
+            <span>Render distance</span>
+            <input type="range" min="4" max="16" step="1" id="opt-renderDistance">
+            <output id="out-renderDistance"></output>
+          </label>
+          <label class="cc-row">
+            <span>Debug overlay</span>
+            <input type="checkbox" id="opt-debugOverlay">
+            <output></output>
+          </label>
+          <label class="cc-row" id="row-creative">
+            <span>Creative mode</span>
+            <input type="checkbox" id="opt-creative">
+            <output></output>
+          </label>
           <div class="cc-note">Menu music plays original/cleared tracks only.
             In-game audio is fully synthesized.</div>
           <!-- text buttons: the art pack has no Back/Delete plates, and
@@ -205,6 +221,37 @@ export class Menus {
       this.applyOptions();
     });
 
+    // UPDATE-polish §5 — render distance: persists in options; main.js's
+    // onOptions hook applies setRenderRadius live (chunks stream in/out).
+    const rd = $('opt-renderDistance'), rdOut = $('out-renderDistance');
+    rd.value = this.options.renderDistance ?? 8;
+    rdOut.textContent = rd.value;
+    rd.addEventListener('input', () => {
+      this.options.renderDistance = Number(rd.value);
+      rdOut.textContent = rd.value;
+      this.applyOptions();
+    });
+
+    // §5 — debug overlay: same state as F3 (main.js keeps key + option in sync).
+    const dbg = $('opt-debugOverlay');
+    dbg.checked = this.options.debugOverlay === true;
+    dbg.addEventListener('change', () => {
+      this.options.debugOverlay = dbg.checked;
+      this.applyOptions();
+    });
+
+    // §5 — creative mode: same action as F4, driving the LIVE player via
+    // pendingGameMode (applied inside Player.tick per 18 §1.4's atomicity).
+    // Persistence rides the per-world save (gameMode), NOT options — a global
+    // override would stomp every world's own mode. Refreshed on sheet open;
+    // disabled on the title screen where no player exists.
+    const cr = $('opt-creative');
+    cr.addEventListener('change', () => {
+      const pl = this.game.player;
+      if (!pl) return;
+      pl.pendingGameMode = cr.checked ? 1 : 0;   // GameMode.CREATIVE : SURVIVAL
+    });
+
     this.applyTitleButtons();
   }
 
@@ -254,6 +301,19 @@ export class Menus {
 
   showSettings(on) {
     if (on) this.settingsOpener = document.activeElement;
+    // §5 — sync the game-control rows to live state on every open: F3/F4 may
+    // have flipped them since, and creative is meaningless without a player.
+    if (on) {
+      const pl = this.game.player;
+      const cr = document.getElementById('opt-creative');
+      const dbg = document.getElementById('opt-debugOverlay');
+      if (cr) {
+        cr.disabled = !pl;
+        cr.checked = !!pl && (pl.pendingGameMode ?? pl.gameMode) === 1;
+        document.getElementById('row-creative')?.classList.toggle('disabled', !pl);
+      }
+      if (dbg) dbg.checked = this.options.debugOverlay === true;
+    }
     this.el.settings.hidden = !on;
     // Over PAUSE the world is still rendered behind: use a scrim instead of the
     // title's opaque desert sheet, which would black the game out.

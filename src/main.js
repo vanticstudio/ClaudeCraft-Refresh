@@ -4,7 +4,7 @@ import './ui/style.css';
 import './ui/title.css';
 import { createThemeMusic } from './audio/themeMusic.js';
 import { audio } from './audio/engine.js';
-import { loadOptions } from './ui/options.js';
+import { loadOptions, saveOptions } from './ui/options.js';
 import { buildAtlas } from './assets/atlas.js';
 import { finalizeBlockTiles } from './registry/blocks.js';
 import { Game } from './Game.js';
@@ -16,7 +16,7 @@ import { Menus } from './ui/menus.js';
 import { Containers } from './ui/containers.js';
 import { DebugOverlay } from './ui/debug.js';
 import { SaveManager } from './save/saveManager.js';
-import { STATE, GameMode, KEYBINDS } from './constants.js';
+import { STATE, GameMode, KEYBINDS, setRenderRadius, RENDER_RADIUS } from './constants.js';
 import { Chat } from './ui/chat.js';
 import { NetMenus } from './ui/netMenus.js';
 import { NetClient } from './net/NetClient.js';
@@ -37,6 +37,9 @@ async function boot() {
   // engine can be constructor-injected. One options object is loaded here and
   // shared with Menus — two copies would diverge on every slider drag.
   const options = loadOptions();
+  // UPDATE-polish §5 — apply the persisted render distance before any world
+  // streams (setRenderRadius also derives GENERATE/UNLOAD from it).
+  setRenderRadius(options.renderDistance ?? 8);
   audio.boot();
   audio.setOptions(options);
 
@@ -54,6 +57,7 @@ async function boot() {
   const hud = new Hud(game, overlayEl);
   const bossBar = new BossBar(overlayEl);   // 13-BOSSES §1 — mounts inside Hud's #boss-bars
   const debug = new DebugOverlay(game, overlayEl);
+  if (options.debugOverlay) debug.toggle();          // §5 — persisted F3 state
   const containers = new Containers(game, screensEl);
   const chat = new Chat(game, overlayEl);
   const netContainer = new NetContainer(game, screensEl);   // 14 §6 — client chest UI
@@ -69,7 +73,15 @@ async function boot() {
   };
 
   const menus = new Menus(game, screensEl, {
-    onOptions: opts => audio.setOptions(opts),
+    onOptions: opts => {
+      audio.setOptions(opts);
+      // §5 — live render-distance: update the radii and force the chunk manager
+      // to rebuild its request list next tick (unloadPass trims within a second).
+      const applied = setRenderRadius(opts.renderDistance ?? 8);
+      if (game.chunkManager) game.chunkManager.lastPlayerChunk = null;
+      // §5 — debug toggle from the sheet mirrors F3 exactly.
+      if (!!opts.debugOverlay !== debug.visible) debug.toggle();
+    },
     onNewWorld: async seedInput => {
       await save.deleteWorld();
       await save.open();
@@ -177,6 +189,10 @@ async function boot() {
     if (chat.open) return;
     if (code === 'F3') {
       debug.toggle();
+      // §5 — F3 stays a shortcut; mirror its state into the persisted option so
+      // the settings checkbox and the key never diverge.
+      options.debugOverlay = debug.visible;
+      saveOptions(options);
     } else if ((code === KEYBINDS.chat || code === 'Enter' || code === 'NumpadEnter') && game.net && game.state === STATE.PLAYING) {
       // 14 §8.3 — T (or Enter) opens chat; pointer lock is kept.
       chat.openInput();

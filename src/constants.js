@@ -19,10 +19,21 @@ export const blockIndex = (x, y, z) => (y << 8) | (z << 4) | x;
 export const chunkKey = (cx, cz) => cx + ',' + cz;
 
 // --- Streaming radii (01 §4.3) ---
-export const GENERATE_RADIUS = 9;
-export const RENDER_RADIUS = 8;
+// UPDATE-polish §5 — RENDER_RADIUS is runtime-adjustable (settings slider 4–16).
+// `let` + ESM live bindings: every importer reads the current value inside its
+// methods, so setRenderRadius takes effect on the next chunk tick / fog frame.
+// GENERATE (+1) and UNLOAD (+3) keep their base ratios; SIM_RADIUS is gameplay
+// range and deliberately stays fixed at 6 (UNLOAD ≥ SIM+1 holds at minimum 4).
+export let GENERATE_RADIUS = 9;
+export let RENDER_RADIUS = 8;
 export const SIM_RADIUS = 6;
-export const UNLOAD_RADIUS = 11;
+export let UNLOAD_RADIUS = 11;
+export function setRenderRadius(r) {
+  RENDER_RADIUS = Math.max(4, Math.min(16, r | 0));
+  GENERATE_RADIUS = RENDER_RADIUS + 1;
+  UNLOAD_RADIUS = RENDER_RADIUS + 3;
+  return RENDER_RADIUS;
+}
 export const WORKER_COUNT = 2;
 export const MAX_JOBS_IN_FLIGHT = 16;
 export const REMESH_FRAME_BUDGET_MS = 6;

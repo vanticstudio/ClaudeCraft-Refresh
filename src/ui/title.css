@@ -345,3 +345,6 @@
   .cc-sun, .cc-cloud, .cc-wordmark, .cc-logo, .cc-prompt { animation: none }
   .cc-btn { transition: none }
 }
+
+/* UPDATE-polish §5 */
+.cc-row.disabled { opacity: 0.45; }
