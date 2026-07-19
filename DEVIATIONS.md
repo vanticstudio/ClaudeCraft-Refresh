@@ -275,6 +275,65 @@ creative checkbox enters creative via pendingGameMode, F4 path returns to
 survival, reopened sheet reflects live state; reload restores RENDER_RADIUS=6,
 both options, and the visible overlay; no page errors.
 
+## UPDATE-village-gen-rework — layout content + terrain adaptation (2026-07-19)
+
+The deterministic multi-chunk stamp architecture is UNCHANGED (pure function of the
+anchor seed; phase-ordered op replay; in-chunk-only writes; heightAt-only terrain
+queries; bedrock never overwritten). The rework replaces the layout CONTENT:
+
+1. **Template pool (§3.1/§4.3)** replaces the single 5×5 box: small_house 5×5,
+   medium_house 7×7 L-shape (2 beds, 40% composter), library (bookshelf wall +
+   lectern), church 7×9 with a raised tower + steeple torch, smithy (blast furnace/
+   smithing table/grindstone + walled lava forge), butcher (smoker + side pen with a
+   herd record), fletcher 5×6 (barrels), at-grade farm 7×9 and animal_pen 6×6 —
+   spec's weighted pool with per-template maxima and the ≥2-house/≥1-farm guarantee.
+   Walls are procedural rings (corner logs, auto windows at wall-face midpoints)
+   over the spec footprints; wall height 3 (interior air ≥3 per the UPDATE, one
+   above the spec diagrams' 2). Roofs are STEPPED PYRAMIDS — the UPDATE explicitly
+   overrides §4.4's flat-slab adaptation.
+2. **Terrain leveling** — every building levels a platform: grade = footprint
+   median clamped ±2 toward the ROAD elevation (so the door threshold is always
+   flush with the street), hillside cleared above, and a per-column foundation
+   filled DOWN to terrain (≤8 deep) so nothing floats and nothing clips. Paths
+   fill dirt below and clear tall above RELATIVE TO EACH COLUMN'S OWN TERRAIN
+   (a tree roots above a downhill path; spruce reaches ~12 above its ground).
+   Well/plaza clears raised the same way.
+3. **Farm at grade** — fenced, torch-lit plot: wet farmland (state bit 8), crops
+   in stages 4–7 (wheat/carrot/potato by posHash on the detail stream), water
+   recessed one block into the soil, composter + chest at the walk-in gate. No pit.
+4. **Doors face the path** — the whole template rotates door-toward-path; door ops
+   now carry the correct STATE for both halves (facing + upper bit), and a grade-
+   following stub connects every door to its road. Ops gained an optional `state`
+   nibble and `stampVillages` writes a `states` array (threaded through
+   features.decorate/terrain.generateChunk) — beds get facing+head states, crops
+   stages, farmland moisture.
+5. **Spacing/size** — spec arm lengths 40–72 with border reflection and the >4-
+   consecutive-water termination; AABBs inflated by 2 (pen strip reserved too);
+   slots every 10–14 steps skipping the first 10 (the spec's 7+rngInt(6) cadence
+   rejected ~88% of proposals on overlap), each proposal retrying the opposite
+   side and redrawing ≤2 templates; a deterministic BACKFILL sweep (stride 4)
+   tops up toward the §3.1 target; lamp posts every 12th step are emitted AFTER
+   buildings so none lands in a doorway. Natural villages land 3–6+ varied
+   buildings (avg ≈4.6 across 8 seeds) — under-fill on hostile terrain is
+   accepted per §3.2 ("village may under-fill; fine").
+
+**Hardening found along the way:** the region/layout caches are now keyed by
+worldSeed as well (module-level caches could serve a stale village if the module
+were ever reused across worlds; production spawns a fresh worker per world, so
+this was latent). **Pre-existing artifact observed, out of scope:** trees can
+generate floating over cave/ravine voids anywhere in the world (tree placement
+uses nominal heightAt while carving removed the actual ground) — visible near
+some villages but present with no village nearby; logged, not introduced here.
+
+**Verified:** browser acceptance on a NATURAL village (seed alpha) 12/12 — every
+door lower+upper state-paired, facing a clear cell, walkable approach; beds
+foot+head paired; farm wet/staged/hydrated/fenced/lit; every village structural
+column grounded; bell; 5 station types; villagers spawn (one claimed the fletching
+table → fletcher with 2 trades, professions/trades intact). Determinism: two
+independent contexts produce byte-identical stamps across all 121 chunks of the
+village span; chunk visit order does not change the result (no seams); different
+seeds differ. Force-spawn removed; build clean.
+
 ## E11 — 13-BOSSES + beacon (2026-07-19)
 
 Built on E10's End arena + E7's wither skulls/soul blocks + E9's status engine.

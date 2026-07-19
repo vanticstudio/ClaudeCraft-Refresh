@@ -75,7 +75,7 @@ export function createGenerator(seed) {
     const states = new Uint8Array(32768);
     const spawns = rollHerd(ctx, cx, cz);
     stronghold.stampChunk(blocks, cx, cz, spawns, states);
-    const village = decorate(ctx, blocks, cx, cz, colD);   // 12-VILLAGES: stamps + meta
+    const village = decorate(ctx, blocks, cx, cz, colD, states);   // 12-VILLAGES: stamps + meta + states
     const heightMap = computeHeightMap(blocks);
     const biomes = Uint8Array.from(colD.biome);         // copy: cache stays live
     if (village?.spawns?.length) for (const s of village.spawns) spawns.push(s);
