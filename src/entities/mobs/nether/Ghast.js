@@ -3,6 +3,7 @@
 import * as THREE from 'three';
 import { Mob } from '../Mob.js';
 import { GhastFireball } from '../../GhastFireball.js';
+import { raycastBlocks } from '../../../world/raycast.js';
 import { makeAtlasMaterial } from '../../ItemEntity.js';
 import { emitSound, at } from '../../../audio/engine.js';
 
@@ -39,6 +40,7 @@ export class Ghast extends Mob {
       this.driftTimer = 40 + Math.floor(this.world.rng() * 40);
       this.driftDir = { x: (this.world.rng() * 2 - 1), y: (this.world.rng() * 2 - 1) * 0.5, z: (this.world.rng() * 2 - 1) };
     }
+    this.avoidSolid();
     const s = 0.03;
     this.pos.x += this.driftDir.x * s; this.pos.y += this.driftDir.y * s; this.pos.z += this.driftDir.z * s;
 
@@ -57,6 +59,24 @@ export class Ghast extends Mob {
       this.charge = 0;
     }
     this.age++;
+  }
+
+  // §7.3 "gently avoiding solid blocks (steer away when a short forward raycast
+  // hits within 4 m)" — flip the drift component along the face it would enter.
+  avoidSolid() {
+    const d = this.driftDir;
+    const len = Math.hypot(d.x, d.y, d.z);
+    if (len < 1e-4) return;
+    const cy = this.pos.y + this.height * 0.5;
+    const hit = raycastBlocks(this.world, this.pos.x, cy, this.pos.z,
+      d.x / len, d.y / len, d.z / len, 4, { opaqueOnly: true });
+    if (!hit) return;
+    // hit.face points back out of the block — push the drift that way
+    const [fx, fy, fz] = hit.face;
+    if (fx) d.x = Math.abs(d.x) * fx;
+    if (fy) d.y = Math.abs(d.y) * fy;
+    if (fz) d.z = Math.abs(d.z) * fz;
+    this.driftTimer = Math.min(this.driftTimer, 20);
   }
 
   fireAt(p) {
