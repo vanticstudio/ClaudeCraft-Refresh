@@ -191,6 +191,13 @@ Studios; it is referenced here only to describe the genre this project recreates
   Still 100% procedural — same 16-px grid, same atlas layout — and the atlas now
   bakes in ~39 ms at boot.
 
+- **2026-07-19** — **Settings: debug, creative & render distance.** The in-game
+  Options sheet (from Pause) now has a **Debug overlay** toggle (two-way synced
+  with F3), a **Creative mode** toggle (same as F4, follows the current world's
+  saved mode), and a **Render distance** slider (4–16 chunks) that streams and
+  unloads chunks live — fog distance follows along. Render distance and the
+  debug overlay persist across sessions; F3/F4 still work as shortcuts.
+
 - **2026-07-19** — **3D item icons.** Inventory, hotbar, creative-palette and trade
   icons for full-cube blocks are now proper **isometric 3D renders** — top face lit,
   the two visible sides shaded like the world — instead of flat single-tile sprites.

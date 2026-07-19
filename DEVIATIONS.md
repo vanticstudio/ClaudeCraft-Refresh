@@ -238,6 +238,43 @@ ore, iron pickaxe) approved before going wide; full bake with 0 empty tiles acro
 355; representative 36-tile gallery + in-world screenshot cohesive; §4 3D-icon suite
 re-run 16/16 over the new atlas (icons rebuild from it at runtime); build clean.
 
+## UPDATE-polish §5 — settings tab: debug, creative, render distance (2026-07-19)
+
+Three controls added to the in-game Options sheet (reachable from PAUSE, per 16
+AMENDS 01 §15.3's top-level panel):
+
+- **Debug overlay** toggle — same state as F3, two-way: the checkbox drives
+  `DebugOverlay`, and the F3 key mirrors its result back into the persisted
+  option, so the two can never diverge. Persisted as `debugOverlay` in
+  `claudecraft.options.v1` and re-applied at boot.
+- **Creative mode** toggle — same action as F4, driving the LIVE player through
+  `pendingGameMode` (applied inside `Player.tick`, honoring 18 §1.4's in-tick
+  atomicity). The checkbox re-syncs to the player's actual mode on every sheet
+  open and is disabled on the title screen where no player exists. **Deliberate
+  deviation from §5's "persist all three in options":** `gameMode` is per-world
+  state already persisted in the save (E13's `meta.players` records); a global
+  options flag would stomp every world's own mode on load, so creative
+  persistence stays with the save. F3/F4 both remain as shortcuts.
+- **Render distance** slider (4–16 chunks) — `RENDER_RADIUS` is now a mutable
+  ESM live binding with `setRenderRadius(r)`, which also derives
+  `GENERATE_RADIUS = r+1` and `UNLOAD_RADIUS = r+3` (the base 8/9/11 ratios).
+  `SIM_RADIUS` stays fixed at 6 (simulation range is gameplay, not rendering;
+  `UNLOAD ≥ SIM+1` still holds at the minimum). Every consumer reads the
+  bindings inside its methods, so a change takes effect on the next chunk tick —
+  the sheet's onOptions hook also nulls `chunkManager.lastPlayerChunk`, forcing
+  a request-list rebuild, and the regular unload pass trims within a second.
+  DayNight's fog reads `RENDER_RADIUS × 16` per frame, so the fog distance
+  follows the slider live. Persisted as `renderDistance` and applied at boot
+  before any world streams. The multiplayer chunk-stream radius (14 §2.3) stays
+  the fixed spec constant — the host does not negotiate render distance.
+
+Verified headless (14 checks): controls present; boot radii 8/9/11; slider→4
+live-unloads (361→225 chunks, fog far 64) and slider→12 live-streams (729
+chunks); checkbox shows the overlay and F3 hides it while persisting `false`;
+creative checkbox enters creative via pendingGameMode, F4 path returns to
+survival, reopened sheet reflects live state; reload restores RENDER_RADIUS=6,
+both options, and the visible overlay; no page errors.
+
 ## E11 — 13-BOSSES + beacon (2026-07-19)
 
 Built on E10's End arena + E7's wither skulls/soul blocks + E9's status engine.
