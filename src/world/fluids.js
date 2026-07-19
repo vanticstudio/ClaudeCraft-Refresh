@@ -3,6 +3,8 @@
 // Effective strength S = 8 − spread (source/falling = 8).
 import { BLOCKS, B, WATERLOGGED, STATE_NIBBLE, isWaterCellAt, isWaterSourceAt } from '../registry/blocks.js';
 import { emitSound, at } from '../audio/engine.js';
+import { getDimension } from './dimensions.js';
+import { removeFire } from './fire.js';
 
 // 01 §6.3 fluid mix: hiss + the stone-family place, per 16 §5.2.
 function emitQuench(x, y, z) {
@@ -12,6 +14,13 @@ function emitQuench(x, y, z) {
 
 export const FLUID_INTERVAL = { water: 5, lava: 30 };
 const FLUID_DROP = { water: 1, lava: 2 };
+
+// 10 AMENDS 06 §6.1 — in a dimension flagged `lavaFast` (dim 1) lava takes
+// water-like constants: 10 t interval and a 1-level drop per step. The "max 7
+// cells horizontally" half of the amendment falls out of the drop: S starts at
+// 8 and each step spends `drop`, so drop 1 reaches 7 cells and the Overworld's
+// drop 2 reaches 3.
+const FAST_LAVA = { interval: 10, drop: 1 };
 
 const H4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
 
@@ -43,12 +52,25 @@ export class Fluids {
     if (!blk) return false;
     if (id === B.AIR || id === B.FIRE) return true;
     if (id === B.LADDER) return false;   // ladders dam fluids (06 §6.1)
+    // 07 AMENDS 06 §6.1 — repeater and comparator pop with drops when flooded.
+    // They need naming: both carry a 2/16 collision box (07 §13.2 "Solid"), so
+    // the `!blk.collidable` test below excludes them.
+    if (id === B.REPEATER || id === B.COMPARATOR) return true;
     // fluid-destructible: pops with drops when flooded (06 §6.1)
     return !blk.collidable && !blk.fluid && blk.shape !== 'none';
   }
 
+  /** 10 AMENDS 06 §6.1 — true only for lava in a `lavaFast` dimension. */
+  isFast(fluid) {
+    return fluid === 'lava' && getDimension(this.world.activeDim)?.lavaFast === true;
+  }
+
+  interval(fluid) { return this.isFast(fluid) ? FAST_LAVA.interval : FLUID_INTERVAL[fluid]; }
+
+  drop(fluid) { return this.isFast(fluid) ? FAST_LAVA.drop : FLUID_DROP[fluid]; }
+
   schedule(x, y, z, fluid) {
-    this.world.scheduleTick(x, y, z, FLUID_INTERVAL[fluid]);
+    this.world.scheduleTick(x, y, z, this.interval(fluid));
   }
 
   wake(x, y, z) {
@@ -75,6 +97,11 @@ export class Fluids {
       if (BLOCKS[old].fluid) {
         // opposite fluid: interaction decides the block (§6.3)
         if (this.interact(x, y, z, fluidId, old)) return;
+      } else if (old === B.FIRE && BLOCKS[fluidId].fluid === 'water') {
+        // 15 §15 — "fire flooded by water" is one of the audible douses; only
+        // the quiet age-out of §2.4 is silent. Routing through removeFire also
+        // drops the §6.4 fireOrigins entry at the fire engine's own chokepoint.
+        removeFire(world, x, y, z, true);
       } else if (this.canReplace(old)) {
         world.popBlock(x, y, z, { silent: false });
       } else {
@@ -145,7 +172,7 @@ export class Fluids {
     const logged = (state & WATERLOGGED) !== 0;
     if (!logged && (!blk || !blk.fluid)) return;
     const fluid = logged ? 'water' : blk.fluid;
-    const drop = FLUID_DROP[fluid];
+    const drop = this.drop(fluid);
     let cur = this.strength(id, state, fluid);
     // The id used for anything this cell POURS OUT. A bit-7 fence must spread
     // WATER, not replicate fences — the base code spreads `id` verbatim.

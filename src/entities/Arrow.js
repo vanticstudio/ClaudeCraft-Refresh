@@ -5,7 +5,7 @@ import { raycastBlocks } from '../world/raycast.js';
 import { tileSpriteGeometry, makeAtlasMaterial, entityAtlas } from './ItemEntity.js';
 import { idOf } from '../registry/items.js';
 import { emitSound, at } from '../audio/engine.js';
-import { matOf, B } from '../registry/blocks.js';
+import { BLOCKS, matOf, B } from '../registry/blocks.js';
 import { POTIONS, potionTint } from '../status/potions.js';
 import { addEffect, applyInstant } from '../status/effects.js';
 
@@ -31,6 +31,7 @@ export class Arrow extends Entity {
     this.noPickup = noPickup;
     this.stuck = false;
     this.stuckAge = 0;
+    this.stuckBlock = null;      // 07 AMENDS 05 §11 — cell to notify on stick/despawn
     this.aimFromVelocity();
   }
 
@@ -47,7 +48,9 @@ export class Arrow extends Entity {
   tick() {
     this.baseTick();
     if (this.stuck) {
-      if (++this.stuckAge > 1200) { this.dead = true; return; }
+      // dead FIRST, then notify: getEntitiesInBox skips dead entities, so the
+      // struck block's re-poll sees the cell as empty and can release (07 §6.2).
+      if (++this.stuckAge > 1200) { this.dead = true; this.notifyStuckBlock(); return; }
       // 08 §5.9 — an Infinity arrow renders normally but is never collectible.
       if (this.fromPlayer && !this.noPickup) this.tryPickup();
       return;
@@ -137,6 +140,8 @@ export class Arrow extends Entity {
       this.pos.x = blockHit.px; this.pos.y = blockHit.py - 0.25; this.pos.z = blockHit.pz;
       this.stuck = true;
       this.vel.x = this.vel.y = this.vel.z = 0;
+      this.stuckBlock = { x: blockHit.x, y: blockHit.y, z: blockHit.z };
+      this.notifyStuckBlock();
       // §3.3: the thud + the struck block's own step voice at 0.5
       emitSound('entity.arrow.hit_block', at(blockHit.px, blockHit.py, blockHit.pz));
       const cls = matOf(blockHit.id);
@@ -164,8 +169,22 @@ export class Arrow extends Entity {
         ? { id: idOf('tipped_arrow'), count: 1, tags: { potionId: this.potionId } }
         : { id: idOf('arrow'), count: 1 };
       const leftover = player.give(stack);
-      if (leftover === 0) this.dead = true;
+      if (leftover === 0) { this.dead = true; this.notifyStuckBlock(); }
     }
+  }
+
+  /**
+   * 07 AMENDS 05 §11 — an arrow that becomes stuck (and again when it despawns
+   * or is collected) notifies the block it is lodged in, so a wooden button
+   * presses on impact and releases once the arrow is gone (07 §6.2). Without
+   * this the block never learns an arrow arrived and that branch is dead code.
+   */
+  notifyStuckBlock() {
+    const b = this.stuckBlock;
+    if (!b) return;
+    const world = this.world;
+    const id = world.getBlock(b.x, b.y, b.z);
+    BLOCKS[id]?.neighborUpdate?.(world, b.x, b.y, b.z, world.getState(b.x, b.y, b.z));
   }
 
   buildMesh() {
