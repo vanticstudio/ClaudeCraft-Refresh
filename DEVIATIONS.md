@@ -193,6 +193,51 @@ tool = rotated PlaneGeometry; inventory shows both icon kinds; and an interleave
 run (3D 30/32 avg vs flat 31 avg — within noise, no per-frame cost). 100% procedural — the
 only pixel source is the runtime-painted atlas.
 
+## UPDATE-polish §6 — procedural texture refinement pass (2026-07-19)
+
+A cohesive art pass over the atlas painters (`src/assets/tilePainters.js`), built from
+three shared primitives so the whole set carries one look. 16-px grid and atlas layout
+untouched (355 tiles, same names/indices); 100% procedural — the only pixel source
+remains the runtime painters; nothing downloaded, nothing imitating copyrighted art.
+
+1. **`grain`** — coherent value noise (smoothstep-interpolated coarse lattice + a
+   whisper of dither) replaces per-pixel white noise as the base fill. Rewiring the
+   shared `noise()` helper (same signature/amplitude semantics) upgraded every
+   painter built on `noise`/`speckle`/`blotch` — stone, dirt, sand, netherrack,
+   end stone, wool, fluids… — from TV static to material in one place. Lattice
+   cells stretch per material: stone gets horizontal strata, planks along-board
+   streaks, turf small clumps.
+2. **`edgeLight`** — a subtle top-left light (top ×1.10 / left ×1.04 / bottom ×0.82 /
+   right ×0.91) applied inside the full-cube helpers (`speckle`, `blotch`, `bark`,
+   `birchBark`, `rings`, `planks`, `oreTile2`) and the bespoke cube painters, matching
+   the world's directional face shading and the §4 icon pass, so adjacent blocks read
+   as separate cells. Non-cube/noise-only painters (fluids, snow, cutouts) deliberately
+   skip it.
+3. **`bevelSprite`** — item sprites get a lit top-left rim (×1.24) + bottom-right
+   shadow outline (×0.55), with 1-px-thin strokes taking the mean so they never vanish.
+   Applied as a single sweep over all 81 `item_*` painters (tools, armor, food,
+   materials) — zero pixel-map edits.
+
+Specific reworks: **planks** (staggered joints kept, bevelled seams — dark seam row +
+lit slat top), **grass side** (ragged turf lip, lit top row, 1-px shadow fringe cast
+into coherent dirt), **grass top** (turf grain + blade streaks), **leaf** (dark
+underlayer, four-tone clumps, shadow-rimmed holes → layered canopy), and **ores**
+split into `oreFlecks` (chunkier irregular blobs + dark shadow-side rim + top-left
+gleam; used over stone AND netherrack bases so nether ores keep their base) +
+`oreTile2` (strata base + flecks + edge light).
+
+**Perf:** the edge-light/bevel passes do ~300 small `getImageData`/`putImageData`
+round-trips during the one-time bake; on a GPU-backed canvas each pays a sync stall
+(measured 1.5 s boot cost). Fixed by creating the atlas canvas with
+`willReadFrequently: true` (it is only a build target three.js uploads once) —
+bake now ≈ 39 ms, faster than the requirement. Runtime rendering is untouched
+(same 512×512 texture; settled fps at baseline before/after).
+
+**Verified:** sample-first before/after strip (stone, grass top/side, oak planks, iron
+ore, iron pickaxe) approved before going wide; full bake with 0 empty tiles across all
+355; representative 36-tile gallery + in-world screenshot cohesive; §4 3D-icon suite
+re-run 16/16 over the new atlas (icons rebuild from it at runtime); build clean.
+
 ## E11 — 13-BOSSES + beacon (2026-07-19)
 
 Built on E10's End arena + E7's wither skulls/soul blocks + E9's status engine.

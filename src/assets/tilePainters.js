@@ -37,18 +37,18 @@ function rect(ctx, x0, y0, x, y, w, h, style) {
 function solid(ctx, x0, y0, c) {
   rect(ctx, x0, y0, 0, 0, 16, 16, c.startsWith('#') ? c : c);
 }
-// per-pixel value jitter ±a% brightness
+// §6 — base value fill. Was per-pixel white noise (±a%); now coherent grain
+// (smoothed coarse lattice + a whisper of dither) with the SAME signature, so
+// every painter built on noise/speckle/blotch upgrades from static to material
+// in one place. Amplitude semantics preserved (a ≈ overall contrast %).
 function noise(ctx, x0, y0, rng, c, a) {
-  const [r, g, b] = hexToRgb(c);
-  for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) {
-    const f = 1 + (rng() * 2 - 1) * a / 100;
-    px(ctx, x0, y0, x, y, css(r * f, g * f, b * f));
-  }
+  grain(ctx, x0, y0, rng, c, { amp: a, cellX: 3, cellY: 3, dither: Math.min(4, a / 2) });
 }
 function speckle(ctx, x0, y0, rng, c, f, d) {
   noise(ctx, x0, y0, rng, c, 6);
   const n = Math.round(256 * d / 100);
   for (let i = 0; i < n; i++) px(ctx, x0, y0, rng() * 16, rng() * 16, f);
+  edgeLight(ctx, x0, y0);                                   // §6 — full-cube users
 }
 function blotch(ctx, x0, y0, rng, c1, c2, n) {
   noise(ctx, x0, y0, rng, c1, 5);
@@ -72,18 +72,28 @@ function blotch(ctx, x0, y0, rng, c1, c2, n) {
       }
     }
   }
+  edgeLight(ctx, x0, y0);                                   // §6 — full-cube users
 }
+// §6 — planks: along-board coherent wood grain (wide lattice cells so streaks
+// run WITH each board), staggered joints, and a bevelled seam — dark seam row
+// with a lit first row on the board below, so boards read as separate slats.
 function planks(ctx, x0, y0, rng, c) {
+  grain(ctx, x0, y0, rng, c, { amp: 8, cellX: 8, cellY: 2, dither: 4 });
   const [r, g, b] = hexToRgb(c);
   const joints = [];
   for (let board = 0; board < 4; board++) joints.push(Math.floor(rng() * 16));
   for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) {
     const board = y >> 2;
-    let f = 1 + (rng() * 2 - 1) * 0.08;                     // grain jitter ±8%
-    if ((y & 3) === 3) f *= 0.7;                            // seam row −30%
-    if (x === joints[board]) f *= 0.7;                      // staggered joint
-    px(ctx, x0, y0, x, y, css(r * f, g * f, b * f));
+    let f = null;
+    if ((y & 3) === 3) f = 0.68;                            // seam shadow
+    else if ((y & 3) === 0 && y !== 0) f = 1.10;            // lit board top edge
+    if (x === joints[board]) f = (f ?? 1) * 0.72;           // staggered joint
+    if (f !== null) {
+      const k = f * (1 + (rng() * 2 - 1) * 0.04);
+      px(ctx, x0, y0, x, y, css(r * k, g * k, b * k));
+    }
   }
+  edgeLight(ctx, x0, y0);
 }
 function bark(ctx, x0, y0, rng, c1, c2) {
   let x = 0, which = rng() < 0.5;
@@ -100,6 +110,7 @@ function bark(ctx, x0, y0, rng, c1, c2) {
   }
   for (let i = 0; i < 8; i++)                                // random notches
     px(ctx, x0, y0, rng() * 16, rng() * 16, rng() < 0.5 ? c1 : c2);
+  edgeLight(ctx, x0, y0);                                    // §6
 }
 function birchBark(ctx, x0, y0, rng, c1, c2) {              // pale + black dashes
   noise(ctx, x0, y0, rng, c1, 6);
@@ -108,6 +119,7 @@ function birchBark(ctx, x0, y0, rng, c1, c2) {              // pale + black dash
     const w = 2 + Math.floor(rng() * 3);
     rect(ctx, x0, y0, dx, dy, Math.min(w, 16 - dx), 1, c2);
   }
+  edgeLight(ctx, x0, y0);                                    // §6
 }
 function rings(ctx, x0, y0, rng, c1, c2) {
   for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) {
@@ -117,35 +129,66 @@ function rings(ctx, x0, y0, rng, c1, c2) {
     const f = 1 + (rng() * 2 - 1) * 0.05;
     px(ctx, x0, y0, x, y, css(r * f, g * f, b * f));
   }
+  edgeLight(ctx, x0, y0);                                    // §6
 }
-function oreTile(ctx, x0, y0, rng, mineral) {
-  speckle(ctx, x0, y0, rng, '#7f7f7f', '#6f6f6f', 8);
-  const blobs = 4 + Math.floor(rng() * 3);
-  const hi = shadeHex(mineral, 1.2);
+// §6 — ore flecks: chunkier irregular blobs, a dark rim on the shadow side and
+// a bright gleam at the top-left. Base-agnostic so stone AND netherrack ores use
+// the same treatment; contrast pops without changing any mineral hue.
+function oreFlecks(ctx, x0, y0, rng, mineral, rimBase = '#7f7f7f') {
+  const blobs = 4 + Math.floor(rng() * 2);
+  const hi = shadeHex(mineral, 1.45), lo = shadeHex(mineral, 0.8);
+  const rim = shadeHex(rimBase, 0.55);
   for (let i = 0; i < blobs; i++) {
-    const bx = 1 + Math.floor(rng() * 12), by = 1 + Math.floor(rng() * 12);
-    px(ctx, x0, y0, bx, by, mineral);
-    px(ctx, x0, y0, bx + 1, by, mineral);
-    px(ctx, x0, y0, bx, by + 1, mineral);
-    if (rng() < 0.6) px(ctx, x0, y0, bx + 1, by + 1, mineral);
-    px(ctx, x0, y0, bx + (rng() < 0.5 ? 0 : 1), by + (rng() < 0.5 ? 0 : 1), hi);
+    const bx = 2 + Math.floor(rng() * 11), by = 2 + Math.floor(rng() * 11);
+    const cells = [[bx, by], [bx + 1, by], [bx, by + 1]];
+    if (rng() < 0.7) cells.push([bx + 1, by + 1]);
+    if (rng() < 0.4) cells.push([bx + (rng() < 0.5 ? -1 : 2), by + (rng() < 0.5 ? 0 : 1)]);
+    for (const [cx2, cy2] of cells) px(ctx, x0, y0, cx2, cy2, rng() < 0.3 ? lo : mineral);
+    const maxX = Math.max(...cells.map(p => p[0])), maxY = Math.max(...cells.map(p => p[1]));
+    px(ctx, x0, y0, maxX + 1, maxY, rim);
+    px(ctx, x0, y0, maxX, maxY + 1, rim);
+    px(ctx, x0, y0, bx, by, hi);
   }
 }
+// §6 — overworld ore tile: stone strata base + flecks + edge light.
+function oreTile2(ctx, x0, y0, rng, mineral) {
+  grain(ctx, x0, y0, rng, '#7f7f7f', { amp: 9, cellX: 5, cellY: 3, dither: 4 });
+  oreFlecks(ctx, x0, y0, rng, mineral);
+  edgeLight(ctx, x0, y0);
+}
+// §6 — leaf depth: coherent canopy clumps over a dark underlayer, holes kept but
+// given a shadowed rim so the canopy reads as layered foliage instead of confetti.
 function leaf(ctx, x0, y0, rng, c1, c2) {
+  const deep = shadeHex(c2, 0.72), lit = shadeHex(c1, 1.16);
+  const holes = [];
   for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) {
-    if (rng() < 0.12) continue;                              // transparent holes
-    px(ctx, x0, y0, x, y, rng() < 0.5 ? c1 : c2);
+    if (rng() < 0.12) { holes.push([x, y]); continue; }      // transparent holes
+    const v = rng();
+    px(ctx, x0, y0, x, y, v < 0.18 ? lit : v < 0.55 ? c1 : v < 0.86 ? c2 : deep);
+  }
+  for (const [hx, hy] of holes) {                            // shadow rim under each hole
+    if (hy < 15 && !holes.some(([a, b]) => a === hx && b === hy + 1) && rng() < 0.8) {
+      px(ctx, x0, y0, hx, hy + 1, deep);
+    }
   }
 }
 function grassSide(ctx, x0, y0, rng) {
-  blotch(ctx, x0, y0, rng, '#8a6142', '#6b4a33', 8);         // dirt base
-  const [r, g, b] = hexToRgb('#5d9b3e');
-  for (let y = 0; y < 4; y++) for (let x = 0; x < 16; x++) {
-    const keep = y < 2 || (y === 2 && rng() < 0.6) || (y === 3 && rng() < 0.2);
-    if (!keep) continue;
-    const f = 1 + (rng() * 2 - 1) * 0.1;
-    px(ctx, x0, y0, x, y, css(r * f, g * f, b * f));
+  // §6 — coherent dirt grain + pebbles, then a ragged turf lip whose top row is
+  // lit and whose underside casts a 1-px shadow fringe into the dirt (depth).
+  grain(ctx, x0, y0, rng, '#8a6142', { amp: 11, cellX: 4, cellY: 4 });
+  for (let i = 0; i < 6; i++) {
+    px(ctx, x0, y0, rng() * 16, 5 + rng() * 11, shadeHex('#8a6142', rng() < 0.5 ? 0.72 : 1.18));
   }
+  const [r, g, b] = hexToRgb('#5d9b3e');
+  for (let x = 0; x < 16; x++) {
+    const depth = 2 + (rng() < 0.45 ? 1 : 0) + (rng() < 0.18 ? 1 : 0);
+    for (let y = 0; y < depth; y++) {
+      const f = 1 + (rng() * 2 - 1) * 0.08 + (y === 0 ? 0.10 : 0);
+      px(ctx, x0, y0, x, y, css(r * f, g * f, b * f));
+    }
+    px(ctx, x0, y0, x, depth, shadeHex('#6b4a33', 0.62));
+  }
+  edgeLight(ctx, x0, y0, { top: 1.0 });   // lip already carries the top light
 }
 // pixel-map sprite: rows of chars, '.'=transparent, letters index palette
 function crossSprite(ctx, x0, y0, map, palette) {
@@ -199,13 +242,114 @@ function disc(ctx, x0, y0, cx, cy, rad, c) {
     if ((x - cx) ** 2 + (y - cy) ** 2 <= rad * rad) px(ctx, x0, y0, x, y, c);
 }
 
+// --------------------------------------------- UPDATE-polish §6 primitives
+// Three shared treatments give the whole set one look: coherent GRAIN instead
+// of per-pixel static, a consistent top-left EDGE LIGHT on full tiles, and a
+// lit-rim/shadow-outline BEVEL on item sprites. All pure canvas-2d, all driven
+// by the same per-tile seeded rng, so builds stay deterministic.
+
+/**
+ * Coherent value-noise fill: a coarse random lattice, smoothstep-bilinearly
+ * interpolated per pixel, plus a whisper of per-pixel dither. Reads as material
+ * grain (stone strata, wood streaks) instead of TV static. cellX/cellY stretch
+ * the lattice — wide cells → horizontal grain, tall cells → vertical.
+ */
+function grain(ctx, x0, y0, rng, c, { amp = 12, cellX = 4, cellY = 4, dither = 3 } = {}) {
+  const [r, g, b] = hexToRgb(c);
+  const gw = Math.ceil(16 / cellX) + 1, gh = Math.ceil(16 / cellY) + 1;
+  const lat = [];
+  for (let i = 0; i < gw * gh; i++) lat.push(rng() * 2 - 1);
+  for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) {
+    const gx = x / cellX, gy = y / cellY;
+    const ix = Math.min(gw - 2, gx | 0), iy = Math.min(gh - 2, gy | 0);
+    const fx = gx - ix, fy = gy - iy;
+    const sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy);
+    const v = (lat[iy * gw + ix] * (1 - sx) + lat[iy * gw + ix + 1] * sx) * (1 - sy)
+            + (lat[(iy + 1) * gw + ix] * (1 - sx) + lat[(iy + 1) * gw + ix + 1] * sx) * sy;
+    const f = 1 + v * amp / 100 + (rng() * 2 - 1) * dither / 100;
+    px(ctx, x0, y0, x, y, css(r * f, g * f, b * f));
+  }
+}
+
+/**
+ * Consistent edge lighting — light from the top-left, matching the world's
+ * directional face shading and the §4 icon pass: the 1-px top/left border
+ * brightens, bottom/right shades. Transparent pixels are skipped so cutout
+ * tiles keep their silhouette. Subtle by design: it makes adjacent blocks read
+ * as separate cells without turning into a drawn frame.
+ */
+function edgeLight(ctx, x0, y0, { top = 1.10, left = 1.04, bottom = 0.82, right = 0.91 } = {}) {
+  const img = ctx.getImageData(x0, y0, 16, 16), d = img.data;
+  const mul = (x, y, f) => {
+    const i = (y * 16 + x) * 4;
+    if (d[i + 3] === 0) return;
+    d[i] = Math.min(255, d[i] * f);
+    d[i + 1] = Math.min(255, d[i + 1] * f);
+    d[i + 2] = Math.min(255, d[i + 2] * f);
+  };
+  for (let x = 0; x < 16; x++) { mul(x, 0, top); mul(x, 15, bottom); }
+  for (let y = 1; y < 15; y++) { mul(0, y, left); mul(15, y, right); }
+  ctx.putImageData(img, x0, y0);
+}
+
+/**
+ * Item-sprite bevel: opaque pixels bordering transparency get a lit rim on the
+ * top/left (×lite) and a shadow outline on the bottom/right (×dark). One pass
+ * gives every tool/armor/item a cleaner silhouette + the same light direction
+ * with zero pixel-map edits; 1-px-thin strokes (both-edged) take the mean so
+ * they stay visible instead of vanishing into outline.
+ */
+function bevelSprite(ctx, x0, y0, { lite = 1.24, dark = 0.55 } = {}) {
+  const img = ctx.getImageData(x0, y0, 16, 16), d = img.data;
+  const A = (x, y) => (x < 0 || x > 15 || y < 0 || y > 15) ? 0 : d[(y * 16 + x) * 4 + 3];
+  const f = new Float32Array(256).fill(1);
+  for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) {
+    if (A(x, y) === 0) continue;
+    const litEdge = A(x, y - 1) === 0 || A(x - 1, y) === 0;
+    const darkEdge = A(x, y + 1) === 0 || A(x + 1, y) === 0;
+    if (darkEdge && !litEdge) f[y * 16 + x] = dark;
+    else if (litEdge && !darkEdge) f[y * 16 + x] = lite;
+    else if (litEdge && darkEdge) f[y * 16 + x] = (lite + dark) / 2;
+  }
+  for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) {
+    const k = f[y * 16 + x];
+    if (k === 1) continue;
+    const i = (y * 16 + x) * 4;
+    d[i] = Math.min(255, d[i] * k);
+    d[i + 1] = Math.min(255, d[i + 1] * k);
+    d[i + 2] = Math.min(255, d[i + 2] * k);
+  }
+  ctx.putImageData(img, x0, y0);
+}
+
+/** Wrap a sprite painter with the §6 bevel. */
+const beveled = paint => (c, x, y, r) => { paint(c, x, y, r); bevelSprite(c, x, y); };
+
 // ------------------------------------------------------------------ PAINTERS
 export const PAINTERS = {};
 const P = PAINTERS;
 
 // --- terrain cubes -----------------------------------------------------------
-P.stone = (c, x, y, r) => speckle(c, x, y, r, '#7f7f7f', '#6f6f6f', 10);
-P.grass_top = (c, x, y, r) => noise(c, x, y, r, '#5d9b3e', 12);
+// §6 — stone: horizontal strata grain + sparse clustered fracture flecks.
+P.stone = (c, x, y, r) => {
+  grain(c, x, y, r, '#7f7f7f', { amp: 9, cellX: 5, cellY: 3, dither: 4 });
+  for (let i = 0; i < 7; i++) {
+    const fx = r() * 16 | 0, fy = r() * 16 | 0;
+    px(c, x, y, fx, fy, shadeHex('#7f7f7f', 0.78));
+    if (r() < 0.5) px(c, x, y, fx + 1, fy, shadeHex('#7f7f7f', 0.86));
+  }
+  edgeLight(c, x, y);
+};
+// §6 — grass top: coherent turf grain + short two-pixel blade streaks.
+P.grass_top = (c, x, y, r) => {
+  grain(c, x, y, r, '#5d9b3e', { amp: 10, cellX: 3, cellY: 3, dither: 5 });
+  for (let i = 0; i < 10; i++) {
+    const sx = r() * 16 | 0, sy = r() * 15 | 0, f = r() < 0.5 ? 1.14 : 0.86;
+    px(c, x, y, sx, sy, shadeHex('#5d9b3e', f));
+    px(c, x, y, sx, sy + 1, shadeHex('#5d9b3e', f * 0.97));
+  }
+  edgeLight(c, x, y);
+};
 P.grass_side = (c, x, y, r) => grassSide(c, x, y, r);
 P.dirt = (c, x, y, r) => blotch(c, x, y, r, '#8a6142', '#6b4a33', 8);
 P.cobblestone = (c, x, y, r) => {
@@ -270,12 +414,12 @@ P.sandstone_side = (c, x, y, r) => {
 };
 P.sandstone_bottom = (c, x, y, r) => noise(c, x, y, r, '#cfc593', 8);
 
-P.coal_ore = (c, x, y, r) => oreTile(c, x, y, r, '#2f2f2f');
-P.iron_ore = (c, x, y, r) => oreTile(c, x, y, r, '#d8af93');
-P.gold_ore = (c, x, y, r) => oreTile(c, x, y, r, '#fcee4b');
-P.diamond_ore = (c, x, y, r) => oreTile(c, x, y, r, '#4aedd9');
-P.redstone_ore = (c, x, y, r) => oreTile(c, x, y, r, '#d90000');
-P.lapis_ore = (c, x, y, r) => oreTile(c, x, y, r, '#2a4bd5');
+P.coal_ore = (c, x, y, r) => oreTile2(c, x, y, r, '#2f2f2f');
+P.iron_ore = (c, x, y, r) => oreTile2(c, x, y, r, '#d8af93');   // §6 sample
+P.gold_ore = (c, x, y, r) => oreTile2(c, x, y, r, '#fcee4b');
+P.diamond_ore = (c, x, y, r) => oreTile2(c, x, y, r, '#4aedd9');
+P.redstone_ore = (c, x, y, r) => oreTile2(c, x, y, r, '#d90000');
+P.lapis_ore = (c, x, y, r) => oreTile2(c, x, y, r, '#2a4bd5');
 
 P.coal_block = (c, x, y, r) => noise(c, x, y, r, '#1b1b1b', 8);
 P.iron_block = (c, x, y, r) => { noise(c, x, y, r, '#d8d8d8', 4); border(c, x, y, '#b0b0b0'); };
@@ -351,8 +495,8 @@ P.nether_bricks = (c, x, y, r) => { blotch(c, x, y, r, '#2e1416', '#241012', 6);
 P.soul_sand = (c, x, y, r) => { blotch(c, x, y, r, '#463430', '#34251f', 8); rect(c, x, y, 4, 5, 3, 3, '#241a15'); rect(c, x, y, 9, 8, 3, 3, '#241a15'); };
 P.soul_soil = (c, x, y, r) => { noise(c, x, y, r, '#4a3a33', 8); for (let i = 0; i < 6; i++) rect(c, x, y, r() * 14, r() * 14, 1, 2, '#33251f'); };
 P.magma_block = (c, x, y, r) => blotch(c, x, y, r, '#8a2b12', '#d45a12', 10);
-P.nether_quartz_ore = (c, x, y, r) => { netherrackBase(c, x, y, r); oreTile(c, x, y, r, '#e8e0d8'); };
-P.nether_gold_ore = (c, x, y, r) => { netherrackBase(c, x, y, r); oreTile(c, x, y, r, '#fcee4b'); };
+P.nether_quartz_ore = (c, x, y, r) => { netherrackBase(c, x, y, r); oreFlecks(c, x, y, r, '#e8e0d8', '#6e2727'); };
+P.nether_gold_ore = (c, x, y, r) => { netherrackBase(c, x, y, r); oreFlecks(c, x, y, r, '#fcee4b', '#6e2727'); };
 P.ancient_debris_top = (c, x, y, r) => { noise(c, x, y, r, '#4a3a34', 8); rings(c, x, y, r, '#5a463c', '#c08a5a'); };
 P.ancient_debris_side = (c, x, y, r) => { noise(c, x, y, r, '#4a3a34', 8); rect(c, x, y, 4, 6, 8, 4, '#c08a5a'); };
 P.crimson_nylium = (c, x, y, r) => { noise(c, x, y, r, '#7a1030', 10); speckle(c, x, y, r, '#7a1030', '#a51843', 6); };
@@ -404,7 +548,7 @@ P.dirt_path_top = (c, x, y, r) => {
   rect(c, x, y, 1, 1, 14, 14, '#9a8956'); noise(c, x, y, r, '#9a8956', 4);
   border(c, x, y, '#6b5c38');
 };
-P.emerald_ore = (c, x, y, r) => oreTile(c, x, y, r, '#17dd62');
+P.emerald_ore = (c, x, y, r) => oreTile2(c, x, y, r, '#17dd62');
 P.emerald_block = (c, x, y, r) => {
   noise(c, x, y, r, '#17c957', 10);
   rect(c, x, y, 2, 2, 5, 5, '#20e468'); rect(c, x, y, 9, 9, 5, 5, '#20e468');
@@ -1461,3 +1605,10 @@ P.item_oak_door = (c, x, y) => {
   rect(c, x, y, 6, 3, 2, 2, '#9ecdfb'); rect(c, x, y, 9, 3, 2, 2, '#9ecdfb');
 };
 P.item_sugar_cane = P.sugar_cane;
+
+// §6 — bevel sweep: every item sprite (tools, armor, food, materials) gets the
+// lit-rim + shadow-outline silhouette treatment in one pass. Runs after all
+// P.item_* assignments; edge factors only touch pixels bordering transparency.
+for (const key of Object.keys(P)) {
+  if (key.startsWith('item_')) P[key] = beveled(P[key]);
+}

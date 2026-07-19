@@ -181,6 +181,16 @@ Studios; it is referenced here only to describe the genre this project recreates
   two undeclared tracks ships both to `dist/theme-music/` and serves them at
   200.
 
+- **2026-07-19** — **Texture refinement pass.** A cohesive art pass over every
+  procedurally-painted tile: surfaces now carry coherent **material grain** (stone
+  strata, along-board wood streaks, turf clumps) instead of per-pixel static; full
+  blocks get a subtle shared **top-left edge light** so they sit together in walls;
+  ores get chunkier flecks with a shadow rim and a gleam; leaves gain layered
+  canopy depth; the grass lip casts a shadow into the dirt; and every tool, armor
+  and item sprite picks up a lit rim + shadow outline for a cleaner silhouette.
+  Still 100% procedural — same 16-px grid, same atlas layout — and the atlas now
+  bakes in ~39 ms at boot.
+
 - **2026-07-19** — **3D item icons.** Inventory, hotbar, creative-palette and trade
   icons for full-cube blocks are now proper **isometric 3D renders** — top face lit,
   the two visible sides shaded like the world — instead of flat single-tile sprites.
