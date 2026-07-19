@@ -90,6 +90,13 @@ export class FallingBlock extends Entity {
     if (occupant === B.AIR || occBlk.fluid) {
       this.world.setBlock(x, cy, z, this.blockId, { state });
     } else if (!occBlk.collidable) {
+      // 13 §4 route A — a falling dragon_egg that lands on a non-solid block
+      // drops as its item instead of popping that block (sand/gravel keep the
+      // 06 §5.1 pop rule below).
+      if (this.blockId === B.DRAGON_EGG) {
+        this.world.game?.spawnItemById(this.blockId, 1, this.pos.x, this.pos.y + 0.5, this.pos.z);
+        return;
+      }
       // pops the flower/torch/… first (06 §5.1)
       this.world.popBlock(x, cy, z);
       this.world.setBlock(x, cy, z, this.blockId, { state });

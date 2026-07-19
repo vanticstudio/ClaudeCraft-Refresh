@@ -14,7 +14,7 @@ import { EndCrystal } from './EndCrystal.js';
 import DragonFireball from './DragonFireball.js';
 import {
   pillarPositions, EXIT_PORTAL, EGG_CELL,
-  activateExitPortal, spawnGateway, regenerateSpike,
+  activateExitPortal, spawnGateway, regenerateSpike, tickGateways,
 } from '../world/endArena.js';
 
 // §7.8 — blocks the dragon's body/head never destroy.
@@ -30,6 +30,12 @@ const clamp = (v, lo, hi) => v < lo ? lo : v > hi ? hi : v;
 
 // Perch geometry: the body hovers above the exit fountain, head reaching down.
 const PERCH_BODY_Y = EXIT_PORTAL.topY + 5;
+
+// §7.11 — where the 4 summoning beams point while pillar k is being restored.
+function pillarBeamTarget(worldSeed, k) {
+  const p = pillarPositions(worldSeed)[k];
+  return p ? { x: p.x + 0.5, y: p.topY + 1, z: p.z + 0.5 } : { x: 0, y: 100, z: 0 };
+}
 
 // ==========================================================================
 // §6.1 — a head/body damage box that follows the dragon and forwards hits.
@@ -406,7 +412,11 @@ export class EnderDragon extends LivingEntity {
     const bBox = new AABB(
       this.bodyPos.x - 2, this.bodyPos.y - 1.5, this.bodyPos.z - 2,
       this.bodyPos.x + 2, this.bodyPos.y + 1.5, this.bodyPos.z + 2);
-    const scan = bBox.clone().expand(1, 1, 1);
+    // §6.4 — the broad-phase must cover BOTH boxes: the head sits 5 m out along
+    // the heading, so a body-only scan never returns the entities it can hit.
+    const scan = new AABB(
+      Math.min(hBox.min[0], bBox.min[0]) - 1, Math.min(hBox.min[1], bBox.min[1]) - 1, Math.min(hBox.min[2], bBox.min[2]) - 1,
+      Math.max(hBox.max[0], bBox.max[0]) + 1, Math.max(hBox.max[1], bBox.max[1]) + 1, Math.max(hBox.max[2], bBox.max[2]) + 1);
     for (const e of this.world.getEntitiesInBox(scan, e =>
         e instanceof LivingEntity && !e.dead && !e.isDragonPart && e !== this)) {
       const box = e.getAABB();
@@ -625,6 +635,9 @@ export class EndFight {
       this.liveDragon = null;
     }
     if (r.respawnSequence) this.tickRitual(worldSeed);
+    // 11-END §11.2 — gateways only exist in dim 2, which is exactly when this
+    // manager ticks, so it drives their teleport pass too.
+    tickGateways(this.game, worldSeed);
   }
 
   updateRender(alpha) {
@@ -648,32 +661,74 @@ export class EndFight {
     if (r.dragonAlive || r.respawnSequence) return;
     if (this.liveDragon && !this.liveDragon.dead) return;
     for (const rim of EXIT_PORTAL.rimCells) if (!this.crystalAtRim(rim, true)) return;
-    r.respawnSequence = { tick: 0 };
+    r.respawnSequence = { tick: 0, beamPillar: 0 };
   }
 
   tickRitual(worldSeed) {
     const r = this.ensureRecord();
     const seq = r.respawnSequence;
     const t = seq.tick;
+    const w = this.game.world;
+
+    if (t === 0) {
+      seq.beamPillar = 0;
+      // §7.11 — the egg block at the portal is removed when the ritual starts
+      // (vanilla rule: never collecting it does not protect it).
+      if (w.getBlock(EGG_CELL.x, EGG_CELL.y, EGG_CELL.z) === B.DRAGON_EGG) {
+        w.setBlock(EGG_CELL.x, EGG_CELL.y, EGG_CELL.z, B.AIR, { byPlayer: true });
+        r.eggPlaced = false;
+      }
+    }
+
+    // §7.11 — damaging ANY of the 4 summoning crystals cancels the sequence.
+    // A destroyed one is already gone (it exploded through its own hurt()).
+    const summon = EXIT_PORTAL.rimCells.map(rim => this.crystalAtRim(rim, true));
+    if (summon.some(c => !c || c.dead)) { this.cancelRitual(r, summon); return; }
+
+    // §7.11 — the 4 beams track the pillar being restored, then the arena center.
+    // (A sequence saved before beamPillar existed resumes from its tick.)
+    if (seq.beamPillar === undefined) seq.beamPillar = t >= 540 ? null : Math.min(9, Math.floor(t / 54));
+    const target = seq.beamPillar == null ? { x: 0, y: 100, z: 0 }
+      : pillarBeamTarget(worldSeed, seq.beamPillar);
+    for (const c of summon) c.beamTarget = target;
+
     if (t % 54 === 0) {
       const k = t / 54;
       if (k >= 0 && k < 10) {
+        const p = pillarPositions(worldSeed)[k];
+        this.game.particles?.explosion?.(p.x + 0.5, p.topY + 1, p.z + 0.5, 0);   // §7.11 power-0 flash
         regenerateSpike(this.game, worldSeed, k);
-        const c = pillarPositions(worldSeed)[k].crystal;
-        this.game.entities.add(new EndCrystal(this.game.world, c.x, c.y, c.z, { hasBase: true }));
+        this.game.entities.add(new EndCrystal(this.game.world, p.crystal.x, p.crystal.y, p.crystal.z,
+          { hasBase: true, ritualInvuln: true }));
+        seq.beamPillar = Math.min(9, k + 1);
       }
     }
+    if (t === 540) seq.beamPillar = null;
     if (t === 604) {
       const d = new EnderDragon(this.game.world, 0, 100, 0);
       d.endFight = this;
       this.liveDragon = d;
       r.dragonAlive = true;
       r.dragon = d.snapshot();
+      this.clearRitualInvuln();
       for (const rim of EXIT_PORTAL.rimCells) this.crystalAtRim(rim, false)?.hurt(6, 'generic', {});
       r.respawnSequence = null;
       return;
     }
     seq.tick++;
+  }
+
+  // §7.11 — abort: the struck crystal already exploded; the survivors pop with
+  // NO explosion, and the pillar crystals spawned so far become vulnerable.
+  cancelRitual(r, summon) {
+    for (const c of summon) if (c && !c.dead) c.dead = true;
+    this.clearRitualInvuln();
+    r.respawnSequence = null;
+  }
+
+  clearRitualInvuln() {
+    for (const e of this.game.entities.entities.values())
+      if (e.type === 'end_crystal' && e.ritualInvuln) e.ritualInvuln = false;
   }
 
   // On load: an alive-but-absent dragon is rebuilt from the record + re-added.

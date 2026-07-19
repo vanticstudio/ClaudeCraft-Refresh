@@ -1,6 +1,10 @@
-// 13-BOSSES §9 — Beacon logic. Pure functions (no entity); the orchestrator
-// calls these from Game.tickBeacon and the beacon GUI. The beam mesh lives on
-// the render side and reads the BEAM constants exported here.
+// 13-BOSSES §9 — Beacon logic. The pyramid/sky/effect rules are pure functions
+// the orchestrator calls from Game.tickBeacon and the beacon GUI. §9.6's beam
+// mesh is owned here too: pyramidLevels is the one call the block-entity tick
+// makes per beacon, so it (re)creates the beam, and each beam tears ITSELF down
+// from its render callback — a broken beacon stops ticking entirely, so nothing
+// else could ever retire its beam.
+import * as THREE from 'three';
 import { B, BLOCKS } from '../registry/blocks.js';
 import { EFFECT, addEffect } from '../status/effects.js';
 
@@ -15,6 +19,12 @@ const MINERALS = new Set([
  * caps the count. Returns 0..4.
  */
 export function pyramidLevels(world, bx, by, bz) {
+  const levels = computeLevels(world, bx, by, bz);
+  syncBeam(world, bx, by, bz, levels);   // §9.6 — see the beam block below
+  return levels;
+}
+
+function computeLevels(world, bx, by, bz) {
   for (let L = 1; L <= 4; L++) {
     const y = by - L;
     for (let dx = -L; dx <= L; dx++) {
@@ -86,9 +96,67 @@ export function beaconActive(world, bx, by, bz) {
   return { levels, active: levels >= 1 && skyClear(world, bx, by, bz) };
 }
 
-// §9.6 — beam geometry/appearance. The mesh is built render-side; these are the
-// authoritative dimensions and colors.
+// ---------------------------------------------------------------- §9.6 beam
+// Two nested rotating square prisms from the beacon top to Y=127, translucent
+// and unlit. `spin` is deg/tick (inner +0.9, outer −0.45). Stained-glass tinting
+// is explicitly OUT of scope in §9.6, so the colors are fixed.
 export const BEAM = {
-  inner: { width: 0.32, color: '#ffffff', alpha: 0.9 },
-  outer: { width: 0.50, color: '#dff3ff', alpha: 0.25 },
+  inner: { width: 0.32, color: '#ffffff', alpha: 0.9, spin: 0.9 },
+  outer: { width: 0.50, color: '#dff3ff', alpha: 0.25, spin: -0.45 },
 };
+
+const BEAM_TOP_Y = 127;
+const DEG = Math.PI / 180;
+const CHECK_EVERY = 10;                 // frames between self-verification passes
+const BEAMS = new Map();                // "x,y,z" -> handle
+
+/** Create/refresh/retire the beam for one beacon. Called from pyramidLevels. */
+function syncBeam(world, bx, by, bz, levels) {
+  const scene = world?.game?.scene;
+  if (!scene) return;
+  const key = bx + ',' + by + ',' + bz;
+  const existing = BEAMS.get(key);
+  const active = levels >= 1 && skyClear(world, bx, by, bz);
+  if (!active) { if (existing) retireBeam(existing); return; }
+  if (existing) { existing.world = world; return; }
+
+  const height = BEAM_TOP_Y - by;
+  const group = new THREE.Group();
+  group.position.set(bx + 0.5, by + 1 + height / 2, bz + 0.5);
+  for (const layer of [BEAM.outer, BEAM.inner]) {
+    const m = new THREE.Mesh(
+      new THREE.BoxGeometry(layer.width, height, layer.width),
+      new THREE.MeshBasicMaterial({
+        color: layer.color, transparent: true, opacity: layer.alpha,
+        depthWrite: false, side: THREE.DoubleSide, fog: false,
+      }),
+    );
+    m.userData.spin = layer.spin;
+    // Never culled: the self-verification below runs from onBeforeRender, so a
+    // beam that is off-screen must still get its chance to retire.
+    m.frustumCulled = false;
+    group.add(m);
+  }
+  const handle = { key, world, bx, by, bz, group, frames: 0 };
+  group.children[0].onBeforeRender = () => tickBeam(handle);
+  scene.add(group);
+  BEAMS.set(key, handle);
+}
+
+function tickBeam(handle) {
+  // Spin off the wall clock (20 ticks/s) so the rate is frame-rate independent.
+  const ticks = performance.now() / 50;
+  for (const m of handle.group.children) m.rotation.y = m.userData.spin * DEG * ticks;
+  if (++handle.frames % CHECK_EVERY) return;
+  const { world, bx, by, bz } = handle;
+  if (!handle.group.parent ||
+      world.getBlock(bx, by, bz) !== B.BEACON ||
+      computeLevels(world, bx, by, bz) < 1 ||
+      !skyClear(world, bx, by, bz)) retireBeam(handle);
+}
+
+function retireBeam(handle) {
+  BEAMS.delete(handle.key);
+  handle.group.parent?.remove(handle.group);
+  for (const m of handle.group.children) { m.geometry.dispose(); m.material.dispose(); }
+}
