@@ -98,7 +98,7 @@ export class Game {
     this.save = null;                   // saveManager, wired by main.js
     this.particles = null;
     this.sleeping = null;               // { ticks }
-    this.debug = { fps: 0, frameMs: 0, remeshCount: 0, lastRemeshes: 0, audioMs: 0 };
+    this.debug = { fps: 0, frameMs: 0, remeshCount: 0, lastRemeshes: 0, audioMs: 0, redstoneMs: 0 };
     this._fpsWindow = [];
 
     // 14-MULTIPLAYER — session + identity. net is a NetHost, NetClient, or null (solo).
@@ -312,6 +312,9 @@ export class Game {
     this.audio?.tick();                 // AMENDS 01 §3 tick step 10
     this.atlas.animate?.(this.world.time);
     this.ui?.containers?.tickOpen?.();
+    // 07 §5.5 — publish the tick's total solver cost once every entry point has
+    // run, so the F3 line reports the whole tick rather than one drain.
+    this.debug.redstoneMs = this.redstone?.tickSolveMs ?? 0;
 
     // LOADING → PLAYING gate: 7×7 around player meshed (01 §15.2)
     if (this.state === STATE.LOADING) {
