@@ -8,6 +8,7 @@
 // any existing soundtrack. It is structurally impossible for this system to
 // play an existing piece, and it must stay that way.
 import { mulberry32, xmur3 } from '../math/rng.js';
+import { busGain } from '../ui/options.js';
 import { noiseBurst, pluck, chime } from './primitives.js';
 
 // §4.1 scale pools (semitone sets)
@@ -72,6 +73,7 @@ export class Music {
     this.enabled = true;
     this.suspended = false;       // musicMode 'full' hands the bus to §4A
     this.busLp = null;
+    this.ambientDucked = false;   // §4.1 boss mood ducks ambientBus -12 dB
     this._armed = false;
     this.voices = 0;              // §4.2 self-budget: <= 8 concurrent
   }
@@ -85,7 +87,10 @@ export class Music {
     // fallback, so a fully-synthesized, zero-download ship is always possible".
     const themeCanPlay = !!this.engine.themeMusic?.available;
     this.suspended = opts.musicMode === 'full' && themeCanPlay;
-    if (this.suspended) this.stop(2);
+    if (this.suspended) { this.stop(2); this.setAmbientDuck(false); }
+    // engine.setOptions() rewrites every bus gain straight from the sliders and
+    // THEN calls this, so a slider move mid-boss would otherwise cancel the duck.
+    else if (this.ambientDucked) this.applyAmbientDuck();
   }
 
   // Called when PLAYING begins; §4.3 first piece 45-90 s after entering PLAYING.
@@ -105,6 +110,7 @@ export class Music {
   disarm() {
     this._armed = false;
     this.stop(1);
+    this.setAmbientDuck(false);
   }
 
   stop(fadeSec = 2) {
@@ -121,11 +127,37 @@ export class Music {
 
   scarcityGap() { return 180 + Math.random() * 240; }    // §4.3: 3-7 min of silence
 
+  // §4.1 "boss fight active" / §4.3's boss interrupt. Nothing in the codebase
+  // owns a global boss flag — 13's bosses only add/remove their own HUD bar — so
+  // the live boss bar IS the fight state. A bar that is fading out (`removing`)
+  // has already lost its boss and does not count.
+  bossFightActive() {
+    const bars = this.engine.game?.ui?.bossBar?.bars;
+    if (!bars || bars.size === 0) return false;
+    for (const b of bars.values()) if (!b.removing) return true;
+    return false;
+  }
+
+  // §4.1 boss mood "ducks ambientBus -12 dB" — x0.25, matching §4.3's -6 dB = x0.5.
+  setAmbientDuck(on) {
+    if (on === this.ambientDucked) return;
+    this.ambientDucked = on;
+    this.applyAmbientDuck();
+  }
+
+  applyAmbientDuck() {
+    const bus = this.engine.buses?.ambient;
+    if (!bus) return;
+    const now = this.ctx.currentTime;
+    bus.gain.cancelScheduledValues(now);
+    bus.gain.setTargetAtTime(busGain(this.engine.opts.ambient) * (this.ambientDucked ? 0.25 : 1), now, 0.15);
+  }
+
   // §4.1 mood selector — priority top-down.
   selectMood() {
     const g = this.engine.game;
     if (!g || !g.world || !g.player) return 'overworld-day';
-    if (g.bossActive) return 'boss';
+    if (this.bossFightActive()) return 'boss';
     // 10-NETHER §2 — dims are numeric ids now (0 overworld / 1 nether / 2 end).
     const dim = g.world.activeDim;
     if (dim === 1) return 'nether';
@@ -353,6 +385,9 @@ export class Music {
   }
 
   tick() {
+    // The duck is evaluated before the early-out so it always releases — an idle
+    // or suspended composer must not leave ambience stuck 12 dB down.
+    this.setAmbientDuck(this._armed && !this.suspended && this.bossFightActive());
     if (!this._armed || this.suspended) return;
     // §4.3 interrupt: only the boss mood interrupts a playing piece
     const m = this.selectMood();

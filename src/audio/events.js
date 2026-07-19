@@ -339,6 +339,49 @@ def('entity.lingering_potion.break', {
   bus: 'sfx', maxDist: 16, capKey: 'potion_break', priority: P.NEAR, replicate: true,
   recipe: (v, t, p, g) => { blip(v, t, { wave: 'square', freq: 1600, dur: 0.06, gain: 0.3 * g }); return hiss(v, t, { freq: 2600, dur: 0.28, gain: 0.35 * g, pitch: p }); },
 });
+// 10-NETHER §14 — Nether sound events 16 §3.4/§3.5 own the synthesis for.
+def('block.portal.trigger', {
+  bus: 'sfx', refDist: 2, maxDist: 24, capKey: 'portal_trigger', priority: P.NEAR, replicate: true,
+  // 10 §14 calls this a "rising warble"; the tones are §3.5's world.portal.loop
+  // (180/181.2/90 Hz, LP 1.2 kHz) — the portal's own voice swelling into being.
+  recipe: (v, t, p, g) => {
+    const end = drone(v, t, {
+      freqs: [90, 180, 181.2], dur: 1.0, gain: 0.4 * g, lpFreq: 1200, attack: 0.35,
+      lfo: { rate: 6, depth: 0.3, target: 'gain' },
+    });
+    sweep(v, t, { src: 'osc', wave: 'sine', f0: 180, f1: 720, dur: 0.9, gain: 0.35 * g, pitch: p, filter: { type: 'lp', freq: 1200, Q: 1 } });
+    return end;
+  },
+});
+// §3.4: all ghast voices carry the ghast's own maxDist 48 / refDist 4.
+def('entity.ghast.warn', {
+  bus: 'sfx', refDist: 4, maxDist: 48, capKey: 'ghast_warn', priority: P.NEAR, replicate: true,
+  // §3.4 gives the ghast exactly one timbre (the FM wail) and derives its other
+  // voices from it; 10 §14's charge-up warn has no recipe of its own.
+  recipe: (v, t, p, g) => MOB_IDLE.ghast(v, t, p * 1.12, g, { dur: 0.55, fall: 0 }),
+});
+def('entity.ghast.shoot', {
+  bus: 'sfx', refDist: 4, maxDist: 48, capKey: 'ghast_shoot', priority: P.NEAR, replicate: true,
+  recipe: (v, t, p, g) => {                      // §3.4: whoosh(400->2000, 0.4 s) + crackle
+    whoosh(v, t, { f0: 400, f1: 2000, dur: 0.4, gain: 0.6 * g, pitch: p, Q: 1 });
+    return crackle(v, t, { density: 1.2, freq: 1400, dur: 0.5, gain: 0.35 * g, pitch: p });
+  },
+});
+def('entity.blaze.shoot', {
+  bus: 'sfx', maxDist: 16, capKey: 'blaze_shoot', priority: P.NEAR, replicate: true,
+  // §3.4 "shoot x3: whoosh(600->2400, 0.25 s) + blip". 10 §7.7's burst() spawns
+  // all three fireballs and emits ONCE, so the three shots live in this recipe.
+  recipe: (v, t, p, g) => {
+    let last = t;
+    for (let i = 0; i < 3; i++) {
+      const at = t + i * 0.12;
+      blip(v, at, { wave: 'square', freq: 1100, dur: 0.04, gain: 0.25 * g, pitch: p });
+      last = whoosh(v, at, { f0: 600, f1: 2400, dur: 0.25, gain: 0.45 * g, pitch: p });
+    }
+    return last;
+  },
+});
+
 // 11-END §16 — End sound events.
 def('eye_of_ender.launch', { bus: 'sfx', maxDist: 16, capKey: 'eye_launch', priority: P.NEAR, replicate: true,
   recipe: (v, t, p, g) => { whoosh(v, t, { dur: 0.4, gain: 0.4 * g, pitch: p }); return chime(v, t + 0.05, { freq: 1400, ratio: 2.0, index: 3, dur: 0.25, gain: 0.25 * g, pitch: p }); } });
@@ -684,6 +727,21 @@ const MOB_IDLE = {
     thud(v, t, { f0: 90, f1: 38, dur: 0.2 * s.dur, gain: g, pitch: p });
     return gulp(v, t, { dur: 0.15 * s.dur, wobble: [200, 90, 140], gain: 0.6 * g, pitch: p });
   },
+  // 10 §14 lists piglin/zombified_piglin voices but §3.4's table has no row for
+  // either. §3.4's generic rule is "each mob defines one idle timbre", so both
+  // are built from the §3.4 timbres they descend from — the pig's nasal chirp,
+  // plus the zombie moan for the undead one (10 §7.6 flags it `undead`).
+  piglin: (v, t, p, g, s) => {                   // nasal snort + a rough grunt
+    MOB_IDLE.pig(v, t, p * 0.62, g * 0.8, s);
+    return sweep(v, t, {
+      src: 'osc', wave: 'sawtooth', f0: 150 * (s.fall ? 1 - s.fall : 1), f1: 110,
+      dur: 0.3 * s.dur, gain: 0.35 * g, pitch: p, filter: { type: 'bp', freq: 900, Q: 4 },
+    });
+  },
+  zombified_piglin: (v, t, p, g, s) => {         // pig snort through a hollow moan
+    MOB_IDLE.zombie(v, t, p * 1.1, g * 0.7, s);
+    return MOB_IDLE.pig(v, t, p * 0.7, g * 0.6, s);
+  },
   wither_skeleton: (v, t, p, g, s) => {
     let last = t;
     const n = s.fall ? 8 : 5;
@@ -762,6 +820,18 @@ for (const type of Object.keys(MOB_IDLE)) {
   // death = idle @ pitch x0.79, dur x1.5, linear pitch fall of -30% across the tail
   def(`mob.${type}.death`, {
     ...base, cap: 2, recipe: (v, t, p, g) => idle(v, t, p * 0.79, g, { dur: 1.5, fall: 0.3 }),
+  });
+}
+
+// §3.4 "no idle" is a REGISTERED silence, not a missing entry. 05's generic idle
+// cadence still emits `mob.<type>.idle` for these (the wither is a plain Mob
+// subclass), and with no entry resolveEvent() falls through to their hurt voice —
+// so the wither would groan every 4-8 s. maxDist 0 culls the voice before it is
+// ever allocated; `silent` keeps these out of resolveEvent()'s fallback chain.
+for (const type of NO_IDLE) {
+  def(`mob.${type}.idle`, {
+    bus: 'sfx', maxDist: 0, jitter: 0, replicate: false, silent: true,
+    recipe: (v, t) => t,
   });
 }
 
@@ -1080,7 +1150,8 @@ export function resolveEvent(id) {
     const parts = id.split('.');
     const verb = parts[parts.length - 1];
     const type = parts.slice(1, -1).join('.');
-    hit = EVENTS[`mob.${type}.${verb}`] || EVENTS[`mob.${type}.idle`] || EVENTS[`mob.${type}.hurt`] || null;
+    const idle = EVENTS[`mob.${type}.idle`];
+    hit = EVENTS[`mob.${type}.${verb}`] || (idle?.silent ? null : idle) || EVENTS[`mob.${type}.hurt`] || null;
   } else if (id.startsWith('block.')) {
     hit = EVENTS['block.break.stone'];
   }
