@@ -508,6 +508,22 @@ export class Interaction {
       p.usingItem = null;
       return;
     }
+    // UPDATE-polish §1 — cancel a STALE use-channel. The channel is otherwise only
+    // cleared on release/completion, so drawing a bow (which never self-completes
+    // while held) or starting to eat and THEN switching hotbar slot / dropping the
+    // item WITHOUT releasing RMB left `usingItem` truthy — and the tick RMB gate
+    // (`!p.usingItem`) then swallowed every right-click, so "right-click places
+    // nothing" until the button was released. If the acting hand no longer holds
+    // the item that started this channel, cancel it here so placement/interaction
+    // resume the same tick. (Normal eat/drink/bow are unaffected — the held item
+    // still matches.)
+    const handItem = p.itemIn(chan.hand ?? 'main');
+    const sustains = !!handItem && (
+      (chan.kind === 'eat' && handItem.kind === 'food') ||
+      (chan.kind === 'drink' && handItem.kind === 'potion') ||
+      (chan.kind === 'bow' && handItem.name === 'bow'));
+    if (!sustains) { this.stopBowLoop(); p.usingItem = null; return; }
+
     chan.ticks++;
     // §3.3 / AMENDS 06 §12.4: chew at use-ticks 8/16/24, swallow at 32.
     if (chan.kind === 'eat' && (chan.ticks === 8 || chan.ticks === 16 || chan.ticks === 24)) {

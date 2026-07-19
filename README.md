@@ -163,6 +163,13 @@ Studios; it is referenced here only to describe the genre this project recreates
 
 *This section is updated as new features land.*
 
+- **2026-07-19** — **Fix: right-click block placement.** Right-click could stop
+  placing blocks entirely if you drew a bow (or started eating) and then switched
+  to a block **without releasing the button** — the use-channel stayed "in use" and
+  the right-click gate ignored every subsequent click until you let go. The channel
+  is now cancelled the moment your hand no longer holds the item that started it, so
+  placement resumes immediately (normal eating/drinking/bow-drawing are unchanged).
+
 - **2026-07-19** — **Multiplayer co-op (expansion phase E12, `14`)**: play the same
   world with 2–8 friends over a tiny WebSocket relay. Start it with `npm run relay`
   (defaults to `ws://localhost:8971`), then from the title screen pick **Host
