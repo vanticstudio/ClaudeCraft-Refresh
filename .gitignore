@@ -15,9 +15,12 @@ dist/
 # DEVIATIONS.md "Menu music" for the history-removal command.
 CC-assets/CC-sounds/
 
-# public/theme-music/ IS COMMITTED, and ships empty — a clean slate for each user
-# to drop their own music into. Anything committed there lands in every clone, so
-# please don't push tracks you don't hold the rights to.
+# public/theme-music/ is a DEV-ONLY drop zone (17-SHIP §3 copyright ship-gate):
+# every file in it is ignored except the README, so no track — cleared or not —
+# can be committed by accident. Builds strip dist/theme-music and force an empty
+# manifest (vite.config.js), so nothing here is ever bundled or served publicly.
+public/theme-music/*
+!public/theme-music/README.md
 
 # Generated from the theme-music folders by scripts/gen-theme-manifest.mjs.
 src/audio/themeManifest.js
