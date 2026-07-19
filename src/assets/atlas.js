@@ -73,6 +73,8 @@ const BLOCK_TILES = [
   'end_portal_frame_top', 'end_portal_frame_top_eye', 'end_portal_frame_side',
   'end_portal', 'end_gateway',
   'shulker_box_top', 'shulker_box_side', 'shulker_box_bottom',
+  // 13-BOSSES §2.5 — boss blocks
+  'dragon_egg', 'wither_skeleton_skull', 'beacon_base', 'beacon_shell', 'beacon_core',
 ];
 const DESTROY_TILES = Array.from({ length: 10 }, (_, i) => 'destroy_' + i);
 const ITEM_TILES = Object.keys(PAINTERS).filter(n => n.startsWith('item_')).sort();

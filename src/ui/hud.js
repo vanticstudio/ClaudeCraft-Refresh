@@ -62,6 +62,7 @@ export class Hud {
     this.cache = {};
     overlayEl.innerHTML = `
       <div id="hud">
+        <div id="boss-bars"></div>
         <div id="crosshair"></div>
         <div id="vignette-damage"></div>
         <div id="overlay-fire"></div>
@@ -224,6 +225,9 @@ export class Hud {
   update() {
     const p = this.game.player;
     if (!p) return;
+
+    // 13-BOSSES §1 — ease the boss bars every frame (independent of the survival rows).
+    this.game.ui?.bossBar?.update?.();
 
     // 08 §11 — advance the shared glint frame at 4 Hz (every 5 ticks at 20 TPS).
     glintFrame.n = ((this.game.world?.time ?? 0) / 5) | 0;

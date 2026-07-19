@@ -42,12 +42,16 @@ export class EntityManager {
       // 11-END AMENDS 01 §13.2 — reap any non-player entity that falls into the
       // void floor (below Y −64). Covers items/mobs/projectiles knocked off End
       // islands regardless of their own per-class kill plane.
-      if (entity.pos.y < -64) { entity.dead = true; entity.deathTime = entity.deathAnimTicks ?? 0; continue; }
-      // freeze outside SIM_RADIUS or in ungenerated chunks (01 §12/§13.2)
+      if (entity.pos.y < -64 && !entity.isBoss) { entity.dead = true; entity.deathTime = entity.deathAnimTicks ?? 0; continue; }
+      // 13-BOSSES AMENDS 05 §1 — bosses always run full AI (never frozen by range/
+      // chunk-gen), so a wither ticks even when the player is off in the arena.
       const ecx = Math.floor(entity.pos.x) >> 4, ecz = Math.floor(entity.pos.z) >> 4;
-      if (p && Math.max(Math.abs(ecx - p.cx), Math.abs(ecz - p.cz)) > SIM_RADIUS) continue;
-      const chunk = this.world.chunks.get(chunkKey(ecx, ecz));
-      if (!chunk || chunk.state < ChunkState.GENERATED) continue;
+      if (!entity.isBoss) {
+        // freeze outside SIM_RADIUS or in ungenerated chunks (01 §12/§13.2)
+        if (p && Math.max(Math.abs(ecx - p.cx), Math.abs(ecz - p.cz)) > SIM_RADIUS) continue;
+        const chunk = this.world.chunks.get(chunkKey(ecx, ecz));
+        if (!chunk || chunk.state < ChunkState.GENERATED) continue;
+      }
       entity.tick();
       this.register(entity);
     }
@@ -122,6 +126,12 @@ export class EntityManager {
   }
 
   // Unloading a chunk discards its entities (01 §13.2); caller excludes player.
+  // 13-BOSSES — a chunk-resident boss (the wither) is SAVED with its chunk first
+  // (ChunkManager flushes before this) and then removed like any entity, so it
+  // re-hydrates on reload (§10.2 "freezes while unloaded") instead of duplicating.
+  // The ender dragon is NOT a chunk entity (it lives in endFight); its transient
+  // DragonParts (isDragonPart) are re-created by the dragon each tick, so reaping
+  // them here is harmless.
   onChunkUnloading(chunk, player) {
     for (const e of [...chunk.entities]) {
       if (e === player) continue;

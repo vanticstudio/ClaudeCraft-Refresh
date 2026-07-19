@@ -1208,6 +1208,31 @@ defBlock(164, 'shulker_box', {
   tiles: column('shulker_box_top', 'shulker_box_side', 'shulker_box_bottom'),
 });
 
+// ===================== 13-BOSSES §2 — boss blocks (185–187) =====================
+// dragon_egg (185) — trophy; falls like sand; clicks teleport it; can't be mined.
+defBlock(185, 'dragon_egg', {
+  hardness: 3.0, blast: 9.0, emission: 1, gravity: true,
+  shape: 'dragon_egg', bucket: 'cutout', opaque: false, opacity: 0,
+  interactable: 'dragon_egg',   // RMB → onUse teleport (installed by bosses hooks)
+  drops: noDrop,                // §4 — mining yields nothing; obtained via fall/piston tricks
+  tiles: all('dragon_egg'),
+});
+// wither_skeleton_skull (186) — floor skull; placing runs the wither summon detector.
+defBlock(186, 'wither_skeleton_skull', {
+  hardness: 1.0, blast: 1.0, opaque: false, opacity: 0, collidable: false,
+  shape: 'wither_skull_block', bucket: 'cutout', needsSupport: 'below',
+  drops: dropSelf('wither_skeleton_skull'), tiles: all('wither_skeleton_skull'),
+});
+// beacon (187) — pyramid GUI + buffs + beam; always emits light 15.
+defBlock(187, 'beacon', {
+  hardness: 3.0, blast: 3.0, emission: 15,
+  shape: 'beacon', bucket: 'cutout', opaque: false, opacity: 0,
+  blockEntity: 'beacon', interactable: 'beacon',
+  drops: dropSelf('beacon'),
+  tilesFor: (state, face) => (face === 2 ? 'beacon_core' : face === 3 ? 'beacon_base' : 'beacon_shell'),
+  tiles: all('beacon_shell'),
+});
+
 // =======================================================================
 // Material classes — the `Mat` column (16-AUDIO AMENDS 06 §2, table 16 §3.1).
 //
@@ -1254,11 +1279,13 @@ const MAT = {
     'brown_mushroom', 'red_mushroom',   // 09-POTIONS §7.1
     'hay_bale',   // 12-VILLAGES
     'chorus_plant', 'chorus_flower'],   // 11-END (plant-like → grass voice)
-  glass: ['glass', 'ice', 'glowstone'],
+  glass: ['glass', 'ice', 'glowstone',
+    'beacon'],   // 13-BOSSES — glassy shell voice
   // 11-END §3.1 — the End family (stone-brick/end-stone/purpur/rods/portals default to 'end').
   end: ['stone_bricks', 'mossy_stone_bricks', 'cracked_stone_bricks', 'iron_bars',
     'end_stone', 'end_stone_bricks', 'purpur_block', 'purpur_pillar', 'end_rod',
-    'end_portal_frame', 'end_portal', 'end_gateway', 'shulker_box'],
+    'end_portal_frame', 'end_portal', 'end_gateway', 'shulker_box',
+    'dragon_egg', 'wither_skeleton_skull'],   // 13-BOSSES
   wool: ['wool_white', 'wool_red', 'wool_blue', 'wool_black', 'cactus'],
   snow: ['snow_layer', 'snow_block'],
   fluid: ['water', 'lava'],

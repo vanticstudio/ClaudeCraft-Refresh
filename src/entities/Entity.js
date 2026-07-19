@@ -191,7 +191,8 @@ export class LivingEntity extends Entity {
   // 08 §5.2.1 folds it into blast_protection). 'thorns' was already here and
   // stays — 08 §5.2.4 explicitly makes Thorns armor-applicable too, which
   // diverges from vanilla on purpose.
-  static ARMOR_SOURCES = new Set(['melee', 'arrow', 'explosion', 'cactus', 'thorns', 'anvil']);
+  static ARMOR_SOURCES = new Set(['melee', 'arrow', 'explosion', 'cactus', 'thorns', 'anvil',
+    'wither_skull']);   // 13-BOSSES AMENDS 05 §14.2 — wither skull direct hit: armor applies
 
   // Shared damage pipeline (05 §14). opts: {dirX, dirZ, knockback=0.4, attacker}
   hurt(amount, source = 'generic', opts = {}) {

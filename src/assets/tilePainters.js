@@ -475,6 +475,18 @@ P.shulker_box_side = (c, x, y, r) => { noise(c, x, y, r, '#976b97', 6); rect(c, 
 P.shulker_box_top = (c, x, y, r) => { noise(c, x, y, r, '#a878a8', 6); rect(c, x, y, 3, 3, 10, 10, '#c39cc3'); border(c, x, y, '#6e4a6e'); };
 P.shulker_box_bottom = (c, x, y, r) => { noise(c, x, y, r, '#7a5a7a', 6); border(c, x, y, '#5a3a5a'); };
 
+// ============ 13-BOSSES §2.5 — boss block tiles ============
+P.dragon_egg = (c, x, y, r) => { noise(c, x, y, r, '#0c0912', 8); speckle(c, x, y, r, '#3a2a55', 0.12); border(c, x, y, '#1b1029'); };
+P.wither_skeleton_skull = (c, x, y, r) => {
+  noise(c, x, y, r, '#4a4a44', 8);
+  rect(c, x, y, 4, 5, 2, 2, '#000000'); rect(c, x, y, 10, 5, 2, 2, '#000000');   // eye sockets
+  rect(c, x, y, 7, 8, 2, 2, '#111111');                                          // nasal slit
+  rect(c, x, y, 5, 11, 6, 1, '#1a1a1a');                                         // grim mouth
+};
+P.beacon_base = (c, x, y, r) => noise(c, x, y, r, '#1b1029', 6);
+P.beacon_shell = (c, x, y) => glassy(c, x, y, '#c9dbdc');
+P.beacon_core = (c, x, y, r) => { noise(c, x, y, r, '#62e9d8', 5); rect(c, x, y, 5, 5, 6, 6, '#a6fff2'); };
+
 P.crafting_table_top = (c, x, y, r) => {
   planks(c, x, y, r, '#a76e35');
   for (let i = 0; i < 16; i++) {
@@ -1289,6 +1301,18 @@ P.item_popped_chorus_fruit = (c, x, y) => { for (const [cx, cy, rr] of [[6, 6, 3
 P.item_shulker_shell = (c, x, y) => { rect(c, x, y, 2, 8, 12, 4, '#976b97'); for (let i = 0; i < 8; i++) rect(c, x, y, 2 + i * 12 / 8, 4, 2, 5, '#8a5f8a'); rect(c, x, y, 3, 3, 10, 3, '#a878a8'); px(c, x, y, 5, 4, '#c39cc3'); };
 P.item_elytra = (c, x, y) => { for (const s of [-1, 1]) { const bx = 8 + s * 1; for (let i = 0; i < 12; i++) rect(c, x, y, bx + s * (i < 6 ? 0 : 1), 2 + i, s > 0 ? 5 : -5 + 5, 1, '#4a4a52'); } rect(c, x, y, 2, 3, 5, 11, '#4a4a52'); rect(c, x, y, 9, 3, 5, 11, '#4a4a52'); for (let i = 4; i < 14; i += 3) { rect(c, x, y, 2, i, 5, 1, '#8a8a96'); rect(c, x, y, 9, i, 5, 1, '#8a8a96'); } rect(c, x, y, 7, 2, 2, 6, '#2a2a30'); };
 P.item_elytra_tattered = (c, x, y) => { P.item_elytra(c, x, y); for (const [px_, py_] of [[3, 6], [4, 10], [11, 5], [12, 9], [10, 12]]) rect(c, x, y, px_, py_, 2, 2, '#00000000'); };
+
+// 13-BOSSES §2.5 — boss item sprites.
+P.item_nether_star = (c, x, y) => {
+  rect(c, x, y, 7, 2, 2, 12, '#ffffff'); rect(c, x, y, 2, 7, 12, 2, '#ffffff');   // 4-point star arms
+  rect(c, x, y, 6, 6, 4, 4, '#fff8c4');                                            // inner glow
+  px(c, x, y, 8, 2, '#8adfdf'); px(c, x, y, 8, 13, '#8adfdf'); px(c, x, y, 2, 8, '#8adfdf'); px(c, x, y, 13, 8, '#8adfdf');
+};
+P.item_end_crystal = (c, x, y) => {
+  for (let i = 0; i < 5; i++) { rect(c, x, y, 8 - i, 3 + i, 2 * i + 1, 1, '#e079fa'); rect(c, x, y, 4 + i, 12 - i, 9 - 2 * i, 1, '#e079fa'); }
+  rect(c, x, y, 7, 7, 2, 2, '#ffffff'); rect(c, x, y, 5, 13, 6, 2, '#8a8a8a');     // white core over gray base bar
+};
+P.item_dragon_breath = (c, x, y) => { disc(c, x, y, 8, 9, 5, '#c8dce6'); rect(c, x, y, 6, 2, 4, 4, '#caa06a'); disc(c, x, y, 8, 9, 3, '#e079fa'); };
 P.item_spider_eye = (c, x, y) => { disc(c, x, y, 8, 8, 4, '#7a1f24'); disc(c, x, y, 8, 8, 2, '#c85a1a'); px(c, x, y, 8, 8, '#1a1a1a'); };
 P.item_fermented_spider_eye = (c, x, y) => { disc(c, x, y, 8, 8, 4, '#3a5a34'); disc(c, x, y, 8, 8, 2, '#6a8a3a'); px(c, x, y, 8, 8, '#1a1a1a'); };
 P.item_golden_apple = (c, x, y) => { disc(c, x, y, 8, 9, 4, '#fcd94a'); px(c, x, y, 8, 4, '#6a4a20'); rect(c, x, y, 6, 6, 2, 2, '#fff2a0'); };

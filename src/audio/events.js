@@ -403,6 +403,33 @@ def('zombie_villager.cure', {
   bus: 'sfx', maxDist: 24, capKey: 'zv_cure', priority: P.NEAR, replicate: true,
   recipe: (v, t, p, g) => { sweep(v, t, { src: 'osc', wave: 'triangle', f0: 300, f1: 700, dur: 0.6, gain: 0.4 * g, pitch: p }); return chime(v, t + 0.3, { freq: 1000, ratio: 2.0, index: 3, dur: 0.4, gain: 0.3 * g, pitch: p }); },
 });
+// 13-BOSSES §11 — boss + beacon sound events.
+def('mob.ender_dragon.ambient', { bus: 'sfx', maxDist: 96, refDist: 8, capKey: 'dragon_amb', priority: P.NEAR, replicate: true,
+  recipe: (v, t, p, g) => { drone(v, t, { freqs: [70, 105], dur: 1.4, gain: 0.6 * g, lpFreq: 800 }); return sweep(v, t, { src: 'osc', wave: 'sawtooth', f0: 160, f1: 90, dur: 1.2, gain: 0.4 * g, pitch: p }); } });
+def('mob.ender_dragon.growl', { bus: 'sfx', maxDist: 96, refDist: 8, capKey: 'dragon_growl', priority: P.NEAR, replicate: true,
+  recipe: (v, t, p, g) => drone(v, t, { freqs: [60, 90, 120], dur: 1.0, gain: 0.6 * g, lpFreq: 600 }) });
+def('mob.ender_dragon.flap', { bus: 'sfx', maxDist: 64, refDist: 6, capKey: 'dragon_flap', priority: P.FAR, replicate: true,
+  recipe: (v, t, p, g) => whoosh(v, t, { dur: 0.5, gain: 0.5 * g, pitch: p * 0.7 }) });
+def('mob.ender_dragon.shoot', { bus: 'sfx', maxDist: 64, refDist: 6, capKey: 'dragon_shoot', priority: P.NEAR, replicate: true,
+  recipe: (v, t, p, g) => { hiss(v, t, { freq: 2000, dur: 0.3, gain: 0.5 * g, pitch: p }); return sweep(v, t, { src: 'osc', wave: 'sawtooth', f0: 300, f1: 120, dur: 0.3, gain: 0.4 * g, pitch: p }); } });
+def('entity.dragon_fireball.explode', { bus: 'sfx', maxDist: 48, refDist: 4, capKey: 'dragon_fb', priority: P.NEAR, replicate: true,
+  recipe: (v, t, p, g) => { hiss(v, t, { freq: 2600, dur: 0.25, gain: 0.5 * g, pitch: p }); return sweep(v, t, { src: 'osc', wave: 'sawtooth', f0: 260, f1: 100, dur: 0.3, gain: 0.4 * g, pitch: p }); } });
+def('mob.wither.spawn', { bus: 'sfx', maxDist: 4000, refDist: 32, cap: 1, capKey: 'wither_spawn', priority: P.NEAR, replicate: false, distanceOnly: false,
+  recipe: (v, t, p, g) => { drone(v, t, { freqs: [55, 82, 110, 165], dur: 3.0, gain: 0.7 * g, lpFreq: 1200 }); return sweep(v, t, { src: 'osc', wave: 'sawtooth', f0: 100, f1: 400, dur: 1.5, gain: 0.4 * g, pitch: p }); } });
+def('mob.wither.shoot', { bus: 'sfx', maxDist: 48, refDist: 4, capKey: 'wither_shoot', priority: P.NEAR, replicate: true,
+  recipe: (v, t, p, g) => { blip(v, t, { wave: 'square', freq: 700, dur: 0.05, gain: 0.3 * g }); return hiss(v, t, { freq: 1800, dur: 0.15, gain: 0.3 * g, pitch: p }); } });
+def('mob.wither.break_block', { bus: 'sfx', maxDist: 48, refDist: 4, capKey: 'wither_break', priority: P.NEAR, replicate: true,
+  recipe: (v, t, p, g) => { thud(v, t, { f0: 180, f1: 60, dur: 0.2, gain: 0.5 * g, pitch: p }); return noiseBurst(v, t, { src: 'white', filter: 'lp', freq: 1400, Q: 0.6, dur: 0.15, gain: 0.4 * g, pitch: p }); } });
+def('block.beacon.activate', { bus: 'sfx', maxDist: 48, refDist: 4, capKey: 'beacon', priority: P.NEAR, replicate: true,
+  recipe: (v, t, p, g) => chime(v, t, { freq: 880, ratio: 2.0, index: 3, dur: 0.7, gain: 0.5 * g, pitch: p }) });
+def('block.beacon.deactivate', { bus: 'sfx', maxDist: 48, refDist: 4, capKey: 'beacon', priority: P.NEAR, replicate: true,
+  recipe: (v, t, p, g) => sweep(v, t, { src: 'osc', wave: 'sine', f0: 700, f1: 200, dur: 0.5, gain: 0.4 * g, pitch: p }) });
+def('block.beacon.ambient', { bus: 'sfx', loop: true, maxDist: 16, capKey: 'beacon_hum', priority: P.NEAR, replicate: true,
+  recipe: (v, t, p, g) => drone(v, t, { freqs: [220, 330], dur: 1.0, gain: 0.3 * g, lpFreq: 1500, loop: true }) });
+def('block.beacon.power_select', { ...UI, recipe: (v, t, p, g) => chime(v, t, { freq: 1200, ratio: 2.0, index: 2, dur: 0.3, gain: 0.4 * g, pitch: p }) });
+def('block.end_portal.spawn', { bus: 'sfx', maxDist: 4000, refDist: 16, cap: 1, capKey: 'end_portal_spawn', priority: P.NEAR, replicate: false,
+  recipe: (v, t, p, g) => drone(v, t, { freqs: [90, 135, 180], dur: 2.0, gain: 0.6 * g, lpFreq: 900 }) });
+
 def('ui.click', {
   ...UI,
   recipe: (v, t, p, g) => blip(v, t, { wave: 'square', freq: 800, dur: 0.03, gain: 0.25 * g }),
@@ -704,13 +731,18 @@ const MOB_IDLE = {
   },
 };
 
+// 13-BOSSES — the dragon entity's type is 'ender_dragon'; alias the 'dragon'
+// voice so mob.ender_dragon.hurt/death resolve.
+MOB_IDLE.ender_dragon = (v, t, p, g, s) => MOB_IDLE.dragon(v, t, p, g, s);
+
 // Mobs that get no `.idle` id at all (§3.4: "no idle").
-const NO_IDLE = new Set(['creeper', 'wither']);
+const NO_IDLE = new Set(['creeper', 'wither', 'ender_dragon']);
 // Larger mobs override the default 16-block audible radius.
 const MOB_DIST = {
   ghast: { maxDist: 48, refDist: 4 },
   dragon: { maxDist: 96, refDist: 8 },
   wither: { maxDist: 96, refDist: 8 },
+  ender_dragon: { maxDist: 96, refDist: 8 },
 };
 
 for (const type of Object.keys(MOB_IDLE)) {

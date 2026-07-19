@@ -20,6 +20,9 @@ import {
 } from './entities/ItemEntity.js';
 import { FallingBlock } from './entities/FallingBlock.js';
 import { XpOrb } from './entities/XpOrb.js';
+import { EndCrystal } from './entities/EndCrystal.js';   // 13-BOSSES §3
+import { EndFight } from './entities/EnderDragon.js';    // 13-BOSSES §7
+import { pyramidLevels, skyClear, applyBeaconEffects } from './world/Beacon.js';   // 13-BOSSES §9
 import { PrimedTnt } from './entities/PrimedTnt.js';
 import { ThrownProjectile } from './entities/ThrownProjectile.js';
 import { Arrow } from './entities/Arrow.js';
@@ -38,6 +41,7 @@ import { emitSound, startLoop, at } from './audio/engine.js';
 import { forgetFireInChunk } from './world/fire.js';
 import { RedstoneEngine } from './redstone/RedstoneEngine.js';
 import { RedstoneComponents, installComponentHooks } from './redstone/components.js';
+import { installBossHooks } from './world/bossHooks.js';   // 13-BOSSES
 import { RedstoneContainers } from './redstone/containersRedstone.js';
 import { getDimension } from './world/dimensions.js';
 import { findOrCreatePortal } from './world/Portal.js';
@@ -124,6 +128,8 @@ export class Game {
     this.redstoneComponents = new RedstoneComponents(this);
     this.redstoneContainers = new RedstoneContainers(this);
     installComponentHooks();
+    installBossHooks();   // 13-BOSSES — wither summon + beacon BE + dragon-egg teleport
+    this.endFight = new EndFight(this);   // 13-BOSSES §7 — owns dimMeta[2].endFight + the dragon
 
     if (savedMeta) {
       this.world.time = savedMeta.worldTime ?? 0;
@@ -246,6 +252,9 @@ export class Game {
       this.dayNight.tick();
       this.mobSpawner?.tick();
       this.tickVillages();
+      // 13-BOSSES §7.1 — the dragon fight (dragon + parts + respawn ritual) ticks
+      // outside the EntityManager while the End is active (AMENDS 05 §1).
+      if (this.world.activeDim === 2) this.endFight?.tick(this.world.seedString);
     }
     this.chunkManager.tick(this.player.pos.x, this.player.pos.z);
     if (this.state !== STATE.LOADING) {
@@ -291,6 +300,14 @@ export class Game {
         } else {
           this.snapPlayerToGround();
         }
+        // 13-BOSSES §7.1 — the arena ring is now streamed. On the first End entry
+        // spawn the dragon + 10 crystals; on any dim-2 activation, restore a saved
+        // dragon. Both no-op when not applicable.
+        if (this.world.activeDim === 2) {
+          const seed = this.world.seedString;
+          this.endFight?.spawnFight(seed);
+          this.endFight?.maybeRespawnDragon(seed);
+        }
         this.setState(STATE.PLAYING);
         this.input.requestLock();
       }
@@ -325,6 +342,10 @@ export class Game {
     const desc = getDimension(targetDim);
     if (!desc) { console.warn('[dim] unknown dimension', targetDim); return; }
     const p = this.player;
+    // 13-BOSSES — bosses don't tick across dimensions, so drop their bars now
+    // (the dragon can't remove its own once the End stops ticking).
+    this.ui?.bossBar?.clearAll?.();
+    if (this.endFight) this.endFight.liveDragon = null;   // the dragon re-hydrates via maybeRespawnDragon on return
 
     // 1. durably persist + unload the source dim's chunks. flushAllChunks writes
     //    every modified chunk synchronously via saveChunkNow (keyed by chunk.dim),
@@ -382,6 +403,7 @@ export class Game {
     this.debug.audioMs = this.audio?.debug.budgetMs ?? 0;
     this.dayNight.updateRender(alpha, this.camera);
     this.entities.updateRender(alpha, this.player);
+    if (this.world.activeDim === 2) this.endFight?.updateRender(alpha);   // 13-BOSSES — dragon self-renders
     this.particles.update(alpha);
     this.updateSelectionBox();
 
@@ -600,6 +622,8 @@ export class Game {
         : kind === 'shulker_box' ? { type: 'shulker_box', data: { slots: new Array(27).fill(null) } }
         // 11-END §11 — end gateway (paired-teleport block-entity).
         : kind === 'end_gateway' ? { type: 'end_gateway', data: { partner: null } }
+        // 13-BOSSES §9.1 — beacon (primary/secondary power; levels recomputed).
+        : kind === 'beacon' ? { type: 'beacon', data: { primaryEffect: null, secondary: null, levels: 0, active: false, beamHandle: null } }
         : { type: 'furnace', data: { slots: new Array(3).fill(null), burn: 0, fuelTotal: 0, cook: 0, xpBank: 0 } };
       chunk.blockEntities.set(i, be);
       chunk.modified = true;
@@ -620,9 +644,25 @@ export class Game {
           else if (be.type === 'hopper') this.redstoneContainers.tickHopper(be, x, y, z);   // 07 §11.3
           else if (be.type === 'spawner') tickSpawner(this, be, x, y, z);   // 10-NETHER §6.2
           else if (be.type === 'brewing') tickBrewing(this, be.data, x, y, z, chunk);        // 09-POTIONS §10.2
+          else if (be.type === 'beacon') this.tickBeacon(be, x, y, z);      // 13-BOSSES §9
         }
       }
     }
+  }
+
+  // 13-BOSSES §9.2/§9.3/§9.5 — every 80 ticks recompute the pyramid + sky access;
+  // apply the primary power to nearby players; fire activate/deactivate transitions.
+  tickBeacon(be, x, y, z) {
+    if (this.world.getBlock(x, y, z) !== B.BEACON) return;
+    if (this.world.time % 80 !== 0) return;
+    const levels = pyramidLevels(this.world, x, y, z);
+    const active = levels >= 1 && skyClear(this.world, x, y, z);
+    be.data.levels = levels;
+    if (active !== be.data.active) {
+      emitSound(active ? 'block.beacon.activate' : 'block.beacon.deactivate', at(x + 0.5, y + 0.5, z + 0.5));
+      be.data.active = active;
+    }
+    if (active && be.data.primaryEffect != null) applyBeaconEffects(this, be, x, y, z, levels);
   }
 
   // 06 §11.1
@@ -695,7 +735,12 @@ export class Game {
 
   // ---------------------------------------------------------------- explosions (05 §12)
 
-  explode(x, y, z, power) {
+  // 13-BOSSES §8.7 — the blue wither skull treats every destructible block as
+  // blast-0 (breaks obsidian, removes fluids); only hardness<0 blocks (bedrock +
+  // portal family = witherImmune) survive via the existing guard below.
+  explodeBlast0(x, y, z, power) { this.explode(x, y, z, power, { blastZero: true }); }
+
+  explode(x, y, z, power, opts = {}) {
     const world = this.world;
     const rng = world.rng;
     // block destruction: sphere with falloff (05 §12.2 adaptation)
@@ -719,7 +764,7 @@ export class Game {
             // like water: resistance = max(blast, 100). A creeper cannot crater
             // a submerged fence line. Hoisted above the gate; the drops call
             // below needs the same read.
-            const blast = (state & WATERLOGGED) ? Math.max(blk.blast, 100) : blk.blast;
+            const blast = opts.blastZero ? 0 : ((state & WATERLOGGED) ? Math.max(blk.blast, 100) : blk.blast);
             const strength = power * (0.7 + 0.6 * rng()) * (1 - r / (1.3 * power));
             if (strength <= (blast + 0.3) * 0.3) continue;
             if (id === B.TNT) {
@@ -988,6 +1033,7 @@ export class Game {
     if (rec.type === 'item') e = ItemEntity.deserialize(this.world, rec);
     else if (rec.type === 'primed_tnt') { e = PrimedTnt.deserialize(this.world, rec); restoredTnt = true; }
     else if (rec.type === 'xp_orb') { e = new XpOrb(this.world, rec.pos[0], rec.pos[1], rec.pos[2], rec.value); }
+    else if (rec.type === 'end_crystal') e = EndCrystal.deserialize(this.world, rec);   // 13-BOSSES §3
     else {
       e = createMob(this.world, rec.type, rec.pos[0], rec.pos[1], rec.pos[2], {});
       if (e) e.deserialize(rec);

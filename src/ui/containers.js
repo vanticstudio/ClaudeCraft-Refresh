@@ -6,6 +6,7 @@
 import { ITEMS, RECIPES, SMELTING, fuelValue, idOf, smithingUpgrade, SMITHING_UPGRADES } from '../registry/items.js';
 import { iconCss, tileForItemId, paintSlotIcon } from './hud.js';
 import { emitSound, at, audio } from '../audio/engine.js';
+import { beaconPrimaryOptions } from '../world/Beacon.js';   // 13-BOSSES §9.4
 import { TAB, buildPalette, searchPalette, visibleTabs } from './creativeTabs.js';
 import { tagsEqual, cloneStack, NAME_MAX, customName, getEnchants } from '../items/tags.js';
 // --- 08-ENCHANTING §4 / §8 / §9 ---
@@ -238,7 +239,8 @@ export class Containers {
     // 08 §4.2/§8.5/§9.1 — the enchanting table, anvil and grindstone all have
     // transient input slots that return to the inventory on close (the craft-grid
     // rule, 06 §14.1). Kept separate from craftGrid so findRecipe never sees them.
-    this.inputs = ENCHANT_KINDS.has(kind) ? [null, null] : null;
+    this.inputs = ENCHANT_KINDS.has(kind) ? [null, null] : (kind === 'beacon' ? [null] : null);
+    if (kind !== 'beacon') this.beaconSel = null;   // 13-BOSSES — reset the transient selection
     this.anvilName = null;          // §8.3's text field; null = "not renaming"
     this.shelves = 0;               // §4.1 bookshelf power, recomputed on refresh
     this.offers = null;             // §4.3 {req, offer}
@@ -622,7 +624,7 @@ export class Containers {
       inventory: 'Inventory', crafting: 'Crafting', furnace: 'Furnace', chest: 'Chest',
       enchanting: 'Enchant', anvil: 'Repair & Name', grindstone: 'Repair & Disenchant',
       dispenser: 'Dispenser', dropper: 'Dropper', hopper: 'Hopper', smithing: 'Smithing Table',
-      brewing: 'Brewing Stand', trade: 'Villager', shulker_box: 'Shulker Box',
+      brewing: 'Brewing Stand', trade: 'Villager', shulker_box: 'Shulker Box', beacon: 'Beacon',
     }[this.kind];
     panel.innerHTML = `<div class="panel-title">${title}</div>`;
     this.panel = panel;
@@ -661,6 +663,60 @@ export class Containers {
         list.appendChild(row);
       });
       panel.appendChild(list);
+      defs.push(...this.playerStorageDefs());
+      for (const def of defs) this.addSlot(panel, def);
+      this.root.appendChild(panel);
+      this.refresh();
+      return;
+    }
+
+    // 13-BOSSES §9.4 — the beacon power screen: level-gated primary buttons, an
+    // L4 secondary column, a payment slot, and a confirm that consumes 1 metal.
+    if (this.kind === 'beacon') {
+      const levels = this.be?.data?.levels ?? 0;
+      this.beaconSel = this.beaconSel ?? { primary: this.be?.data?.primaryEffect ?? null, secondary: this.be?.data?.secondary ?? null };
+      const box = document.createElement('div'); box.className = 'beacon-screen';
+      const hdr = document.createElement('div'); hdr.className = 'beacon-hdr'; hdr.textContent = 'Tier ' + levels;
+      box.appendChild(hdr);
+      const primRow = document.createElement('div'); primRow.className = 'beacon-row';
+      for (const opt of beaconPrimaryOptions()) {
+        const btn = document.createElement('div');
+        const enabled = levels >= opt.minLevel;
+        btn.className = 'beacon-btn' + (enabled ? '' : ' disabled') + (this.beaconSel.primary === opt.id ? ' sel' : '');
+        btn.textContent = opt.name;
+        if (enabled) btn.addEventListener('click', () => { this.beaconSel.primary = opt.id; emitSound('ui.click', null); this.build(); });
+        primRow.appendChild(btn);
+      }
+      box.appendChild(primRow);
+      if (levels >= 4) {
+        const secRow = document.createElement('div'); secRow.className = 'beacon-row';
+        for (const [key, label] of [['regen', 'Regen II'], ['primary2', 'Primary II']]) {
+          const btn = document.createElement('div');
+          btn.className = 'beacon-btn' + (this.beaconSel.secondary === key ? ' sel' : '');
+          btn.textContent = label;
+          btn.addEventListener('click', () => { this.beaconSel.secondary = this.beaconSel.secondary === key ? null : key; emitSound('ui.click', null); this.build(); });
+          secRow.appendChild(btn);
+        }
+        box.appendChild(secRow);
+      }
+      const confirm = document.createElement('div');
+      const canConfirm = this.beaconSel.primary != null && this.inputs?.[0];
+      confirm.className = 'beacon-confirm' + (canConfirm ? '' : ' disabled');
+      confirm.textContent = '✔ Confirm';
+      if (canConfirm) confirm.addEventListener('click', () => {
+        const pay = this.inputs[0]; pay.count--; if (pay.count <= 0) this.inputs[0] = null;
+        this.be.data.primaryEffect = this.beaconSel.primary;
+        this.be.data.secondary = this.beaconSel.secondary;
+        this.markBeDirty();
+        emitSound('block.beacon.power_select', this.pos ? at(this.pos.x + 0.5, this.pos.y + 0.5, this.pos.z + 0.5) : null);
+        this.game.closeContainerScreen?.();
+      });
+      box.appendChild(confirm);
+      panel.appendChild(box);
+      // payment slot (accepts 1 iron/gold/diamond/emerald)
+      defs.push({ x: 80, y: 104, region: 'beaconPay', maxStack: 1,
+        get: () => this.inputs[0], set: v => { this.inputs[0] = v; },
+        canPut: s => [322, 324, 325, 435].includes(s.id) });
       defs.push(...this.playerStorageDefs());
       for (const def of defs) this.addSlot(panel, def);
       this.root.appendChild(panel);
@@ -1562,7 +1618,7 @@ export class Containers {
         enchanting: [B.ENCHANTING_TABLE], anvil: [B.ANVIL], grindstone: [B.GRINDSTONE],
         dispenser: [83], dropper: [84], hopper: [85],
         smithing: [B.SMITHING_TABLE], brewing: [B.BREWING_STAND],
-        shulker_box: [B.SHULKER_BOX], trade: undefined,
+        shulker_box: [B.SHULKER_BOX], trade: undefined, beacon: [B.BEACON],
       }[this.kind];
       const stillThere = EXPECT ? EXPECT.includes(id) : true;
       if (d > 8 || !stillThere) { this.game.closeContainerScreen?.(); return; }

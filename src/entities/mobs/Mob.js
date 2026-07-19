@@ -134,12 +134,13 @@ export class Mob extends LivingEntity {
     // 3. despawn (05 §4)
     if (this.tickDespawn()) return;
 
-    // 4. AI (skipped beyond 64 blocks — 05 §1 sim range)
+    // 4. AI (skipped beyond 64 blocks — 05 §1 sim range). 13-BOSSES AMENDS 05 §1:
+    // bosses (isBoss) always run full AI regardless of distance.
     const player = this.world.game?.player;
     const pd = player ? this.distTo(player) : 999;
     this.moveIntent = null;
     this.wantJump = false;
-    if (pd <= 64) {
+    if (this.isBoss || pd <= 64) {
       this.updateTarget(player);
       this.runGoals();
     }
