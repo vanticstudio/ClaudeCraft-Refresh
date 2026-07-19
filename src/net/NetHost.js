@@ -51,6 +51,8 @@ class Client {
     this.wasSleeping = false;
     this.dim = 0;
     this.chunkCenter = null;     // {cx,cz}
+    this.lastEquipHeld = undefined;  // §3.3 equip-on-change latch (undefined ≠ any id → first send)
+    this.lastEquipArmor = -1;
   }
 }
 
@@ -65,6 +67,8 @@ export class NetHost {
     this.tickCount = 0;
     this.onCode = null;          // (code) → UI badge
     this.onError = null;
+    this.lastEquipHeld = undefined;  // §3.3 equip-on-change latch for the host's own player
+    this.lastEquipArmor = -1;
     this.stats = { out: 0, in: 0, outBytes: 0, inBytes: 0 };
   }
 
@@ -235,10 +239,18 @@ export class NetHost {
     return frame;
   }
 
-  // Minimal remote-player continuous-use: eating held food while USE held (§5.2).
+  // §5.2 — remote players tick like the local one. A client's `useBlock {self}`
+  // runs Interaction.useSelf host-side, which OPENS a use channel (`usingItem`);
+  // nothing else ever advances or closes it, so without this the channel is stuck
+  // forever: 03 §7.1 canSprint gates on `!usingItem` (permanent sprint loss) and
+  // Interaction's `!p.usingItem` right-click gate swallows every later use request
+  // (that client can never eat, drink or draw a bow again).
   _tickRemoteUse(client, frame) {
-    // full eating/bow reuse of Interaction is out of scope for remote players;
-    // discrete uses arrive as useBlock requests. (DEVIATIONS)
+    const p = client.player;
+    if (!p?.usingItem) return;
+    if (p.dead) { p.usingItem = null; return; }   // matches Interaction.tick's death path
+    const g = this.game;
+    g.withActivePlayer(p, () => g.interaction.updateUseChannel(frame));
   }
 
   // step 2.5 — apply queued block edits / uses / attacks / drops / container clicks
@@ -282,7 +294,16 @@ export class NetHost {
       }
     }
     // playerState deltas (≤4/s cap ≈ every 5 ticks) + equip on change
-    if (this.tickCount % 5 === 0) for (const client of this.clients.values()) if (client.phase === 'playing') this._sendPlayerState(client);
+    if (this.tickCount % 5 === 0) {
+      for (const client of this.clients.values()) {
+        if (client.phase !== 'playing') continue;
+        this._sendPlayerState(client);
+        this._checkEquip(client.player, client);
+      }
+      // the host's own held item/armor too — nobody is watching with no peers, and
+      // a joiner gets the current held item from entitySpawn.static (netStaticFor)
+      if (this.clients.size) this._checkEquip(this.game.player, this);
+    }
     // 1 Hz player list
     if (this.tickCount % 20 === 0) this._sendPlayerList();
     // 100-tick time sync
@@ -595,6 +616,20 @@ export class NetHost {
   }
   broadcastEquip(entityId, heldItemId, armorTier) {
     this._broadcastJson({ t: 'equip', entityId, heldItemId, armorTier });
+  }
+
+  // §3.3 "equip on change" — the snapshot record carries no equipment, so a player's
+  // held item and armor reach the other clients' puppets ONLY through this broadcast.
+  // `store` holds the last-sent pair (the Client for a remote player, `this` for the
+  // host's own player) so the message goes out on change, not every 5 ticks.
+  _checkEquip(p, store) {
+    if (!p) return;
+    const heldItemId = p.heldStack?.id ?? null;
+    let armorTier = 0;
+    for (const a of p.armor) if (a) armorTier++;
+    if (store.lastEquipHeld === heldItemId && store.lastEquipArmor === armorTier) return;
+    store.lastEquipHeld = heldItemId; store.lastEquipArmor = armorTier;
+    this.broadcastEquip(p.id, heldItemId, armorTier);
   }
   broadcastSound(name, x, y, z, pitch, vol) {
     // only clients within 32 m (§3.3) — cheap dim/interest gate

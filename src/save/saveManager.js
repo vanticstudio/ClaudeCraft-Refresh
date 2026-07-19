@@ -148,6 +148,8 @@ export class SaveManager {
     // is wired in startWorld and is the authoritative source in every build.
     const game = chunk?.gameRef ?? this.game ?? (typeof window !== 'undefined' ? window.game : null);
     if (!game) return;
+    if (game.net?.isClient) return;   // 14 §9.1 — see saveAll: clients persist no world data
+
     try {
       const record = this.serializeChunk(chunk, game);
       const key = this.keyFor(chunk.key, chunk.dim);
@@ -162,6 +164,12 @@ export class SaveManager {
 
   // meta + all modified chunks in one transaction (01 §16.2)
   saveAll(game, { sync = false } = {}) {
+    // 14 §9.1 — "Clients save nothing but localStorage identity/settings." A joined
+    // client's world is the HOST's, replicated over the wire; writing its chunks and
+    // meta into THIS browser's IndexedDB overwrites the player's own single-player
+    // save with someone else's world. Per-player state is the host's responsibility
+    // (§2.4 meta.players). Host and solo sessions have no net.isClient and save normally.
+    if (game?.net?.isClient) return Promise.resolve();
     if (!this.db || !game?.world || !game.player) return Promise.resolve();
     if (this.saving) {
       console.warn('[save] save overlapping previous — skipped');

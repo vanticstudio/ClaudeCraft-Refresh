@@ -121,7 +121,12 @@ wss.on('connection', (ws, req) => {
     else return ws.close(1002, 'bad control');
     ws.on('message', (buf, bin) => {           // subsequent frames = data (binary)
       if (!bin) return;                        // in-session JSON rides binary frames post-handshake
-      if (--ws.tokens < 0) return ws.close(1008, 'rate');   // §10 token bucket
+      // §10 — the token bucket is the CLIENT message-rate cap (100/s, bucket 200).
+      // The HOST (slot 0) is exempt: it fans snapshots, playerState and the chunk
+      // stream out to every peer, which is well past 100 msgs/s at even one client
+      // (§11), so metering it kills a healthy room. Host abuse is moot — it owns
+      // the room and can close it at will.
+      if (ws.slot !== 0 && --ws.tokens < 0) return ws.close(1008, 'rate');
       route(ws, buf);
     });
   });
