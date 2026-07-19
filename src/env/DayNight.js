@@ -427,5 +427,15 @@ export class DayNight {
     this.thunderLevel = rec.thunderLevel ?? 0;
   }
 
+  // 14 AMENDS 04 §12.1 — a CLIENT never rolls weather RNG; it applies the host's
+  // replicated scalars from timeSync and recomputes skyDarken from worldTime.
+  applyNetWeather(m) {
+    if (m.raining !== undefined) this.raining = m.raining;
+    if (m.thundering !== undefined) this.thundering = m.thundering;
+    if (m.rainLevel !== undefined) this.rainLevel = m.rainLevel;
+    if (m.thunderLevel !== undefined) this.thunderLevel = m.thunderLevel;
+    this.world.skyDarken = this.computeSkyDarken(this.world.time);
+  }
+
   dispose() { this.sky.dispose(); }
 }

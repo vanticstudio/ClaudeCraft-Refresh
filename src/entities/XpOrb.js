@@ -35,7 +35,9 @@ export class XpOrb extends Entity {
     if (this.age >= 6000) { this.dead = true; return; }
     this.updateMedium();
 
-    const player = this.world.game?.player;
+    // 14 AMENDS 05 §15 / §5.4 — home to and be collected by the NEAREST player
+    // (host-authoritative; runs only on the host since puppets never tick).
+    const player = this.world.game?.nearestPlayerTo?.(this.pos.x, this.pos.y, this.pos.z) ?? this.world.game?.player;
     if (player && !player.dead) {
       const dx = player.pos.x - this.pos.x;
       const dy = (player.pos.y + player.height / 2) - (this.pos.y + 0.25);

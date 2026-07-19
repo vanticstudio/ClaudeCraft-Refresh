@@ -76,8 +76,19 @@ export class SaveManager {
       this.savedChunkKeys.clear();
       if (meta.player) meta.player.dimension = 0;
       meta.dimensions = meta.dimensions ?? {};
-      console.warn('[save] migrated v' + meta.version + ' → v' + SAVE_VERSION +
-        ' (chunk store cleared; player preserved)');
+      console.warn('[save] migrated v' + meta.version + ' → v2 (chunk store cleared; player preserved)');
+    }
+    // 14-MULTIPLAYER §2.4 — v2→v3 is NON-destructive: wrap the single `player` under
+    // the host's own playerId in a `players` map (chunks untouched). Composes with
+    // the v1 branch above (a v1 save runs both). This.hostId is set by main.js.
+    if (meta.version < 3 && !meta.players) {
+      const hostId = this.hostId || 'host';
+      meta.players = {};
+      if (meta.player) {
+        meta.players[hostId] = { ...meta.player, name: meta.player.name || 'Player', lastSeen: 0 };
+        delete meta.player;
+      }
+      console.warn('[save] migrated → v3 (player → players[' + hostId + '])');
     }
     meta.version = SAVE_VERSION;
   }
@@ -118,7 +129,9 @@ export class SaveManager {
       seed: game.world.seedString,
       worldTime: game.world.time,
       weather: game.dayNight?.serialize() ?? null,
-      player: game.player.serialize(),
+      // 14-MULTIPLAYER AMENDS 01 §16 — per-player records keyed by playerId
+      // (host + every known client, connected or last-seen). Replaces `player`.
+      players: game.buildPlayerRecords(),
       // 10-NETHER §2.4 — per-dimension blob (portal links §3.6, fortress registry
       // §5, and 11's End-fight record live here).
       dimensions: game.dimMeta ?? {},

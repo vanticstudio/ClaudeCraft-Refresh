@@ -11,10 +11,21 @@ export class EntityManager {
   }
 
   add(entity) {
-    entity.id = this.nextId++;
+    entity.id = this._allocId();
     this.entities.set(entity.id, entity);
     this.register(entity);
     return entity;
+  }
+
+  // 14 AMENDS 01 §13.2 — ids allocate from a wrapping u16 counter skipping live
+  // ids (host-authoritative). Clients add puppets under their own local ids but
+  // track the host id separately (entity.netId).
+  _allocId() {
+    for (let i = 0; i < 65535; i++) {
+      this.nextId = (this.nextId % 65535) + 1;   // 1..65535, never 0
+      if (!this.entities.has(this.nextId)) return this.nextId;
+    }
+    return this.nextId;
   }
 
   register(entity) {
@@ -30,10 +41,16 @@ export class EntityManager {
   }
 
   tick(player) {
-    const p = this.world.playerChunk;
-    if (player) this.register(player);   // player ticks separately but must stay indexed
+    const game = this.world.game;
+    // 14 AMENDS 01 §13.2 — every player entity ticks separately (local in Game.tick,
+    // remotes in NetHost.tickRemotePlayers) but must stay spatially indexed.
+    if (game?.eachPlayer) game.eachPlayer(pl => this.register(pl));
+    else if (player) this.register(player);
+    // 14 AMENDS 01 §6.2 — sim range is the UNION of every player's SIM_RADIUS.
+    const centers = game?.playerChunkCenters ? game.playerChunkCenters() : (this.world.playerChunk ? [this.world.playerChunk] : []);
+    const isPlayer = e => game ? game.isPlayer(e) : e === player;
     for (const entity of this.entities.values()) {
-      if (entity === player) continue;
+      if (isPlayer(entity)) continue;
       if (entity.dead) {
         // death animation still advances (mobs keel over 20 ticks, 05 §16.3)
         if (entity.deathAnimTicks) entity.deathTime++;
@@ -47,8 +64,10 @@ export class EntityManager {
       // chunk-gen), so a wither ticks even when the player is off in the arena.
       const ecx = Math.floor(entity.pos.x) >> 4, ecz = Math.floor(entity.pos.z) >> 4;
       if (!entity.isBoss) {
-        // freeze outside SIM_RADIUS or in ungenerated chunks (01 §12/§13.2)
-        if (p && Math.max(Math.abs(ecx - p.cx), Math.abs(ecz - p.cz)) > SIM_RADIUS) continue;
+        // freeze outside every player's SIM_RADIUS or in ungenerated chunks (01 §12/§13.2)
+        let near = false;
+        for (const c of centers) { if (Math.max(Math.abs(ecx - c.cx), Math.abs(ecz - c.cz)) <= SIM_RADIUS) { near = true; break; } }
+        if (!near) continue;
         const chunk = this.world.chunks.get(chunkKey(ecx, ecz));
         if (!chunk || chunk.state < ChunkState.GENERATED) continue;
       }
@@ -58,6 +77,11 @@ export class EntityManager {
     // reap after the entity pass
     for (const entity of this.entities.values()) {
       if (!entity.dead) continue;
+      // 14 — a dead PLAYER is never auto-reaped: it stays in the manager (frozen,
+      // out of the snapshot interest set) so it can respawn in place. It is removed
+      // only explicitly on disconnect (removeNetPlayer). Otherwise a respawn would
+      // find no host entity for that player.
+      if (isPlayer(entity)) continue;
       if (entity.deathTime < (entity.deathAnimTicks ?? 0)) continue;
       this.remove(entity);
     }
@@ -133,8 +157,10 @@ export class EntityManager {
   // DragonParts (isDragonPart) are re-created by the dragon each tick, so reaping
   // them here is harmless.
   onChunkUnloading(chunk, player) {
+    const game = this.world.game;
     for (const e of [...chunk.entities]) {
-      if (e === player) continue;
+      // 14 AMENDS 01 §13.2 — chunk-unload discard never applies to any player.
+      if (game ? game.isPlayer(e) : e === player) continue;
       e.deathTime = 0;
       e.dead = true;
       this.remove(e);

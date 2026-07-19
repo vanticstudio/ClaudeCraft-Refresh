@@ -10,7 +10,8 @@
     "build": "vite build",
     "prepreview": "node scripts/gen-theme-manifest.mjs --build",
     "preview": "vite preview",
-    "theme:clear": "node scripts/clear-theme-tracks.mjs"
+    "theme:clear": "node scripts/clear-theme-tracks.mjs",
+    "relay": "node server/relay.js"
   },
   "dependencies": {
     "three": "0.185.1",
@@ -18,6 +19,7 @@
     "alea": "^1.0.1"
   },
   "devDependencies": {
-    "vite": "^8.1.4"
+    "vite": "^8.1.4",
+    "ws": "^8.20.1"
   }
 }

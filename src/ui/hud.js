@@ -86,6 +86,7 @@ export class Hud {
         <div id="toast"></div>
         <div id="sleep-fade"></div>
         <div id="mode-badge">CREATIVE</div>
+        <div id="join-badge" hidden title="Click to copy the join code"></div>
       </div>`;
     this.el = {
       effectStack: document.getElementById('effect-stack'),
@@ -168,6 +169,24 @@ export class Hud {
   }
 
   setSleepFade(on) { this.el.sleep.style.opacity = on ? '1' : '0'; }
+
+  // 14 §8.1 — persistent host badge showing the join code (click = copy).
+  setJoinCode(code) {
+    const b = document.getElementById('join-badge');
+    if (!b) return;
+    this._joinCode = code;
+    b.hidden = false;
+    b.classList.remove('relay-lost');
+    b.textContent = `Code: ${code} ⧉`;
+    b.onclick = () => { try { navigator.clipboard?.writeText(code); this.toast('Join code copied'); } catch {} };
+  }
+  setRelayLost() {
+    const b = document.getElementById('join-badge');
+    if (!b) return;
+    b.classList.add('relay-lost');
+    b.textContent = 'Relay lost — session ended';
+    b.onclick = null;
+  }
 
   /**
    * AMENDS 03 §23 / 18 §1.4 — show/hide the survival cluster on a mode switch

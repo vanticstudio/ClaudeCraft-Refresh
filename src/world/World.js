@@ -108,7 +108,7 @@ export class World {
   // light, meshing and neighbor updates intact (which `noUpdates` would also
   // kill). 08 §5.6.2 needs exactly this: a Silk Touch break of ice must leave
   // air, and ice's onBroken is what reverts the cell to water.
-  setBlock(x, y, z, id, { state = 0, byPlayer = false, noUpdates = false, skipOnBroken = false } = {}) {
+  setBlock(x, y, z, id, { state = 0, byPlayer = false, noUpdates = false, skipOnBroken = false, remote = false } = {}) {
     if (y < 0 || y > MAX_Y) return false;
     const chunk = this.getChunkAt(x, z);
     if (!chunk) return false;
@@ -129,6 +129,11 @@ export class World {
     chunk.blocks[i] = id;
     chunk.states[i] = state;
     chunk.modified = true;
+
+    // 14 §3.4 — the host captures EVERY mutation (player, fluids, fire, gravity,
+    // redstone, explosions all funnel here) into the per-tick blockSet broadcast.
+    // `remote` marks a client-applied streamed edit so it is never re-broadcast.
+    if (!remote && this.game?.net?.isHost) this.game.net.recordBlockSet(this.activeDim, x, y, z, id, state);
 
     // 15 §6.4 — "any fire removal (any path) deletes its entry". Fire is removed
     // by at least five routes that never touch the fire engine: water/lava
@@ -227,6 +232,10 @@ export class World {
     chunk.modified = true;
     if (this.chunkManager && !opts?.noRemesh) {
       for (const k of this.collectDirtyKeys(chunk, x, z, null)) this.chunkManager.markDirty(k);
+      // 14 — replicate visible nibble changes (door open, crop stage, repeater
+      // delay) as a blockSet so clients see them without simulating. noRemesh
+      // writes (fire age) are cosmetically ageless and skipped.
+      if (!opts?.remote && this.game?.net?.isHost) this.game.net.recordBlockSet(this.activeDim, x, y, z, chunk.blocks[i], state);
     }
     // 07 §6.6 — a state-byte change is an observer trigger (dust power, repeater
     // delay, door open, crop stage). The single chokepoint for non-id changes.

@@ -614,3 +614,41 @@ html, body {
 .beacon-btn.disabled { opacity: 0.4; cursor: not-allowed; }
 .beacon-confirm { margin-top: calc(2 * var(--gpx)); padding: calc(2 * var(--gpx)); text-align: center; background: #4a8f4a; color: #fff; border: calc(1 * var(--gpx)) solid; border-color: #8fe08f #2a5a2a #2a5a2a #8fe08f; cursor: pointer; font-size: calc(6 * var(--gpx)); }
 .beacon-confirm.disabled { opacity: 0.4; cursor: not-allowed; background: #6b6b6b; }
+
+/* ============================================================ 14-MULTIPLAYER */
+#chat-root { position: absolute; inset: 0; pointer-events: none; font-family: monospace; }
+#chat-log { position: absolute; left: 10px; bottom: 60px; display: flex; flex-direction: column; gap: 2px; max-width: 46%; }
+.chat-line { color: #fff; text-shadow: 1px 1px 0 #000; background: rgba(0,0,0,0.35); padding: 1px 6px; font-size: 14px; transition: opacity 1.2s; }
+.chat-line.sys { color: #ffd479; font-style: italic; }
+.chat-line.faded { opacity: 0.12; }
+#chat-input { position: absolute; left: 10px; bottom: 32px; width: 46%; pointer-events: auto; font-family: monospace; font-size: 14px; padding: 4px 6px; background: rgba(0,0,0,0.7); color: #fff; border: 1px solid #888; }
+#sleep-line { position: absolute; left: 50%; top: 14%; transform: translateX(-50%); color: #cfe0ff; text-shadow: 1px 1px 0 #000; font-size: 15px; background: rgba(0,0,0,0.4); padding: 2px 10px; }
+#player-list { position: absolute; left: 50%; top: 12%; transform: translateX(-50%); background: rgba(10,10,14,0.82); border: 1px solid #555; padding: 8px 12px; min-width: 320px; color: #fff; }
+.pl-row { display: grid; grid-template-columns: 1fr auto auto; gap: 16px; font-size: 14px; padding: 2px 0; }
+.pl-name { font-weight: bold; } .pl-dim { color: #9bd; } .pl-ping { color: #9d9; }
+#join-badge { position: absolute; right: 10px; top: 10px; background: rgba(0,0,0,0.55); color: #cfe; padding: 4px 10px; font-family: monospace; font-size: 14px; border: 1px solid #4a7; pointer-events: auto; cursor: pointer; }
+#join-badge.relay-lost { color: #f88; border-color: #a33; }
+
+.net-screen { display: none; flex-direction: column; align-items: center; justify-content: center; gap: 12px; }
+.net-screen.visible { display: flex; }
+.net-screen h1 { color: #fff; }
+.net-screen label { display: flex; flex-direction: column; gap: 4px; color: #ddd; font-size: 14px; font-family: monospace; }
+.net-screen input { padding: 6px 8px; font-size: 15px; font-family: monospace; min-width: 280px; }
+.net-row { display: flex; gap: 12px; margin-top: 8px; }
+.net-screen button { padding: 8px 18px; font-size: 15px; cursor: pointer; }
+.net-msg { color: #f88; font-size: 14px; min-height: 18px; }
+#conn-bar-outer { width: 360px; height: 18px; background: #222; border: 1px solid #555; }
+#conn-bar { height: 100%; width: 0; background: linear-gradient(90deg,#4a8f4a,#8fe08f); transition: width 0.2s; }
+#conn-label { color: #ccc; font-family: monospace; }
+.cc-btn-text { display: block; margin: 4px auto; padding: 6px 14px; background: rgba(0,0,0,0.4); color: #ffd479; border: 1px solid #6a5; font-family: monospace; font-size: 14px; cursor: pointer; }
+
+#net-container { display: none; align-items: center; justify-content: center; }
+#net-container.visible { display: flex; }
+.nc-panel { background: #c6c6c6; border: 3px solid; border-color: #fff #555 #555 #fff; padding: 12px; }
+.nc-title { font-family: monospace; color: #333; margin-bottom: 8px; }
+.nc-grid { display: grid; grid-template-columns: repeat(9, 40px); gap: 2px; }
+.nc-inv { margin-top: 4px; }
+.nc-sep { height: 8px; }
+.nc-slot { width: 40px; height: 40px; background: #8b8b8b; border: 2px solid; border-color: #373737 #fff #fff #373737; position: relative; font-family: monospace; font-size: 11px; color: #fff; display: flex; align-items: center; justify-content: center; cursor: pointer; }
+.nc-count { position: absolute; right: 2px; bottom: 0; font-size: 12px; text-shadow: 1px 1px 0 #000; }
+.nc-cursor { position: fixed; pointer-events: none; color: #fff; font-family: monospace; font-size: 12px; text-shadow: 1px 1px 0 #000; z-index: 50; transform: translate(6px,6px); }

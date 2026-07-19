@@ -140,12 +140,60 @@ export class ChunkManager {
     this.game?.onChunkHydrated?.(chunk, record);
   }
 
+  // 14 §2.3 — install a chunk streamed from the host (CLIENT). Mirrors hydrate:
+  // recompute heightMap, install to GENERATED; promote() lights + meshes it later.
+  installNetChunk(cx, cz, blocks, states, biomes, dim) {
+    const key = chunkKey(cx, cz);
+    let chunk = this.world.chunks.get(key);
+    if (!chunk) { chunk = new Chunk(cx, cz, dim ?? this.world.activeDim); this.world.chunks.set(key, chunk); this.world.chunkVersion++; }
+    else if (chunk.state >= ChunkState.GENERATED) {
+      // re-sent on re-approach (coherence) — overwrite blocks/states, keep light rebuild
+      chunk.blocks = blocks; chunk.states = states; chunk.biomes = biomes;
+      this._recomputeHeightMap(chunk, blocks, states);
+      chunk.state = ChunkState.GENERATED; chunk.dirty = true;
+      this.markDirty(key);
+      return;
+    }
+    const heightMap = new Uint8Array(256);
+    this._recomputeHeightMap({ heightMap }, blocks, states, heightMap);
+    chunk.install(blocks, heightMap, biomes, states);
+    chunk.modified = false;
+    chunk.spawnsDone = true;
+  }
+
+  _recomputeHeightMap(target, blocks, states, hmOut) {
+    const hm = hmOut || new Uint8Array(256);
+    for (let z = 0; z < 16; z++) for (let x = 0; x < 16; x++) {
+      for (let y = MAX_Y; y >= 0; y--) {
+        const i = (y << 8) | (z << 4) | x;
+        if (terminatesSky(blocks[i], states[i])) { hm[(z << 4) | x] = y + 1; break; }
+      }
+    }
+    if (target && target.heightMap && target.heightMap !== hm) target.heightMap = hm;
+    return hm;
+  }
+
+  // 14 AMENDS 01 §4.3 — the host loads chunks around EVERY player (union keep-alive)
+  // so a client far from the host still has its terrain to stream.
+  ensureLoadedAround(pcx, pcz, radius) {
+    if (this.netClient) return;
+    for (let dcx = -radius; dcx <= radius; dcx++) for (let dcz = -radius; dcz <= radius; dcz++) {
+      const cx = pcx + dcx, cz = pcz + dcz, key = chunkKey(cx, cz);
+      if (this.world.chunks.has(key)) continue;
+      if (!this.requestList.some(r => r[0] === key)) this.requestList.push([key, cx, cz, dcx * dcx + dcz * dcz]);
+    }
+  }
+
   // ------------------------------------------------------------- tick
 
   tick(playerX, playerZ) {
     const pcx = Math.floor(playerX) >> 4;
     const pcz = Math.floor(playerZ) >> 4;
     this.world.playerChunk = { cx: pcx, cz: pcz };
+
+    // 14 §1.1 — a CLIENT never generates terrain (no workers); chunks arrive via
+    // installNetChunk. It still promotes/lights/meshes/unloads locally.
+    if (this.netClient) { this.promote(pcx, pcz); if (this.world.time % 20 === 0) this.unloadPass(pcx, pcz); return; }
 
     if (!this.lastPlayerChunk || this.lastPlayerChunk.cx !== pcx || this.lastPlayerChunk.cz !== pcz) {
       this.lastPlayerChunk = { cx: pcx, cz: pcz };
@@ -236,9 +284,13 @@ export class ChunkManager {
   }
 
   unloadPass(pcx, pcz) {
+    // 14 AMENDS 01 §6.2 — UNLOAD_RADIUS measures to the NEAREST player (union),
+    // so a chunk stays resident while any connected player needs it.
+    const centers = (!this.netClient && this.game?.net?.isHost) ? this.game.playerChunkCenters() : null;
     const dead = [];
     for (const chunk of this.world.chunks.values()) {
-      const d = Math.max(Math.abs(chunk.cx - pcx), Math.abs(chunk.cz - pcz));
+      let d = Math.max(Math.abs(chunk.cx - pcx), Math.abs(chunk.cz - pcz));
+      if (centers) for (const c of centers) { const dd = Math.max(Math.abs(chunk.cx - c.cx), Math.abs(chunk.cz - c.cz)); if (dd < d) d = dd; }
       if (d > UNLOAD_RADIUS) dead.push(chunk);
     }
     for (const chunk of dead) {

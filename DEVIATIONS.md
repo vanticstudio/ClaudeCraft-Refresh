@@ -2259,3 +2259,75 @@ live result recompute on every grid mutation; take-one consumes exactly one
 per cell; shift-craft loops to depletion routing hotbar-first; result slot
 refuses deposits; `F`-swap, number-swap, Q-drop, double-click collect,
 click-outside drop, and close-returns-grid all pass.
+
+---
+
+## E12 — 14-MULTIPLAYER (host-authoritative co-op over a WebSocket relay)
+
+1. **SAVE_VERSION realized as v2→v3, not the spec's "version becomes 2".** E7
+   (10-NETHER) already occupied v2, so the multiplayer `meta.player → meta.players`
+   reshape is a **v2→v3** bump instead. `migrate()` gains a NON-destructive `v<3`
+   branch that wraps the legacy single player under the host's `localPlayerId`
+   (chunks untouched); it composes with the destructive v1→v2 branch. The
+   single-bump rule (CLAUDE.md §8.5) is preserved — each phase bumps once.
+
+2. **In-session JSON messages ride as `0x00`-tagged BINARY frames**, not raw
+   WebSocket text frames. §3.1 describes JSON as "text frames" and §1.2 describes
+   the relay's routing as a one-byte prefix on binary data frames — these can't
+   both hold. Resolution: after the relay handshake (which IS a text control
+   frame), EVERY frame is binary with the routing byte; a JSON message is msgId
+   `0x00` + UTF-8. This keeps the relay's single binary routing path (§1.2) fully
+   opaque and covers JSON uniformly. Byte-exact and round-trip tested.
+
+3. **All players share the host's single resident dimension.** The v1 world engine
+   holds ONE active dimension at a time (`flushAllChunks` wipes on change). So the
+   "staying client keeps the overworld while another travels to the Nether" case is
+   NOT supported — instead the **party travels together**: any player completing a
+   portal transit drives `changeActiveDimension`, which moves every player to the
+   destination and broadcasts `dimChange`. Concurrent cross-dimension play needs a
+   second resident world (a v2/dedicated-server concern, per the spec's own §9 note).
+
+4. **Client RMB (use/place/interact) is non-predictive; LMB break IS predicted.**
+   Mining feel is the latency-sensitive case, so breaks predict locally (drops/xp
+   are host-only) and send a `blockEdit`. RMB (placement, chest/door/bed/bucket)
+   sends a `useBlock` and waits for the host — placement therefore appears ~RTT
+   later for the placing client (§7's feel table already permits use/place
+   stickiness). Other players see every edit via `blockSet` as normal. The host
+   reuses the canonical `interaction.breakBlock/tryPlace/use` for remote players
+   via a temporary active-player swap (`interaction._activePlayer`).
+
+5. **Networked containers are host-authoritative and non-predictive, chest-class
+   only.** Chests/dispensers/droppers/hoppers/shulker boxes/furnaces replicate via
+   `containerOpen`/`containerClick`/`containerResult` with a headless click applier
+   (`applyNetContainerClick`) covering pickup/place/swap/split/drop-one/shift-move.
+   The client re-renders from the authoritative result (no client prediction — so
+   clicks feel RTT-delayed, and item conservation is guaranteed by the single host
+   arbiter; a 10-click shift-storm audits identical before/after). Crafting tables,
+   enchanting, anvils, grindstones and villager trades opened BY A CLIENT are not
+   supported in this version (the host player uses them normally).
+
+6. **Remote-player continuous-use (eating a held food, drawing a bow via the
+   `useHeld` bit) is not wired for clients.** Movement is driven by the input frame;
+   discrete actions (break/place/use/attack/drop) arrive as explicit request
+   messages. A remote client's own arrows/eating are a known gap (§5.2's `useHeld`
+   eating/bow); the host player's are unaffected.
+
+7. **Redstone-torch light state (`updateEmission`) is not separately replicated.**
+   Ordinary block/state changes (including redstone dust/repeater/lamp id+nibble)
+   ride `blockSet`; the redstone torch shares one id for lit/unlit and changes only
+   its emission, so a client may briefly mis-light a torch until a neighbouring
+   `blockSet` refreshes the column. Cosmetic only.
+
+8. **New module `src/net/identity.js`** (playerId/name in localStorage + deterministic
+   skin hue) and **`src/ui/netContainer.js`** (client chest screen) are additions
+   beyond the spec's 01 §2 module list, in the spirit of its `net/` grouping.
+
+Verified 2026-07-19 (headless Chrome, two contexts over the live relay — 92 checks):
+relay transport (rooms/join-codes/sender-tagging/routing/broadcast/full-refusal/
+disconnect, 12); binary wire round-trips incl. negative coords + RLE + chunkData
+(42); two-browser sync — join in <10 s, mutual visibility, block edits both ways,
+client input driving the host-side player (Δ 4.45 m), nearest-player mob targeting,
+HOSTILE_CAP 40→60 (13); solo regression byte-clean + save `version===3` + `meta.players`
++ rejoin restores inventory in place + sleep skips only when both are in bed (16);
+200 ms simulated RTT — RTT 208 ms, predicted pos agrees with host Δ 0.00 m, zero
+hard-snaps/rubber-banding (6); chest shift-click storm conserves every item (3).

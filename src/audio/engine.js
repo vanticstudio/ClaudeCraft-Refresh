@@ -270,6 +270,13 @@ export class AudioEngine {
   // ---------------------------------------------------------------- emit (§5.1)
 
   emitSound(eventId, pos = null, pitchMult = 1, gainMult = 1) {
+    // 14 §12 (16 interop) — the HOST relays positional world sounds to nearby
+    // clients (opaque event id). Client-replayed sounds set _relaying to avoid a
+    // loop. Runs before the pre-gesture drop so a muted host still broadcasts.
+    if (this.game?.net?.isHost && pos && !this._relaying) {
+      const rdef = resolveEvent(eventId);
+      if (rdef?.replicate) this.game.net.broadcastSound(eventId, pos.x, pos.y, pos.z, pitchMult, gainMult);
+    }
     if (!this.ready || this.ctx.state !== 'running') return null;   // pre-gesture: drop
     const def = resolveEvent(eventId);
     if (!def) {
