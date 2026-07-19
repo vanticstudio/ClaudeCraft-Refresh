@@ -49,6 +49,18 @@ draws ${info.render.calls} tris ${(info.render.triangles / 1000).toFixed(0)}k ge
 entities ${g.entities.count()} time ${g.world.time} (day ${Math.floor(g.world.time / 24000)} ${(Math.floor((g.world.time % 24000) / 1000) + 6) % 24}:00)${heap}
 weather ${g.dayNight.raining ? 'rain' : 'clear'}${g.dayNight.thundering ? '+thunder' : ''} seed ${g.world.seedString}
 gameMode ${p.gameMode === GameMode.CREATIVE ? 'creative' : 'survival'}${p.flying ? ' (flying)' : ''}
-audio ${a.voices}/${g.audio?.poolSize?.() ?? 0} voices drops ${a.drops}/s ${a.state} ${a.budgetMs.toFixed(2)} ms music ${music}`;
+audio ${a.voices}/${g.audio?.poolSize?.() ?? 0} voices drops ${a.drops}/s ${a.state} ${a.budgetMs.toFixed(2)} ms music ${music}${netLine(g)}`;
   }
+}
+
+// 14 §13 — F3 net line (role/slot, RTT, peers, snapshot size, corrections, interp).
+function netLine(g) {
+  const net = g.net;
+  if (!net) return '';
+  if (net.isHost) {
+    const s = net.stats;
+    return `\nnet HOST code ${net.code ?? '…'} peers ${net.clients.size} out ${(s.outBytes / 1024).toFixed(1)}KB in ${(s.inBytes / 1024).toFixed(1)}KB`;
+  }
+  const s = net.stats;
+  return `\nnet CLIENT slot ${net.slot} rtt ${Math.round(net.rtt)}ms corr ${s.corrections} snap ${net.stats.snapSize || net._lastSnapSize || 0}B interp ${Math.round(net.interp?.interpTime ? (net.interp.newestSampleTime - net.interp.interpTime) : 0)}ms`;
 }

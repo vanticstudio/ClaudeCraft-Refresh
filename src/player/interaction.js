@@ -21,6 +21,7 @@ import {
 } from '../items/effects.js';
 import { tryIgnitePortal } from '../world/Portal.js';
 import { getDimension } from '../world/dimensions.js';
+import { faceToIndex as faceIndex } from '../net/protocol.js';   // 14 — face byte for blockEdit/useBlock
 
 const REPLACEABLE_TARGET = id => BLOCKS[id]?.replaceable;
 const FATIGUE_MULT = [0.3, 0.09, 0.0027, 0.00081];   // 09-POTIONS §3.3 (amp 0..3+)
@@ -45,6 +46,9 @@ export class Interaction {
     this.prevMouseRight = false;
     this.pearlCooldown = 0;
     this.bowLoop = null;        // §3.3 item.bow.draw handle
+    // 14-MULTIPLAYER §5.6 — the host reuses break/place/attack for a REMOTE player
+    // by temporarily swapping the active player (all logic reads this.player).
+    this._activePlayer = null;
   }
 
   stopBowLoop() {
@@ -52,7 +56,7 @@ export class Interaction {
     this.bowLoop = null;
   }
 
-  get player() { return this.game.player; }
+  get player() { return this._activePlayer ?? this.game.player; }
   get world() { return this.game.world; }
 
   // 03 §1 / AMENDS 03 §21(d) — creative keeps the 5.2 reach the old debug mode had.
@@ -74,7 +78,7 @@ export class Interaction {
     return raycastBlocks(this.world, e.x, e.y, e.z, d.x, d.y, d.z, dist, opts);
   }
 
-  swing() { this.swingTicks = 0; }
+  swing() { this.swingTicks = 0; if (this.player) this.player.swingTime = 6; }   // 14 — SWINGING flag for others
 
   tick(input) {
     const p = this.player;
@@ -279,6 +283,10 @@ export class Interaction {
     p.addExhaustion(0.1);
     p.ticksSinceAttack = 0;
     this.swing();
+    // 14 §7.3 — the client claims the hit it SAW; the host validates against its
+    // own positions and applies the authoritative damage (local damage is no-op'd
+    // via the puppet's beforeHurt). Send the host entity id.
+    if (this.game.net?.isClient) this.game.net.sendAttack(target.netId ?? target.id);
   }
 
   // 08 §6.2 — everything alive in the struck mob's halo, within 3 blocks of the
@@ -482,6 +490,9 @@ export class Interaction {
       if (cls) emitSound(`block.break.${cls}`, at(x + 0.5, y + 0.5, z + 0.5));
     }
     this.game.particles?.blockBreak?.(x, y, z, id);
+    // 14 §4.5 — the client predicts the removal (drops/xp are host-only, no-op'd on
+    // the client) and tells the host, which authoritatively re-runs the break.
+    if (this.game.net?.isClient) this.game.net.sendBlockEdit(0, x, y, z, 0, p.selectedSlot);
   }
 
   // ---------------------------------------------------------- use channel
@@ -665,6 +676,18 @@ export class Interaction {
   use(input) {
     const p = this.player;
     const hit = this.currentHit;
+
+    // 14 §4.5/§6 — a CLIENT does not run RMB logic locally (containers, beds,
+    // buckets, placement are host-authoritative). It sends a useBlock request and
+    // the host resolves priority; results arrive as blockSet/containerOpen/etc.
+    // (Placement therefore feels RTT-delayed for clients — accepted, §7.)
+    if (this.game.net?.isClient) {
+      this.swing();
+      this.useDelay = 4;
+      if (hit) this.game.net.sendUseBlock(hit.x, hit.y, hit.z, faceIndex(hit.face), p.selectedSlot);
+      else this.game.net.sendJson({ t: 'useBlock', self: true, hotbarSlot: p.selectedSlot });
+      return;
+    }
 
     // Step 0 (outside §7.3): entity interaction — feeding/shearing the nearest
     // entity on the ray. §7.3's list begins at the block raycast and never
@@ -1428,7 +1451,10 @@ export class Interaction {
     drop.count = n;
     s.count -= n;
     if (s.count <= 0) p.heldStack = null;
+    // 14 — on the client the throwStack is no-op'd (host spawns the item); the
+    // inventory decrement is optimistic and playerState reconciles it.
     this.game.throwStack(drop);
+    if (this.game.net?.isClient) this.game.net.sendDropItem(wholeStack);
   }
 }
 

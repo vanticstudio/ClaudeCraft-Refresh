@@ -68,10 +68,15 @@ export class MobSpawner {
   tick() {
     const game = this.game;
     if (game.world.time % 20 !== 0) return;   // one wave per second (adaptation)
-    if (this.hostileCount() >= 40) return;
+    // 14 AMENDS 05 §3.2 — cap scales with connected players; wave centre round-robins.
+    const cap = game.currentHostileCap ? game.currentHostileCap() : 40;
+    if (this.hostileCount() >= cap) return;
     const w = game.world;
     const rng = w.rng;
-    const p = game.player;
+    // round-robin: wave w → players[w mod count] (14 AMENDS 05 §3.2)
+    const roster = (game.players && game.players.length) ? game.players.filter(pl => pl && !pl.dead) : [game.player];
+    const wave = Math.floor(w.time / 20);
+    const p = roster[wave % roster.length] || game.player;
     // resolve the per-dimension roster; a null spawnTable (overworld) uses the
     // overworld table. The Nether roster comes from fortress gen-spawners, not
     // the wave — so a nether table falls back to no wave spawns (skip).
@@ -96,7 +101,7 @@ export class MobSpawner {
       const packSize = species === 'enderman' ? 1 + Math.floor(rng() * 2) : 1 + Math.floor(rng() * 4);
       let spawned = 0;
       let px = x, pz = z;
-      for (let k = 0; k < packSize * 2 && spawned < packSize && this.hostileCount() < 40; k++) {
+      for (let k = 0; k < packSize * 2 && spawned < packSize && this.hostileCount() < cap; k++) {
         px += Math.floor(rng() * 6) - Math.floor(rng() * 6);
         pz += Math.floor(rng() * 6) - Math.floor(rng() * 6);
         if (this.validSpawnPos(px, y, pz, species)) {
@@ -124,9 +129,12 @@ export class MobSpawner {
           if (solidOrLiquid(x + dx, y, z + dz)) return false;
     }
     if (!this.canSpawnHostileAt(x, y, z)) return false;
-    const p = this.game.player;
-    const d = Math.hypot(x + 0.5 - p.pos.x, y - p.pos.y, z + 0.5 - p.pos.z);
-    if (d < 24) return false;
+    // 14 AMENDS 05 §3.2 — ≥24 from EVERY player (nearest), not just the wave centre.
+    const near = this.game.nearestPlayerTo?.(x + 0.5, y, z + 0.5) ?? this.game.player;
+    if (near) {
+      const d = Math.hypot(x + 0.5 - near.pos.x, y - near.pos.y, z + 0.5 - near.pos.z);
+      if (d < 24) return false;
+    }
     return true;
   }
 

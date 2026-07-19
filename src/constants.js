@@ -48,7 +48,32 @@ export const DB_VERSION = 1;
 // preserves the player and clears the chunk store — the overworld regenerates
 // deterministically from the same seed (player builds in it are lost; a testing
 // env, per DEVIATIONS).
-export const SAVE_VERSION = 2;
+// v3 (14-MULTIPLAYER §2.4 / AMENDS 01 §16): meta.player → meta.players keyed by
+// playerId; the v2→v3 migration wraps the old single player under the host id
+// (NON-destructive, chunks untouched). The spec's "version becomes 2" is realised
+// as 2→3 because E7 already occupied v2 — the single-bump rule (§8.5) is preserved.
+export const SAVE_VERSION = 3;
+
+// --- Multiplayer (14 §2, §5, §11) ---
+export const PROTO_VERSION = 1;                // wire-format version (mirrors net/protocol.js)
+export const DEFAULT_RELAY_URL = 'ws://localhost:8971';
+export const JOIN_RADIUS = 5;                  // 11×11 = 121 chunks streamed before spawn (§2.2)
+export const STREAM_RADIUS = 8;                // per-client chunk interest / stream radius (§2.3)
+export const ENTITY_INTEREST_RADIUS = 6;       // Chebyshev chunks, 96 m (§5.3)
+export const INTEREST_ENTITY_CAP = 64;         // entities/client snapshot cap (§5.3)
+export const CHUNKS_PER_TICK_CLIENT = 6;       // §2.3 stream budget
+export const CHUNKS_PER_TICK_TOTAL = 12;
+export const SNAPSHOT_INTERVAL = 2;            // build+send snapshots every 2nd tick = 10 Hz (§5.1)
+export const KEYFRAME_INTERVAL = 30;           // every 30th snapshot = full interest set, 3 s (§3.3)
+export const INPUT_QUEUE_TARGET = 2;           // per-client jitter buffer depth (§5.2)
+export const SLEEP_PERCENT = 100;              // AMENDS 04 §14 — every connected player must be in bed
+export const HOSTILE_CAP_BASE = 40;            // AMENDS 05 §3.2 — 40 + 20×(min(count,4)−1)
+export const ALLOW_CLIENT_DEBUG = false;       // §10 — clients may not self-grant creative
+
+/** AMENDS 05 §3.2 — global hostile cap scales with connected player count. */
+export function hostileCap(playerCount) {
+  return HOSTILE_CAP_BASE + 20 * (Math.min(Math.max(playerCount, 1), 4) - 1);
+}
 
 // --- Render (01 §1, §14) ---
 export const CAMERA_FOV = 70;
@@ -67,6 +92,8 @@ export const KEYBINDS = {
   inventory: 'KeyE',
   drop: 'KeyQ',
   swapOffhand: 'KeyF',            // AMENDS 01 §15.1 (08 §7.2)
+  chat: 'KeyT',                   // AMENDS 01 §15.1 (14 §8.3) — open chat
+  playerList: 'Tab',             // AMENDS 01 §15.1 (14 §8.2) — hold for player list
   debugOverlay: 'F3',
   gameMode: 'F4',                 // AMENDS 01 §15.1 — was "debug creative toggle"
   hotbar: ['Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5',
@@ -90,6 +117,7 @@ export function normalizeGameMode(v) {
 export const STATE = {
   TITLE: 'TITLE',
   LOADING: 'LOADING',
+  CONNECTING: 'CONNECTING',   // 14 §2.2 — client join handshake + chunk stream
   PLAYING: 'PLAYING',
   PLAYING_UI: 'PLAYING_UI',
   PAUSED: 'PAUSED',

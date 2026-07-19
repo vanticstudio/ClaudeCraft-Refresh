@@ -4,8 +4,18 @@ import { KEYBINDS } from '../constants.js';
 const GAME_KEYS = new Set([
   'KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ShiftLeft', 'ControlLeft',
   'KeyE', 'KeyQ', 'KeyF', 'F3', 'F4', 'F5',
+  // 14 §8 — chat + player list keys are preventDefault'd while locked so Tab
+  // doesn't move focus and T/Enter don't scroll.
+  'KeyT', 'Tab', 'Enter',
   'Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5', 'Digit6', 'Digit7', 'Digit8', 'Digit9',
 ]);
+
+// 14 §8.3 — buttons bitfield sent as 0 while the chat input is focused.
+const NEUTRAL_INPUT_FRAME = {
+  forward: 0, strafe: 0, jump: false, sneak: false, sprintKey: false,
+  mouseLeft: false, mouseRight: false, leftPressed: false, rightPressed: false,
+  middlePressed: false, pressed: new Set(), wheel: 0, hotbar: -1, shift: false, ctrl: false,
+};
 
 export class Input {
   constructor(canvas) {
@@ -65,6 +75,13 @@ export class Input {
 
   // Latched immutable frame struct, read once per game tick (01 §3 step 1)
   snapshot() {
+    // 14 §8.3 — while chat is focused, movement/actions are suppressed (the player
+    // stands still and blinks). Still drain the edge buffers so they don't back up.
+    if (this.suppressed) {
+      this.pressedBuf.clear(); this.releasedBuf.clear();
+      this.pressBuf[0] = this.pressBuf[1] = this.pressBuf[2] = false; this.wheelBuf = 0;
+      return NEUTRAL_INPUT_FRAME;
+    }
     const k = this.keys;
     const frame = {
       forward: (k.has(KEYBINDS.forward) ? 1 : 0) - (k.has(KEYBINDS.back) ? 1 : 0),

@@ -1,6 +1,7 @@
 // Survival player: movement state machine, health, hunger, XP, inventory
 // (03 full spec; hunger/XP per 06 §12–13; combat charge per 05 §13).
-import { LivingEntity } from './Entity.js';
+import { LivingEntity, lerp, lerpAngle } from './Entity.js';
+import { buildHumanoid, animateHumanoid } from './RemotePlayer.js';   // 14 §8.4 — shared model
 import { BLOCKS, B, matOf, isWaterCellAt } from '../registry/blocks.js';
 import { ITEMS } from '../registry/items.js';
 import { collidesAny, overlapsBlockId } from '../physics/collision.js';
@@ -89,6 +90,12 @@ export class Player extends LivingEntity {
     this.spawnPoint = null;
     this.hurtTilt = 0;                 // camera roll on damage
     this.hurtTiltDir = 1;
+    // 14-MULTIPLAYER — humanoid render state (only used when OTHERS render this
+    // player; the local first-person player is never drawn).
+    this.hue = 0;
+    this.swingTime = 0;                // >0 → SWINGING snapshot flag + arm anim
+    this._walkPhase = 0;
+    this._punchPhase = 0;
 
     // distances for exhaustion, updated in movement
     this._moveDist = 0;
@@ -424,6 +431,32 @@ export class Player extends LivingEntity {
 
   // -------------------------------------------------- tick (03 §4 order)
 
+  // 14 AMENDS 03 §2.3 — humanoid model so OTHER players can see this one. The
+  // local (first-person) player is skipped by EntityManager.updateRender, so this
+  // only ever renders a REMOTE player entity on the host (or nothing).
+  buildMesh() {
+    const g = buildHumanoid(this.hue ?? 0);
+    g.userData._baseY = 0;
+    return g;
+  }
+
+  updateRender(alpha) {
+    if (!this.object3d) return;
+    const x = lerp(this.prevPos.x, this.pos.x, alpha);
+    const y = lerp(this.prevPos.y, this.pos.y, alpha);
+    const z = lerp(this.prevPos.z, this.pos.z, alpha);
+    this.object3d.position.set(x, y, z);
+    this.object3d.rotation.y = lerpAngle(this.prevYaw, this.yaw, alpha);
+    const hSpeed = Math.hypot(this.pos.x - this.prevPos.x, this.pos.z - this.prevPos.z);
+    this._walkPhase += hSpeed * 14;
+    if (this.swingTime > 0) this._punchPhase += 0.9; else this._punchPhase = 0;
+    animateHumanoid(this.object3d, {
+      walkPhase: this._walkPhase, hSpeed, swinging: this.swingTime > 0,
+      punchPhase: this._punchPhase, sneaking: this.sneaking, pitch: this.pitch,
+    });
+    this.applyLightScalar();
+  }
+
   // §3.2: the under-feet cell, skipped silently for the classes with no verb.
   emitStep(gainMult) {
     const id = this.world.getBlock(
@@ -451,6 +484,7 @@ export class Player extends LivingEntity {
     this.ticksSinceForward++;
     this.ticksSinceSpace++;
     this.ticksSinceAttack++;
+    if (this.swingTime > 0) this.swingTime--;
     if ((this.heldStack?.id ?? null) !== this.lastHeldId) {
       this.lastHeldId = this.heldStack?.id ?? null;
       this.ticksSinceAttack = 0;                        // item switch resets charge
@@ -943,6 +977,9 @@ export class Player extends LivingEntity {
   // -------------------------------------------------- damage / death (03 §20)
 
   beforeHurt(amount, source) {
+    // 14 §4.2 — on a CLIENT, health is host-authoritative (never predicted); the
+    // local player takes no local damage (playerState overwrites it).
+    if (this.world.game?.net?.isClient) return false;
     // 18 §4.1 — void is the ONE source creative does not nullify.
     if (this.creative && source !== 'void') return false;
     return true;
@@ -1026,7 +1063,7 @@ export class Player extends LivingEntity {
     this.xpLevel = 0; this.xpPoints = 0;
     this.fireTicks = 0; this.air = 300; this.fallDistance = 0;
     this.vel.x = this.vel.y = this.vel.z = 0;
-    game?.onPlayerDeath?.();
+    game?.onPlayerDeath?.(this);
   }
 
   respawn(worldSpawn) {

@@ -16,7 +16,12 @@ import { Menus } from './ui/menus.js';
 import { Containers } from './ui/containers.js';
 import { DebugOverlay } from './ui/debug.js';
 import { SaveManager } from './save/saveManager.js';
-import { STATE, GameMode } from './constants.js';
+import { STATE, GameMode, KEYBINDS } from './constants.js';
+import { Chat } from './ui/chat.js';
+import { NetMenus } from './ui/netMenus.js';
+import { NetClient } from './net/NetClient.js';
+import { NetContainer } from './ui/netContainer.js';
+import { getLocalPlayerId } from './net/identity.js';
 
 async function boot() {
   const canvas = document.getElementById('game-canvas');
@@ -41,6 +46,7 @@ async function boot() {
   audio.game = game;
 
   const save = new SaveManager();
+  save.hostId = getLocalPlayerId();     // v2→v3 migration wraps the legacy player under this
   await save.open();
   game.save = save;
 
@@ -49,6 +55,8 @@ async function boot() {
   const bossBar = new BossBar(overlayEl);   // 13-BOSSES §1 — mounts inside Hud's #boss-bars
   const debug = new DebugOverlay(game, overlayEl);
   const containers = new Containers(game, screensEl);
+  const chat = new Chat(game, overlayEl);
+  const netContainer = new NetContainer(game, screensEl);   // 14 §6 — client chest UI
 
   const startWorld = async (seed, meta) => {
     menus.show('loading');
@@ -99,17 +107,36 @@ async function boot() {
   menus.attachMusic(themeMusic);
   menus.setHasSave(save.hasWorld());
 
+  // 14-MULTIPLAYER — Host / Join flows.
+  const netMenus = new NetMenus(game, screensEl, {
+    onHost: async url => {
+      // host the existing world if one exists (so per-player saves persist), else new.
+      if (save.hasWorld()) await startWorld(save.meta.seed, save.meta);
+      else { await save.deleteWorld(); await save.open(); await startWorld(String(Date.now() >>> 0), null); menus.setHasSave(true); }
+      await game.startHosting(url);
+    },
+    onJoin: ({ url, code, name }) => {
+      const client = new NetClient(game, { url, code, name });
+      client.onError = reason => netMenus.onClientError(reason);
+      game.net = client;
+      client.connect();
+    },
+  });
+
   game.ui = {
-    hud, bossBar, menus, containers, debug,
+    hud, bossBar, menus, containers, debug, chat, netMenus, netContainer,
+    playerList: chat,
     toast: msg => hud.toast(msg),
     setSleepFade: on => hud.setSleepFade(on),
     setLoadingProgress: (m, n) => menus.setLoadingProgress(m, n),
     onStateChange: (next, prev) => {
-      if (next === STATE.TITLE) menus.show('title');
+      if (next === STATE.TITLE) { menus.show('title'); netMenus.hideAll(); }
       else if (next === STATE.LOADING) menus.show('loading');
+      else if (next === STATE.CONNECTING) { menus.show(null); }   // netMenus owns the connecting screen
       else if (next === STATE.PAUSED) menus.show('pause');
       else if (next === STATE.DEAD) menus.show('death');
-      else menus.show(null);
+      else { menus.show(null); netMenus.hideAll(); }
+      if (next === STATE.PLAYING && prev === STATE.CONNECTING) netMenus.hideAll();
       // AMENDS 01 §15.2. The single funnel for every transition — covers the
       // Resume button, LOADING→PLAYING, respawn, and container close alike.
       // PLAYING_UI must NOT pause: opening a chest is not leaving the world.
@@ -146,8 +173,15 @@ async function boot() {
 
   // ---------------- global keys ----------------
   input.onKeyEdge = code => {
+    // 14 §8.3 — chat is open: swallow game keys (the input handles Enter/Escape).
+    if (chat.open) return;
     if (code === 'F3') {
       debug.toggle();
+    } else if ((code === KEYBINDS.chat || code === 'Enter' || code === 'NumpadEnter') && game.net && game.state === STATE.PLAYING) {
+      // 14 §8.3 — T (or Enter) opens chat; pointer lock is kept.
+      chat.openInput();
+    } else if (code === KEYBINDS.playerList && game.net && (game.state === STATE.PLAYING || game.state === STATE.PLAYING_UI)) {
+      chat.showList(true);
     } else if (code === 'KeyE') {
       // 18 §6 — E opens the creative palette while creative, the survival
       // inventory otherwise. Both are PLAYING_UI screens (AMENDS 01 §15.3).
@@ -155,7 +189,8 @@ async function boot() {
         game.openContainer(game.player?.creative ? 'creative' : 'inventory');
       } else if (game.state === STATE.PLAYING_UI) containers.close();
     } else if (code === 'Escape') {
-      if (game.state === STATE.PLAYING_UI) containers.close();
+      if (netContainer.isOpen()) netContainer.close();
+      else if (game.state === STATE.PLAYING_UI) containers.close();
     }
     // F4 is deliberately NOT handled here: 18 §1.4 requires the switch to land
     // inside player.tick(), before the movement branch, so the new mode's
@@ -173,9 +208,15 @@ async function boot() {
     menus.pressStart();
   });
 
-  // pointer-lock loss while PLAYING ⇒ pause (01 §15.2)
+  // 14 §8.2 — release Tab hides the player list.
+  document.addEventListener('keyup', e => {
+    if (e.code === KEYBINDS.playerList) chat.showList(false);
+  });
+
+  // pointer-lock loss while PLAYING ⇒ pause (01 §15.2). Chat keeps pointer lock,
+  // so a lock loss while chat is open must NOT pause (14 §8.3).
   input.onLockChange = locked => {
-    if (!locked && game.state === STATE.PLAYING && !game.sleeping) {
+    if (!locked && game.state === STATE.PLAYING && !game.sleeping && !chat.open) {
       game.setState(STATE.PAUSED);
     }
   };

@@ -136,7 +136,7 @@ export class Mob extends LivingEntity {
 
     // 4. AI (skipped beyond 64 blocks — 05 §1 sim range). 13-BOSSES AMENDS 05 §1:
     // bosses (isBoss) always run full AI regardless of distance.
-    const player = this.world.game?.player;
+    const player = this.world.game?.nearestPlayerTo?.(this.pos.x, this.pos.y, this.pos.z) ?? this.world.game?.player;
     const pd = player ? this.distTo(player) : 999;
     this.moveIntent = null;
     this.wantJump = false;
@@ -222,7 +222,7 @@ export class Mob extends LivingEntity {
 
   tickDespawn() {
     if (!this.hostile || this.persistent) return false;
-    const player = this.world.game?.player;
+    const player = this.world.game?.nearestPlayerTo?.(this.pos.x, this.pos.y, this.pos.z) ?? this.world.game?.player;
     if (!player) return false;
     const d = this.distTo(player);
     if (d > 128) { this.despawn(); return true; }
@@ -304,7 +304,7 @@ export class Mob extends LivingEntity {
     // level is threaded into dropTable so each table can widen its own ranges —
     // the §2 tables are the L=0 column and stay correct when it is 0.
     const looting = lootingLevelOf(source, opts?.attacker);
-    const byPlayer = opts?.attacker === game.player;   // 09-POTIONS §11.4 — player-kill drops
+    const byPlayer = game.isPlayer ? game.isPlayer(opts?.attacker) : (opts?.attacker === game.player);   // 09-POTIONS §11.4 — any player's kill drops
     if (!this.isBaby || this.type === 'zombie') {
       for (const d of this.dropTable?.(looting, byPlayer) ?? []) {
         if (d.count > 0) game.spawnItemByName(d.name, d.count,

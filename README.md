@@ -75,6 +75,28 @@ autosaves to the browser's IndexedDB every 30 seconds — close the tab and
 
 *This section is updated as new features land.*
 
+- **2026-07-19** — **Multiplayer co-op (expansion phase E12, `14`)**: play the same
+  world with 2–8 friends over a tiny WebSocket relay. Start it with `npm run relay`
+  (defaults to `ws://localhost:8971`), then from the title screen pick **Host
+  Multiplayer** — your world boots and a **join code** appears top-right (click to
+  copy). A friend picks **Join Multiplayer**, types the code, and streams into your
+  world with a loading bar (121 chunks, then meshing). One browser — the host — runs
+  the entire authoritative simulation (terrain, mobs, redstone, fluids, weather,
+  bosses); everyone else **predicts their own movement** for zero-latency walking and
+  renders the rest from host snapshots, interpolated 100 ms in the past so remote
+  players and mobs move smoothly even over a laggy link. You'll see each other as
+  humanoid figures with **name-plates** (hidden past 48 m or while sneaking), hold
+  **Tab** for the player list with pings, and press **T** to chat. Mine and build
+  together (edits appear on the other screen within a round-trip); fight night waves
+  that **split targets** between you and scale the mob cap with the crowd (40 → 100);
+  share **chests** with no item duplication; and **sleep** — night only skips when
+  *everyone* is in bed. Die and you drop your things and respawn at your bed; a chat
+  line tells the room. Travel to the Nether or End and the **party goes together**.
+  Every player's inventory, XP, and bed spawn are **saved per-person**, so a friend
+  who leaves and rejoins later picks up exactly where they left off. Runs playably at
+  ~200 ms ping; for internet play, tunnel the relay (e.g. `cloudflared`) and share the
+  `wss://` URL. Solo play is byte-identical to before — multiplayer is fully opt-in.
+
 - **2026-07-19** — **Bosses & the beacon (expansion phase E11, `13`)**: the two
   boss fights and the beacon are in. Enter The End and the **ender dragon** is
   waiting — 200 HP, circling the pillars, healed by the **10 end crystals** perched

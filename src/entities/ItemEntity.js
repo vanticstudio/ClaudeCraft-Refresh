@@ -4,7 +4,7 @@ import { Entity } from './Entity.js';
 import { BLOCKS } from '../registry/blocks.js';
 import { ITEMS } from '../registry/items.js';
 import { AABB } from '../math/aabb.js';
-import { emitSound } from '../audio/engine.js';
+import { emitSound, at } from '../audio/engine.js';
 import { tagsEqual, cloneTags } from '../items/tags.js';
 import { isGlinted, addGlintPass } from '../render/glint.js';
 
@@ -161,18 +161,22 @@ export class ItemEntity extends Entity {
   tryPickup() {
     if (this.pickupDelay > 0) return;
     const game = this.world.game;
-    const player = game?.player;
-    if (!player || player.dead) return;
-    const pbox = player.getAABB().expand(1.0, 0.5, 1.0);
-    if (!pbox.intersects(this.getAABB())) return;
-    const leftover = player.give(this.stack);
-    if (leftover <= 0) {
-      this.dead = true;
-      // Fully absorbed only — MC plays no pop when the inventory is full and the
-      // item stays on the ground.
-      emitSound('player.item_pickup', null);
-      game.hud?.flashPickup?.(this.stack);
-    } else {
+    if (!game) return;
+    // 14 AMENDS 06 §16 — pickup is host-authoritative; when several players' boxes
+    // overlap the same item in one tick the LOWEST slot (roster order) wins.
+    const players = (game.players && game.players.length) ? game.players : (game.player ? [game.player] : []);
+    const box = this.getAABB();
+    for (const player of players) {
+      if (!player || player.dead) continue;
+      const pbox = player.getAABB().expand(1.0, 0.5, 1.0);
+      if (!pbox.intersects(box)) continue;
+      const leftover = player.give(this.stack);
+      if (leftover <= 0) {
+        this.dead = true;
+        emitSound('player.item_pickup', at(this.pos.x, this.pos.y, this.pos.z));
+        if (player === game.player) game.ui?.hud?.flashPickup?.(this.stack);
+        return;
+      }
       this.stack.count = leftover;
     }
   }

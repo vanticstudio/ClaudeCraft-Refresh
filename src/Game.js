@@ -48,7 +48,13 @@ import { findOrCreatePortal } from './world/Portal.js';
 import { buildObsidianPlatform, END_SPAWN } from './world/endArena.js';
 import { installNetherBehaviors, tickSpawner } from './world/nether.js';
 import { tickBrewing } from './world/brewing.js';
-import { addEffect as engineAddEffect, applyInstant as engineApplyInstant } from './status/effects.js';
+import { addEffect as engineAddEffect, applyInstant as engineApplyInstant, applyEffectsData, serializeEffects } from './status/effects.js';
+// 14-MULTIPLAYER — host/client sessions + shared player identity.
+import { getLocalPlayerId, getLocalPlayerName, hueFromId } from './net/identity.js';
+import { RemotePlayer } from './entities/RemotePlayer.js';
+import { hostileCap } from './constants.js';
+import { ETYPE, ETYPE_REV, indexToFace } from './net/protocol.js';
+import { currentXp } from './items/xp.js';
 
 const NEUTRAL_FRAME = {
   forward: 0, strafe: 0, jump: false, sneak: false, sprintKey: false,
@@ -95,6 +101,15 @@ export class Game {
     this.debug = { fps: 0, frameMs: 0, remeshCount: 0, lastRemeshes: 0, audioMs: 0 };
     this._fpsWindow = [];
 
+    // 14-MULTIPLAYER — session + identity. net is a NetHost, NetClient, or null (solo).
+    this.net = null;
+    this.players = [];                  // all player entities (host: local + remotes; client: [local])
+    this.localPlayerId = getLocalPlayerId();
+    this.localPlayerName = getLocalPlayerName() || 'Player';
+    this._savedPlayers = null;          // meta.players awaiting rejoin restore (host)
+    this._effectsApi = { applyEffectsData };   // NetClient hook
+    this._audioApi = { emitSound, at };        // NetClient sound replay hook
+
     this.buildOverlays();
     this.viewmodel = { group: new THREE.Group(), itemId: undefined, switchAnim: 0 };
     this.viewmodelScene.add(this.viewmodel.group);
@@ -116,6 +131,7 @@ export class Game {
     this.entities = new EntityManager(this.world, this.scene);
     this.player = new Player(this.world);
     this.entities.add(this.player);
+    this.players = [this.player];              // 14 — player registry (solo: just the local player)
     this.interaction = new Interaction(this);
     installNetherBehaviors();                 // 10-NETHER — attach runtime block behaviors (idempotent)
     this.dayNight = new DayNight(this);
@@ -134,7 +150,12 @@ export class Game {
     if (savedMeta) {
       this.world.time = savedMeta.worldTime ?? 0;
       this.dayNight.deserialize(savedMeta.weather);
-      this.player.deserialize(savedMeta.player);
+      // 14 AMENDS 01 §16 — meta.players keyed by playerId; the host's own record is
+      // its localPlayerId (v2→v3 migration wraps a legacy single `player` there).
+      const players = savedMeta.players ?? (savedMeta.player ? { [this.localPlayerId]: savedMeta.player } : {});
+      const hostRec = players[this.localPlayerId] ?? Object.values(players)[0] ?? null;
+      if (hostRec) this.player.deserialize(hostRec);
+      this._savedPlayers = { ...players };     // NetHost restores rejoining clients from here
       // 10-NETHER §2.4 — restore the per-dimension blob (portal links, fortress
       // registry, 11's endFight) so the frozen contract round-trips.
       this.dimMeta = savedMeta.dimensions ?? {};
@@ -206,10 +227,16 @@ export class Game {
     requestAnimationFrame(this.frame);
     const frameDelta = Math.min(now - this.lastTime, 250);
     this.lastTime = now;
+    this._frameDelta = frameDelta;
 
     const t0 = performance.now();
+    // 14 AMENDS 01 §3 — a host with ≥1 connected client keeps ticking while PAUSED
+    // (the world "keeps running while players are connected"); solo host pauses.
+    // CONNECTING (client join) ticks so streamed chunks mesh toward the spawn gate.
+    const hostTicking = this.state === STATE.PAUSED && this.net?.isHost && this.net.hasClients();
     if (this.state === STATE.PLAYING || this.state === STATE.PLAYING_UI ||
-        this.state === STATE.LOADING || this.state === STATE.DEAD) {
+        this.state === STATE.LOADING || this.state === STATE.DEAD ||
+        this.state === STATE.CONNECTING || hostTicking) {
       this.accumulator += frameDelta;
       let ran = 0;
       while (this.accumulator >= MS_PER_TICK && ran < MAX_TICKS_PER_FRAME) {
@@ -231,6 +258,9 @@ export class Game {
   tick() {
     if (!this.world) return;
     this.tickCount++;
+    // 14-MULTIPLAYER §4.1 — a CLIENT runs no world logic; it predicts its own
+    // player and renders host snapshots. Entirely separate tick path.
+    if (this.net?.isClient) { this.clientTick(); return; }
     const tickStart = performance.now();
 
     const playing = this.state === STATE.PLAYING;
@@ -241,8 +271,15 @@ export class Game {
       // before this tick's player/entity edits queue more.
       this.redstoneContainers?.clearTickGuards();
       this.redstone?.drainAtTickStart();
+      // 14 §5.1 step 1.5 — decode client frames, refresh input queues, queue requests.
+      this.net?.drainInbound?.();
+      this.refreshPlayers();          // rebuild the player list once/tick (mob AI reads it)
       this.player.tick(frame);
+      // 14 §5.1 step 2 — every remote player ticks in slot order with its own input.
+      this.net?.tickRemotePlayers?.();
       this.interaction.tick(frame);
+      // 14 §5.1 step 2.5 — validate + execute queued edits/uses/attacks/container ops.
+      this.net?.applyRequests?.();
       this.entities.tick(this.player);
       // 07 §6.3 — pressure-plate presses are entity-driven; scan after entities
       // move (the player is in the manager, so this covers them too).
@@ -262,6 +299,9 @@ export class Game {
       this.tickSleep();
     }
     this.save?.tick(this);
+    // 14 §5.1 step 9.5 — build+send snapshots (every 2nd tick), flush blockSets,
+    // stream chunks, 1 Hz player list, 100-tick time sync.
+    if (this.state !== STATE.LOADING) this.net?.outboundTick?.();
     this.audio?.tick();                 // AMENDS 01 §3 tick step 10
     this.atlas.animate?.(this.world.time);
     this.ui?.containers?.tickOpen?.();
@@ -368,6 +408,22 @@ export class Game {
     p.fallDistance = 0;
     p.portalCooldown = 300;                      // §3.6 no instant bounce
 
+    // 14 — the world has ONE resident dimension, so the party travels together:
+    // move every connected player to the destination and tell each client to
+    // wipe + restream the new dim. (Concurrent cross-dim play is out of scope —
+    // single-world-dim engine; see DEVIATIONS.)
+    if (this.net?.isHost) {
+      for (const c of this.net.clients.values()) {
+        if (!c.player) continue;
+        c.player.dim = targetDim;
+        c.player.setPos(targetPos.x, targetPos.y, targetPos.z);
+        c.player.prevPos.x = targetPos.x; c.player.prevPos.y = targetPos.y; c.player.prevPos.z = targetPos.z;
+        c.player.vel.x = c.player.vel.y = c.player.vel.z = 0;
+        c.player.portalCooldown = 300;
+        this.net.sendDimChange(c, targetDim, targetPos);
+      }
+    }
+
     // 4. dimension-arrival hook (dim 2 sets onArrive = regenObsidianPlatform, 11)
     desc.onArrive?.(p, targetPos);
 
@@ -398,6 +454,8 @@ export class Game {
 
     this.applyMouseLook();
     this.debug.lastRemeshes = this.chunkManager.drainRemesh(this.player.pos.x, this.player.pos.z);
+    // 14 §4.4 — advance remote-entity interpolation + drive puppets before render.
+    if (this.net?.isClient) this.net.renderTick(this._frameDelta ?? 16);
     this.updateCamera(alpha);
     this.audio?.updateFrame(this.camera);   // AMENDS 01 §3 render step 6
     this.debug.audioMs = this.audio?.debug.budgetMs ?? 0;
@@ -458,7 +516,11 @@ export class Game {
     const bobR = Math.sin(phase) * 0.025 * inten * bob;
     const rightX = Math.cos(p.yaw), rightZ = -Math.sin(p.yaw);
 
-    this.camera.position.set(px + rightX * bobR, py + bobY, pz + rightZ * bobR);
+    // 14 §4.3 — render-only prediction correction offset (decays to 0); game logic
+    // always uses the true corrected pos, only the eye lies briefly.
+    const ro = this.net?.isClient ? this.net.predictor?.renderOffset : null;
+    const ox = ro ? ro.x : 0, oy = ro ? ro.y : 0, oz = ro ? ro.z : 0;
+    this.camera.position.set(px + rightX * bobR + ox, py + bobY + oy, pz + rightZ * bobR + oz);
     this.camera.rotation.set(p.pitch, p.yaw, (p.hurtTilt * p.hurtTiltDir) * Math.PI / 180);
 
     const fov = 70 * p.fovScale;
@@ -715,6 +777,16 @@ export class Game {
   }
 
   spillBlockEntity(be, x, y, z) {
+    // audit M7 — a destroyed container force-closes every remote viewer's window
+    // (§6/§9.2), so no client is left staring at a stale, now-spilled container.
+    if (this.net?.isHost) {
+      for (const c of this.net.clients.values()) {
+        if (c.window && c.window.x === x && c.window.y === y && c.window.z === z) {
+          this.net._jsonTo(c.slot, { t: 'containerResult', windowId: c.window.id, close: true });
+          this.hostContainerClose(c);
+        }
+      }
+    }
     const data = be.data;
     // 11-END §9.4 — a shulker box drops ONE item retaining its 27 slots in
     // tags.containerItems (not a loose spill). Both break + explosion route here.
@@ -833,6 +905,7 @@ export class Game {
   // ---------------------------------------------------------------- entity spawning hooks
 
   spawnItemById(id, count, x, y, z, vel) {
+    if (this.net?.isClient) return null;   // 14 §4.5 — drops are host-authoritative
     if (!ITEMS.has(id) || count <= 0) return null;
     const e = new ItemEntity(this.world, x, y, z, { id, count }, 10);
     const r = this.world.rng;
@@ -848,6 +921,7 @@ export class Game {
   }
 
   dropStackAt(stack, x, y, z) {
+    if (this.net?.isClient) return null;   // 14 §4.5 — host-authoritative
     // cloneStack: a spread would leave the entity and the source stack sharing
     // one tags object (08 §1 invariant 4).
     const e = new ItemEntity(this.world, x, y, z, cloneStack(stack), 40);
@@ -860,6 +934,7 @@ export class Game {
 
   // Q-drop / UI drag-out: gentle toss forward from the eye (03 §17)
   throwStack(stack) {
+    if (this.net?.isClient) return null;   // 14 §4.5 — host spawns the item
     const p = this.player;
     const d = this.interaction.lookDir();
     const r = this.world.rng;
@@ -872,6 +947,7 @@ export class Game {
   }
 
   spawnXpOrb(x, y, z, value) {
+    if (this.net?.isClient) return null;   // 14 §4.5 — host-authoritative
     return this.entities.add(new XpOrb(this.world, x, y, z, value));
   }
 
@@ -1084,23 +1160,54 @@ export class Game {
     }
     // 11-END §7 — the End denies sleep (no explosion, no spawn set).
     if (getDimension(this.world.activeDim)?.noSleep) { this.toast('You may not rest here'); return; }
-    p.spawnPoint = { x, y, z };            // always set on click (06 §5.7)
+    // 14 §5.5 — a REMOTE player's bed use is a per-player sleep, not the host's.
+    const actor = this._netActor;
+    const sleeper = actor ? actor.player : p;
+    sleeper.spawnPoint = { x, y, z };            // always set on click (06 §5.7)
     if (!this.dayNight.canSleepNow()) {
-      this.toast('You can only sleep at night');
+      if (!actor) this.toast('You can only sleep at night');
       return;
     }
     const hostiles = this.entities.getEntitiesInBox(
       new AABB(x - 8, y - 5, z - 8, x + 9, y + 6, z + 9),
       e => HOSTILE_TYPES.has(e.type));
     if (hostiles.length > 0) {
-      this.toast('You may not rest now; there are monsters nearby');
+      if (!actor) this.toast('You may not rest now; there are monsters nearby');
       return;
     }
+    if (actor) { actor.sleeping = true; this.net?.broadcastSleepStatus?.(this.sleepingCount(), this.net.connectedPlayerCount()); return; }
     this.sleeping = { ticks: 0 };
     this.ui?.setSleepFade?.(true);
+    if (this.net?.isHost) this.net.broadcastSleepStatus(this.sleepingCount(), this.net.connectedPlayerCount());
+  }
+
+  sleepingCount() {
+    let n = this.sleeping ? 1 : 0;
+    if (this.net?.isHost) for (const c of this.net.clients.values()) if (c.sleeping) n++;
+    return n;
   }
 
   tickSleep() {
+    // 14 §5.5 — multiplayer: night skips only when EVERY connected player is in
+    // bed for ≥100 continuous ticks (SLEEP_PERCENT = 100).
+    if (this.net?.isHost && this.net.hasClients()) {
+      const total = this.net.connectedPlayerCount();
+      const inBed = this.sleepingCount();
+      if (this.sleeping && inBed === total) {
+        this._mpSleepTicks = (this._mpSleepTicks || 0) + 1;
+        if (this._mpSleepTicks >= 100) {
+          this.dayNight.sleepSkip();
+          this._mpSleepTicks = 0;
+          this.sleeping = null; this.ui?.setSleepFade?.(false);
+          for (const c of this.net.clients.values()) c.sleeping = false;
+          this.net.broadcastTimeSync();
+          this.net.broadcastSleepStatus(0, total);
+        }
+      } else {
+        this._mpSleepTicks = 0;
+      }
+      return;
+    }
     if (!this.sleeping) return;
     if (++this.sleeping.ticks >= 100) {
       this.dayNight.sleepSkip();
@@ -1151,12 +1258,25 @@ export class Game {
     this.ui?.onGameModeChanged?.(mode);
   }
 
-  onPlayerDeath() {
+  onPlayerDeath(player = this.player) {
+    // 14 AMENDS 03 §20 — a REMOTE player's death is host-side: broadcast a death
+    // line; that client learns it via playerState.dead and shows its own screen.
+    if (this.net?.isHost && player !== this.player) {
+      const c = this.net.clientForPlayer(player);
+      const name = c?.name ?? player.netName ?? 'A player';
+      this.net.broadcastEntityDespawn?.(player.id, 'died');
+      this.net._broadcastJson?.({ t: 'chat', from: null, text: `${name} died` });
+      if (c) this.net._sendPlayerState?.(c, true);
+      this.ui?.chat?.addSystem?.(`${name} died`);
+      return;
+    }
     document.exitPointerLock?.();
     this.setState(STATE.DEAD);
   }
 
   respawnPlayer() {
+    // On a CLIENT, the host runs the respawn; we ask for it and wait for forceMove.
+    if (this.net?.isClient) { this.net.sendRespawn(); return; }
     this.player.respawn(this.worldSpawn);
     this.setState(STATE.PLAYING);
     this.input.requestLock();
@@ -1165,6 +1285,387 @@ export class Game {
   toast(msg) { this.ui?.toast?.(msg); }
 
   openContainer(kind, x, y, z) {
+    // 14 §6 — a REMOTE player's container open is host-resolved into a net window,
+    // not the host's own screen. _netActor is set while applying that client's use.
+    if (this._netActor) { this.hostOpenNetContainer(this._netActor, kind, x, y, z); return; }
     this.ui?.containers?.open?.(kind, x, y, z);
   }
+
+  // ================================================================ 14-MULTIPLAYER
+
+  // ---------------------------------------------------------------- player registry
+  refreshPlayers() {
+    const arr = this.players;
+    arr.length = 0;
+    if (this.player) arr.push(this.player);
+    if (this.net?.isHost) for (const c of this.net.clients.values()) if (c.player && !c.player.dead) arr.push(c.player);
+  }
+  isPlayer(e) { return !!e && (e === this.player || e.type === 'player'); }
+  // nearest live player in 3D — AMENDS 05 §1/§4/§6. Solo returns game.player.
+  nearestPlayerTo(x, y, z) {
+    const arr = this.players.length ? this.players : (this.player ? [this.player] : []);
+    let best = null, bd = Infinity;
+    for (const p of arr) {
+      if (!p || p.dead) continue;
+      const d = (p.pos.x - x) ** 2 + (p.pos.y - y) ** 2 + (p.pos.z - z) ** 2;
+      if (d < bd) { bd = d; best = p; }
+    }
+    return best;
+  }
+  eachPlayer(fn) { for (const p of this.players) if (p && !p.dead) fn(p); }
+  // chunk centers of every player (host union keep-alive / sim range, AMENDS 01 §4.3).
+  playerChunkCenters() {
+    const out = [];
+    for (const p of this.players) if (p && !p.dead) out.push({ cx: Math.floor(p.pos.x) >> 4, cz: Math.floor(p.pos.z) >> 4 });
+    return out.length ? out : (this.world?.playerChunk ? [this.world.playerChunk] : []);
+  }
+  currentHostileCap() { return hostileCap(this.net?.isHost ? this.net.connectedPlayerCount() : 1); }
+  withActivePlayer(player, fn) {
+    const it = this.interaction, prev = it._activePlayer;
+    it._activePlayer = player;
+    try { return fn(); } finally { it._activePlayer = prev; }
+  }
+
+  // ---------------------------------------------------------------- host session
+  startHosting(url) {
+    const NetHostP = import('./net/NetHost.js');
+    return NetHostP.then(({ NetHost }) => {
+      const net = new NetHost(this);
+      this.net = net;
+      net.onCode = code => this.ui?.netMenus?.setHostCode?.(code);
+      net.onError = reason => this.ui?.netMenus?.onHostError?.(reason);
+      net.host(url);
+      return net;
+    });
+  }
+
+  playerRecordFor(p, name) {
+    return { ...p.serialize(), name, lastSeen: this._nowMs() };
+  }
+  _nowMs() { try { return Date.now(); } catch { return 0; } }
+
+  buildPlayerRecords() {
+    const out = { ...(this._savedPlayers ?? {}) };
+    if (this.player) out[this.localPlayerId] = this.playerRecordFor(this.player, this.localPlayerName);
+    if (this.net?.isHost) for (const c of this.net.clients.values()) if (c.player) out[c.playerId] = this.playerRecordFor(c.player, c.name);
+    return out;
+  }
+
+  takeSavedPlayerRecord(playerId) { return this._savedPlayers?.[playerId] ?? null; }
+  saveNetPlayerRecord(client) {
+    if (!client.player) return;
+    this._savedPlayers ??= {};
+    this._savedPlayers[client.playerId] = this.playerRecordFor(client.player, client.name);
+  }
+
+  hostSpawnPosFor(rec) {
+    if (rec?.spawnPoint) { const bs = this.validateBedSpawn?.(rec.spawnPoint); if (bs) return bs; }
+    const base = this.player?.pos ?? this.worldSpawn ?? { x: 0, y: 80, z: 0 };
+    const x = Math.floor(base.x) + 1, z = Math.floor(base.z) + 1;
+    for (let y = 127; y >= 1; y--) {
+      if (BLOCKS[this.world.getBlock(x, y - 1, z)]?.collidable && !BLOCKS[this.world.getBlock(x, y, z)].collidable) return { x: x + 0.5, y, z: z + 0.5 };
+    }
+    return { x: x + 0.5, y: this.worldSpawn?.y ?? 80, z: z + 0.5 };
+  }
+
+  // Build a host-side Player entity for a joining client (restore record if returning).
+  createNetPlayer(client, rec) {
+    const p = new Player(this.world);
+    p.isNetPlayer = true;
+    p.netName = client.name;
+    p.netPlayerId = client.playerId;
+    p.hue = client.hue;
+    let spawn;
+    if (rec && (rec.dimension ?? 0) === this.world.activeDim) {
+      p.deserialize(rec);
+      spawn = { x: p.pos.x, y: p.pos.y, z: p.pos.z };
+    } else {
+      if (rec) { p.deserialize(rec); }           // keep inventory/xp, relocate to host dim
+      spawn = this.hostSpawnPosFor(rec);
+      p.setPos(spawn.x, spawn.y, spawn.z);
+      p.prevPos.x = spawn.x; p.prevPos.y = spawn.y; p.prevPos.z = spawn.z;
+    }
+    p.dim = this.world.activeDim;                 // clients share the host's resident dim
+    p.vel.x = p.vel.y = p.vel.z = 0;
+    this.entities.add(p);
+    client.player = p;
+    this.refreshPlayers();
+    return spawn;
+  }
+
+  serializeNetPlayer(p, client, full = false) {
+    const packStacks = arr => arr.map(s => (s ? cloneStack(s) : null));
+    const base = {
+      health: p.health, hunger: p.foodLevel, saturation: p.saturation, air: p.air,
+      fireTicks: p.fireTicks, xpLevel: p.xpLevel, xpPoints: p.xpPoints, xp: currentXp(p),
+      gameMode: p.gameMode, effects: serializeEffects(p),
+      inventory: packStacks(p.inventory), armor: packStacks(p.armor),
+      offhand: p.offhand ? cloneStack(p.offhand) : null, selectedSlot: p.selectedSlot,
+      dead: p.dead,
+    };
+    if (full) return { ...p.serialize(), ...base, name: client?.name ?? p.netName };
+    return base;
+  }
+
+  removeNetPlayer(player) {
+    if (!player) return;
+    this.entities.remove(player);
+    this.refreshPlayers();
+    this.net?.broadcastEntityDespawn?.(player.id, 'removed');
+  }
+
+  netStaticFor(e) {
+    const t = e.type;
+    if (e.isRemotePlayer || t === 'player') {
+      return { playerId: e.netPlayerId, name: e.netName, hue: e.hue ?? 0, heldItemId: e.heldStack?.id ?? null };
+    }
+    if (t === 'item') return { itemId: e.stack?.id, count: e.stack?.count, damage: e.stack?.damage };
+    if (t === 'arrow') return { ownerId: e.owner?.id ?? null };
+    if (t === 'falling_block') return { blockId: e.blockId };
+    if (t === 'primed_tnt') return { fuse: e.fuse };
+    if (t === 'xp_orb') return { value: e.value };
+    if (t === 'sheep') return { woolColor: e.woolColor ?? 0 };
+    return {};
+  }
+
+  // ---- host request application (reuses interaction via active-player swap) ----
+  hostApplyBlockEdit(client, d) {
+    const w = this.world, p = client.player;
+    if (d.action === 0) {
+      if (w.getBlock(d.x, d.y, d.z) === B.AIR) return false;
+      this.withActivePlayer(p, () => this.interaction.breakBlock(d.x, d.y, d.z, {}));
+      return true;
+    }
+    p.selectedSlot = d.hotbarSlot & 7;
+    const held = p.heldStack;
+    if (!held) return false;
+    const hit = { x: d.x, y: d.y, z: d.z, id: w.getBlock(d.x, d.y, d.z), face: indexToFace(d.face), t: 0 };
+    this.withActivePlayer(p, () => this.interaction.tryPlace(held, hit, 'main'));
+    return true;   // placement is not client-predicted → no revert semantics needed
+  }
+
+  hostApplyUseBlock(client, m) {
+    const p = client.player, it = this.interaction;
+    // audit M2 / §10 — reach-validate a targeted use before opening/actuating.
+    if (!m.self) {
+      const dist = Math.hypot((m.x + 0.5) - p.pos.x, (m.y + 0.5) - (p.pos.y + p.eyeHeight), (m.z + 0.5) - p.pos.z);
+      if (dist > (p.creative ? 5.2 : 4.5) + 0.5) return;
+    }
+    const prevHit = it.currentHit, prevActor = this._netActor;
+    this._netActor = client;
+    it._activePlayer = p;
+    try {
+      if (m.self) it.currentHit = null;
+      else {
+        p.selectedSlot = (m.hotbarSlot ?? 0) & 7;
+        it.currentHit = { x: m.x, y: m.y, z: m.z, id: this.world.getBlock(m.x, m.y, m.z), face: indexToFace(m.face), t: 0 };
+      }
+      const input = {
+        pressed: new Set(), shift: p.sneaking, ctrl: false, hotbar: -1, wheel: 0,
+        middlePressed: false, rightPressed: true, mouseRight: true, mouseLeft: false,
+        leftPressed: false, forward: 0, strafe: 0, jump: false, sneak: p.sneaking, sprintKey: false,
+      };
+      it.use(input);
+    } finally { it.currentHit = prevHit; it._activePlayer = null; this._netActor = prevActor; }
+  }
+
+  hostApplyAttack(client, m) {
+    const target = this.entities.entities.get(m.target);
+    if (!target || target.dead || !(target instanceof LivingEntity)) return;
+    const p = client.player;
+    const eye = { x: p.pos.x, y: p.pos.y + p.eyeHeight, z: p.pos.z };
+    const bb = target.getAABB();
+    const cx = Math.max(bb.min[0], Math.min(eye.x, bb.max[0]));
+    const cy = Math.max(bb.min[1], Math.min(eye.y, bb.max[1]));
+    const cz = Math.max(bb.min[2], Math.min(eye.z, bb.max[2]));
+    const dist = Math.hypot(cx - eye.x, cy - eye.y, cz - eye.z);
+    if (dist > 4.5 + 0.5) return;                 // §7.3 generous reach
+    this.withActivePlayer(p, () => this.interaction.attack(target));
+    this.net?.broadcastHurt?.(target.id, 0, client.playerId);
+  }
+
+  hostApplyDrop(client, m) {
+    this.withActivePlayer(client.player, () => this.interaction.dropHeld(!!m.stack));
+  }
+
+  hostRespawnPlayer(client) {
+    const p = client.player;
+    p.respawn(this.worldSpawn);
+    p.dim = this.world.activeDim;
+    if (!this.entities.entities.has(p.id)) this.entities.add(p);   // re-add if it was ever reaped
+    this.refreshPlayers();
+    this.net?.sendForceMove?.(client, { x: p.pos.x, y: p.pos.y, z: p.pos.z }, p.yaw, p.pitch);
+    this.net?._sendPlayerState?.(client, true);
+  }
+
+  // ---------------------------------------------------------------- net containers (chest-class)
+  hostOpenNetContainer(client, kind, x, y, z) {
+    // Only "storage" containers replicate (chest/dispenser/dropper/hopper/shulker/furnace).
+    const be = this.getBlockEntity(x, y, z);
+    if (!be?.data?.slots) return;
+    const windowId = (client._winSeq = (client._winSeq || 0) + 1);
+    client.window = { id: windowId, kind, x, y, z, be, cursor: null };
+    this.net?._jsonTo?.(client.slot, {
+      t: 'containerOpen', windowId, kind, pos: { x, y, z },
+      slots: be.data.slots.map(s => s ? cloneStack(s) : null),
+      inv: client.player.inventory.map(s => s ? cloneStack(s) : null),
+    });
+  }
+
+  hostContainerClick(client, m) {
+    const win = client.window;
+    if (!win || win.id !== m.windowId) return;
+    if (this.world.getBlock(win.x, win.y, win.z) === B.AIR) { this.hostContainerClose(client); return; }
+    applyNetContainerClick(win, client.player, m, ITEMS);
+    win.be.modified = true;
+    const slotsCopy = () => win.be.data.slots.map(s => s ? cloneStack(s) : null);
+    // reflect the full authoritative state to the CLICKER (cursor + inv + slots),
+    // echoing actionId so a predictive client could match its rollback (§6).
+    this.net?._jsonTo?.(client.slot, {
+      t: 'containerResult', windowId: win.id, actionId: m.actionId, cursor: win.cursor,
+      slots: slotsCopy(), inv: client.player.inventory.map(s => s ? cloneStack(s) : null),
+    });
+    // audit M6 — OTHER viewers get slot-only updates (no cursor/inv), so their own
+    // predicted cursor + inventory are not clobbered by another player's click.
+    if (this.net?.isHost) for (const c of this.net.clients.values()) {
+      if (c !== client && c.window && c.window.x === win.x && c.window.y === win.y && c.window.z === win.z) {
+        this.net._jsonTo(c.slot, { t: 'containerResult', windowId: c.window.id, slots: slotsCopy() });
+      }
+    }
+  }
+
+  hostContainerClose(client) {
+    const win = client.window;
+    if (!win) return;
+    if (win.cursor) {
+      const left = client.player.give(win.cursor);
+      if (left > 0) { win.cursor.count = left; this.dropStackAt(win.cursor, client.player.pos.x, client.player.pos.y + 0.6, client.player.pos.z); }
+      win.cursor = null;
+    }
+    client.window = null;
+  }
+
+  // ---------------------------------------------------------------- CLIENT session
+  async startClientWorld(welcome, net) {
+    this.disposeWorld();
+    this.net = net;
+    this.world = new World(welcome.seed);
+    this.world.game = this;
+    this.world.time = welcome.worldTime ?? 0;
+    this.chunkManager = new ChunkManager(this.world, this.scene, this.materials, this.atlas.tileUV);
+    this.chunkManager.game = this;
+    this.chunkManager.netClient = true;         // no terrain workers; chunks arrive over the wire
+    this.chunkManager.loading = true;
+    this.world.chunkManager = this.chunkManager;
+    this.entities = new EntityManager(this.world, this.scene);
+    this.player = new Player(this.world);
+    if (welcome.you) this.player.deserialize(welcome.you);
+    if (welcome.spawnPos) { this.player.setPos(welcome.spawnPos.x, welcome.spawnPos.y, welcome.spawnPos.z); this.player.prevPos.x = welcome.spawnPos.x; this.player.prevPos.y = welcome.spawnPos.y; this.player.prevPos.z = welcome.spawnPos.z; }
+    this.player.isLocalNetPlayer = true;
+    this.entities.add(this.player);
+    this.players = [this.player];
+    this.interaction = new Interaction(this);
+    this.dayNight = new DayNight(this);
+    this.dayNight.deserialize?.(welcome.weather);
+    this.particles = new Particles(this.scene);
+    // client is in the host's active dim
+    const desc = getDimension(welcome.dim ?? 0) ?? getDimension(0);
+    this.world.activeDim = welcome.dim ?? 0;
+    this.world.hasSkyLight = desc.hasSkyLight;
+    this.dimMeta = {};
+    this.setState(STATE.CONNECTING);
+  }
+
+  // physics tick used by the client predictor (03 §4 pipeline verbatim)
+  tickClientPlayer(player, frame) { player.tick(frame); }
+
+  clientTick() {
+    const frame = (this.state === STATE.PLAYING && !this.sleeping) ? this.input.snapshot() : (this.input.snapshot(), NEUTRAL_FRAME);
+    // predict + interaction (block-edit prediction) happen inside net.clientTick
+    this.net.clientTick(frame);
+    if (this.state === STATE.PLAYING) this.interaction.tick(frame);
+    // 14 §1.1 — visual worldTime advance between syncs (host snaps it via timeSync).
+    if (this.state === STATE.PLAYING) {
+      this.world.time++;
+      this.world.skyDarken = this.dayNight.computeSkyDarken(this.world.time);
+    }
+    // LOADING→PLAYING gate is driven by NetClient (spawnReady → spawnConfirm).
+  }
+
+  createPuppet(typeName, rec, staticData) {
+    const st = staticData || {};
+    if (typeName === 'player') {
+      const info = this.net?.players?.get?.(st.playerId) || {};
+      const pl = new RemotePlayer(this.world, {
+        playerId: st.playerId || info.playerId, name: st.name || info.name || 'Player',
+        hue: st.hue ?? info.hue ?? 0, slot: info.slot ?? 0, entityId: rec.id,
+      });
+      pl.heldItemId = st.heldItemId ?? null;
+      pl.dim = this.world.activeDim;
+      return pl;
+    }
+    // mob / item / projectile puppet — build via the real class for correct visuals,
+    // but it never ticks AI (the client runs no world sim) and takes no local damage.
+    let e = null;
+    if (typeName === 'item') e = new ItemEntity(this.world, rec.x, rec.y, rec.z, { id: st.itemId ?? 1, count: st.count ?? 1, damage: st.damage }, 0);
+    else if (typeName === 'xp_orb') e = new XpOrb(this.world, rec.x, rec.y, rec.z, st.value ?? 1);
+    else if (typeName === 'primed_tnt') e = new PrimedTnt(this.world, rec.x, rec.y, rec.z, st.fuse ?? 80);
+    else if (typeName === 'falling_block') e = new FallingBlock(this.world, st.blockId ?? 1, rec.x, rec.y, rec.z);
+    else if (typeName === 'arrow') e = new Arrow(this.world, rec.x, rec.y, rec.z, 0, 0, 0, null);
+    else e = createMob(this.world, typeName, rec.x, rec.y, rec.z, {});
+    if (e) { e.isPuppet = true; e.beforeHurt = () => false; e.tick = () => {}; if (e.isBaby !== undefined && rec.stateByte & 1) { /* baby via stateByte */ } }
+    return e;
+  }
+
+  clientDimChange(m) {
+    // wipe chunks + entities and restream the new dim (§3.3 dimChange)
+    this.net.interp.clear();
+    this.net.puppets.clear();
+    this.net.staticData.clear();
+    for (const e of [...this.entities.entities.values()]) if (e !== this.player) this.entities.remove(e);
+    this.chunkManager.flushAllChunks();
+    const desc = getDimension(m.dim ?? 0) ?? getDimension(0);
+    this.world.activeDim = m.dim ?? 0;
+    this.world.hasSkyLight = desc.hasSkyLight;
+    if (m.spawnPos) { this.player.setPos(m.spawnPos.x, m.spawnPos.y, m.spawnPos.z); this.player.prevPos.x = m.spawnPos.x; this.player.prevPos.y = m.spawnPos.y; this.player.prevPos.z = m.spawnPos.z; }
+    this.chunkManager.loading = true;
+    this.setState(STATE.CONNECTING);
+  }
+}
+
+// ---- headless container click applier (14 §6, chest-class; no dupes, host-authoritative) ----
+function applyNetContainerClick(win, player, m, ITEMS) {
+  const slots = win.be.data.slots;
+  const inv = player.inventory;
+  const stackMax = s => (s ? (ITEMS.get(s.id)?.stack ?? 64) : 64);
+  const region = m.region === 'inv' ? inv : slots;
+  const i = m.slotIndex | 0;
+  if (i < 0 || i >= region.length) return;
+  const same = (a, b) => a && b && a.id === b.id && (a.damage ?? 0) === (b.damage ?? 0);
+  if (m.button === 2) {                            // right click
+    if (!win.cursor) {                             // split half to cursor
+      const s = region[i];
+      if (s && s.count > 0) { const half = Math.ceil(s.count / 2); win.cursor = { ...s, count: half }; s.count -= half; if (s.count <= 0) region[i] = null; }
+    } else {                                        // drop one
+      const s = region[i];
+      if (!s) { region[i] = { ...win.cursor, count: 1 }; if (--win.cursor.count <= 0) win.cursor = null; }
+      else if (same(s, win.cursor) && s.count < stackMax(s)) { s.count++; if (--win.cursor.count <= 0) win.cursor = null; }
+    }
+    return;
+  }
+  // left click / shift
+  if (m.shift) {                                   // shift-move whole stack across regions
+    const s = region[i]; if (!s) return;
+    const dest = region === inv ? slots : inv;
+    // merge then fill empties (lowest slot wins)
+    for (let k = 0; k < dest.length && s.count > 0; k++) { const d = dest[k]; if (d && same(d, s) && d.count < stackMax(d)) { const add = Math.min(stackMax(d) - d.count, s.count); d.count += add; s.count -= add; } }
+    for (let k = 0; k < dest.length && s.count > 0; k++) { if (!dest[k]) { dest[k] = { ...s }; s.count = 0; } }
+    if (s.count <= 0) region[i] = null;
+    return;
+  }
+  const s = region[i];
+  if (!win.cursor) { if (s) { win.cursor = s; region[i] = null; } return; }
+  if (!s) { region[i] = win.cursor; win.cursor = null; return; }
+  if (same(s, win.cursor)) { const add = Math.min(stackMax(s) - s.count, win.cursor.count); s.count += add; win.cursor.count -= add; if (win.cursor.count <= 0) win.cursor = null; return; }
+  const tmp = region[i]; region[i] = win.cursor; win.cursor = tmp;   // swap
 }
