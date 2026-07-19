@@ -114,6 +114,34 @@ fingerprint is unchanged; the new keys are collision-free over ±30M/±15M rando
 and stay safe-integer; and a browser boot confirms the worker gen path builds a varied
 world (67 chunks meshed, zero failed, no errors).
 
+## UPDATE-polish §3 — celestial interpolation (verified already smooth; no fix) (2026-07-19)
+
+**Reported symptom:** the sky/sun steps because `Sky.update()` (render-per-frame) is fed a
+tick-quantized time with no sub-tick interpolation.
+
+**Investigation (empirical):** the premise does not hold in the current code. `Sky.update`
+receives a pre-computed `angle`; its caller `DayNight.updateRender(alpha, camera)` already
+builds an **interpolated** time `t = world.time + alpha` (the render-accumulator fraction,
+the same `alpha` used for entity interpolation) and feeds it to **all** the elements §3
+lists:
+- `celestialAngle(t)` → `sky.pivot.rotation.z = angle·2π` (sun/moon transform);
+- the sky-colour keyframe lerp via `dayTime = t % 24000` (with a continuous midnight wrap —
+  `KEYS[0]` colours equal `KEYS[24000]`);
+- `starBrightness(t)` / `sunriseColor(t)`;
+- cloud drift, which accumulates from real frame time (`cloudDrift += 0.02·dtSec·20`), with
+  the 12 m grid snap on cloud *position* only (which §3 explicitly permits).
+There is no quantized `this.dayTime` (getter) anywhere in the render path; the interpolation
+has been present since the original build.
+
+**Verified smooth (headless):** varying `alpha` 0→1 at a fixed `world.time` yields monotonic,
+equal-increment pivot rotation (5.19412→5.19438, step-ratio 1.00); the pivot changes smoothly
+across consecutive real frames; the cloud-drift offset advances smoothly every frame (deltas
+~1–4 ×10⁻⁶, no jumps); and the midnight colour wrap is continuous.
+
+**Conclusion:** §3's per-frame celestial interpolation is already implemented and correct, so
+no code change was made — touching the working render path would only risk a regression.
+(Unlike §1/§2, where the already-working main path hid a genuine edge-case bug that was fixed.)
+
 ## E11 — 13-BOSSES + beacon (2026-07-19)
 
 Built on E10's End arena + E7's wither skulls/soul blocks + E9's status engine.
