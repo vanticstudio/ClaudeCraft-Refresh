@@ -4,6 +4,44 @@ Deviations and ambiguity rulings. (The base-spec `.md` files were removed from
 the working tree during repo cleanup; the pre-UPDATE deviation log for the
 initial build lives in git history — `git show 8441ac9:DEVIATIONS.md`.)
 
+## Known deviations (E13 / 17-SHIP ship summary, 2026-07-19)
+
+The whole game is built and each phase passed its own acceptance gate; the ship
+sweep re-verified the shipped build via comprehensive headless smoke tests across
+every subsystem cluster (terrain/save, mobs/combat, redstone, enchanting/potions,
+nether/end, villages/bosses/fire-water, creative/audio + a production-preview boot)
+rather than hand-re-running every individual checklist line — the per-item gates
+already passed when each phase landed. Ship-time decisions and residual deviations:
+
+1. **Menu theme music ships OFF.** The optional file-based theme layer (16-AUDIO
+   §4A) requires original/cleared tracks declared in `public/theme-music/CLEARED.json`.
+   None are provided, so `gen-theme-manifest` emits an empty manifest and the
+   theme layer is off (17-SHIP §3.5); the generative synth music still plays. All
+   SFX + in-game music are 100% synthesized — the shipped `dist/` contains no audio
+   files.
+2. **C418 placeholder tracks removed from the tree.** 14 numbered `*.mp3` (the
+   Minecraft/C418 OST dev placeholders) had been committed into
+   `public/theme-music/`; they are removed from HEAD here. They remain in **git
+   history** — before making the repository public, scrub them with
+   `git filter-repo --path public/theme-music --path CC-assets --invert-paths` (or
+   BFG) and force-push, or keep the repo private. The live Vercel build is already
+   clean (the vite ship-gate deletes any undeclared track from `dist/`).
+3. **Repo name.** The GitHub remote is `vanticstudio/Minecraft-spec`. All *in-app*
+   branding is **ClaudeCraft** (window title, title screen, README, package name);
+   renaming the GitHub repository itself is the operator's action.
+4. **Shipped save bugs fixed** (17-SHIP §1.6): `saveManager.saveChunkNow` depended
+   on `window.game`, which is set only in DEV — a production build threw on every
+   chunk-unload / dimension-flush write (silent chunk loss); it now reads the game
+   via `save.game` (wired in `startWorld`). `Game.disposeWorld` crashed on a second
+   call (null-deref on `this.world`); it now guards and nulls its handles so a
+   double dispose is a no-op.
+5. **Multiplayer** carries its own deviations (see the E12 section below): JSON
+   rides as `0x00`-tagged binary frames; all players share the host's single
+   resident dimension (the party travels together); client RMB/placement and
+   containers are non-predictive (host-authoritative). The relay is not part of the
+   static web build — it runs separately and needs a `wss://` URL for internet play
+   over https (§2.4, auto-upgraded/validated on the Host/Join screen).
+
 ## E11 — 13-BOSSES + beacon (2026-07-19)
 
 Built on E10's End arena + E7's wither skulls/soul blocks + E9's status engine.

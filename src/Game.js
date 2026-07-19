@@ -127,6 +127,7 @@ export class Game {
     this.chunkManager = new ChunkManager(this.world, this.scene, this.materials, this.atlas.tileUV);
     this.chunkManager.game = this;
     this.chunkManager.save = this.save;
+    if (this.save) this.save.game = this;      // 17-SHIP §1.6 — saveChunkNow needs the game in prod (window.game is DEV-only)
     this.world.chunkManager = this.chunkManager;
     this.entities = new EntityManager(this.world, this.scene);
     this.player = new Player(this.world);
@@ -185,7 +186,11 @@ export class Game {
   }
 
   disposeWorld() {
-    if (this.chunkManager) {
+    // 17-SHIP §1.6 — guard `this.world` so a double dispose (e.g. quit-then-quit,
+    // or a failed startWorld that already nulled world but not chunkManager) is a
+    // no-op instead of a null-deref crash. Everything is nulled at the end so the
+    // second call short-circuits.
+    if (this.chunkManager && this.world) {
       this.chunkManager.dispose();
       for (const chunk of this.world.chunks.values()) this.chunkManager.disposeChunkMeshes(chunk);
     }
@@ -196,6 +201,8 @@ export class Game {
     this.particles?.dispose?.();
     this.world = null;
     this.player = null;
+    this.chunkManager = null;
+    this.entities = null;
   }
 
   setState(next) {

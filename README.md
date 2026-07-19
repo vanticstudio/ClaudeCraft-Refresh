@@ -1,25 +1,31 @@
-# VoxelCraft
+# ClaudeCraft
 
-A faithful single-player recreation of Minecraft's full survival loop, built **from
-scratch in the browser** — vanilla JavaScript + [three.js](https://threejs.org),
-no game engine, no physics library, no asset files. Every texture is generated
-procedurally at runtime.
+A browser voxel **survival game** — the full Minecraft-style loop, from punching
+trees to killing the dragon — built **from scratch** in vanilla JavaScript +
+[three.js](https://threejs.org), with **no game engine, no physics library, and no
+asset files**. Every texture is painted procedurally at startup and every sound is
+synthesized at runtime; nothing is downloaded. The entire game was implemented by
+**Claude** from a set of frozen written specifications.
 
-![VoxelCraft gameplay](docs/screenshot.png)
+> **Live:** _(paste your Vercel URL here after the first deploy)_
+
+![ClaudeCraft gameplay](docs/screenshot.png)
 
 ## Play
 
-- **Web**: deployed on Vercel from this repo (auto-deploys from `main`)
-- **Local**:
+**On the web:** open the live URL above — a fresh world generates in your browser;
+nothing installs.
+
+**Locally:**
 
 ```bash
 npm install
 npm run dev        # → http://localhost:5173
 ```
 
-Click **New World**, then click the screen to grab the mouse. Your world
-autosaves to the browser's IndexedDB every 30 seconds — close the tab and
-**Continue World** picks up where you left off.
+Press **Start**, click **New World**, then click the screen to grab the mouse.
+Your world autosaves to the browser's IndexedDB every 30 seconds — close the tab
+and **Continue** picks up exactly where you left off.
 
 ## Controls
 
@@ -27,49 +33,131 @@ autosaves to the browser's IndexedDB every 30 seconds — close the tab and
 |---|---|
 | Mouse | Look |
 | W A S D | Move · double-tap **W** to sprint |
-| Space / Shift | Jump / sneak (sneaking won't fall off edges) |
+| Space / Shift | Jump / sneak (sneaking won't walk off edges) |
 | Left-click (hold) | Mine / attack |
-| Right-click | Place block · use item · open chests, crafting, doors, beds |
+| Right-click | Place block · use item · open chests / crafting / furnaces / doors / beds / trades |
 | 1–9 / wheel | Hotbar |
-| E | Inventory (2×2 crafting grid) |
+| E | Inventory (survival) or creative palette (search + grab) |
+| F | Swap main/off-hand |
 | Q / Shift+Q | Drop item / stack |
+| T · Tab | **Multiplayer:** open chat · hold for the player list |
+| F3 | Debug overlay (off by default) |
+| F4 | Toggle Survival ⇄ Creative (double-tap Space to fly) |
 | Esc | Pause (autosaves) |
-| F3 | Debug overlay |
-| F4 | Debug creative: flight (double-tap Space), instant break, item palette |
+| Middle-click | Pick block (creative) |
 
 ## Features
 
-- **Infinite deterministic worlds** — 11 biomes, caves & ravines, rivers and
-  oceans, ore veins at authentic depths, trees, villagesless wilderness. Same
-  seed ⇒ same world, generated in a web worker at ~3 ms/chunk.
-- **Java-accurate mechanics** — movement speeds (4.317 walk / 5.612 sprint m/s),
-  mining times per tool tier, the 1.9 attack-cooldown combat system, armor
-  math, hunger/saturation/exhaustion, XP levels, fall damage, drowning.
-- **Full lighting engine** — per-voxel sky + block light BFS with smooth
-  per-vertex lighting and ambient occlusion; torches flood caves, day/night
-  never remeshes a chunk.
-- **9 mobs** — zombies, skeletons (strafing archers), creepers, spiders
-  (wall-climbing, light-gated), endermen (stare provocation, teleports), plus
-  breedable cows/pigs/sheep/chickens — goal-based AI with A* pathfinding.
-- **Survival loop** — punch trees → craft tools → mine ores → smelt iron →
-  build a shelter → farm wheat → fight the night → sleep in a bed → respawn.
-- **Blocks with behavior** — flowing water & lava (obsidian/cobblestone
-  interactions), falling sand, TNT chain explosions, farmland & crops, doors,
-  furnaces, chests, saplings that grow real trees, grass spread, leaf decay,
-  snow and ice in cold biomes, weather with lightning.
-- **20 TPS fixed-timestep** simulation with interpolated rendering; 60+ fps at
-  render distance 8.
+The whole survival arc is here:
+
+- **Infinite deterministic worlds** — 11 biomes, caves & ravines, rivers/oceans,
+  ore veins at authentic depths, trees, and **villages** that generate coherently
+  across chunk borders. Same seed ⇒ same world, generated in a web worker.
+- **Java-accurate mechanics** — movement speeds, per-tool mining times, the 1.9
+  attack-cooldown combat system with crits/sweep, armor math, hunger, XP, fall
+  damage, drowning, a per-voxel sky+block **lighting engine** with smooth AO.
+- **Mobs & combat** — zombies, skeletons, creepers, spiders, endermen, breedable
+  farm animals, villagers with professions & trading, iron golems, and the full
+  Nether/End roster — goal-based AI with A* pathfinding.
+- **Redstone** — dust, torches, repeaters, comparators, pistons, observers,
+  dispensers/droppers, hoppers, lamps, note blocks, with tick-accurate scheduling.
+- **Enchanting & potions** — enchanting table + full catalog, anvil, grindstone,
+  a status-effect engine, a brewing stand with splash & lingering potions.
+- **The Nether & The End** — light a portal, raid a fortress, mine ancient debris
+  for **netherite**, find the stronghold, and travel to The End to fight the
+  **ender dragon** and glide home on an **elytra**.
+- **Bosses & beacons** — the dragon fight (crystals / perch / breath → egg +
+  gateway + respawn ritual), the **wither** (summon / phases / nether star), and a
+  four-tier **beacon**.
+- **Fire & fluids** — fire that spreads and burns out (and is put out by rain),
+  waterlogging, flowing water & lava, falling sand, TNT chains.
+- **100% procedural audio** — a WebAudio synthesis engine: mining, footsteps,
+  mobs, UI, distance-muffled explosions, weather, and generative original music.
+  No samples, no copyrighted audio (see [Audio & copyright](#audio--copyright)).
+- **Creative mode** — flight, immunity, instant-break, infinite placement, and a
+  searchable creative inventory.
+- **Multiplayer co-op (2–8 players)** — host-authoritative, over a tiny WebSocket
+  relay, with client prediction and snapshot interpolation (see
+  [Multiplayer](#multiplayer)).
 
 ## How it's built
 
 | Layer | Approach |
 |---|---|
-| Rendering | three.js `WebGLRenderer`, 3 shared shader materials for all chunks, culled-face meshing with per-vertex AO/light |
-| Textures | One 512×512 atlas, all 197 tiles painted onto a canvas at startup (zero image requests) |
-| Worldgen | Seeded simplex-noise stack in a worker; chunks are pure functions of `(seed, cx, cz)` |
+| Rendering | three.js `WebGLRenderer`, shared shader materials for all chunks, culled-face meshing with per-vertex AO/light |
+| Textures | One texture atlas, every tile painted onto a canvas at startup (zero image requests) |
+| Audio | WebAudio synthesis — every sound generated at runtime; generative music (no samples) |
+| Worldgen | Seeded simplex-noise stack in a worker; overworld chunks are pure functions of `(seed, cx, cz)` |
 | Physics | Axis-separated AABB vs voxel grid, swept collision |
 | Persistence | IndexedDB — only modified chunks are saved; the seed regenerates the rest |
-| Specs | The entire game was implemented from six frozen spec documents (preserved in git history); deviations are logged in [DEVIATIONS.md](DEVIATIONS.md) |
+| Multiplayer | One browser is the authoritative host; a ~130-line Node WebSocket relay just routes frames |
+| Specs | Implemented from frozen spec documents (preserved in git history); deviations are logged in [DEVIATIONS.md](DEVIATIONS.md) |
+
+## Multiplayer
+
+Co-op is **host-authoritative**: one player's browser runs the entire simulation
+and everyone else predicts their own movement and renders the rest from the host's
+snapshots. It needs one tiny relay — a ~130-line Node WebSocket server that just
+groups sockets into rooms and forwards frames; it never sees game state.
+
+**On a LAN / same machine:**
+
+```bash
+npm run relay      # starts ws://localhost:8971
+```
+
+Then one player picks **Host Multiplayer** (a 6-character join code appears
+top-right) and the others pick **Join Multiplayer** with that code + the relay URL.
+
+**Over the internet** — a page served over **https** can only open **`wss://`**
+sockets, so you need a `wss://` relay. Two options:
+
+1. **Tunnel a local relay.** Run `npm run relay`, then expose it:
+   `cloudflared tunnel --url http://localhost:8971` (or ngrok / tailscale-serve).
+   Paste the resulting `wss://…` URL into the Host/Join screen.
+2. **Deploy `server/relay.js`** to any free persistent-Node host (Render, Railway,
+   Fly.io). It's a single file with one dependency (`ws`):
+   `npm i ws && node server/relay.js` — set the start command to that and the port
+   to the platform's `$PORT`. Use the resulting `wss://…` URL.
+
+Vercel hosts only static files + serverless functions, so it **cannot** run the
+persistent relay — the relay is always separate. Single-player needs no relay at
+all and makes zero network connections.
+
+## Audio & copyright
+
+All sound effects and background music are **synthesized in the browser** — there
+are no audio files in the shipped build. The optional file-based theme-music layer
+(`public/theme-music/`) ships **off** unless you add your own original or licensed
+tracks and declare them in `public/theme-music/CLEARED.json`; a build-time gate
+withholds any undeclared track and keeps it out of `dist/`. No copyrighted or
+Minecraft/C418 audio is bundled or served.
+
+## Browser support
+
+Targets **Chrome / Chromium** (the primary development browser). Recent
+**Firefox** and **Safari** run it too; if you hit a WebGL, pointer-lock, or
+AudioContext quirk on a non-Chromium browser, Chrome is the reference. Requires
+WebGL2, Web Workers, IndexedDB, Pointer Lock, and WebAudio.
+
+## Build & deploy
+
+```bash
+npm run build      # → dist/ (static; Vite)
+npm run preview    # serve the production build locally
+```
+
+Deploys as a **static site** — Vercel auto-detects Vite (build `npm run build`,
+output `dist/`); no `vercel.json` is needed. The relay (`server/relay.js`) is not
+part of the web build and is run separately (see [Multiplayer](#multiplayer)).
+
+## Disclaimer
+
+**ClaudeCraft is a fan-made, original-asset project. It is not affiliated with,
+endorsed by, or associated with Mojang Studios or Microsoft.** It contains **no
+Minecraft assets, code, or audio** — every texture is generated procedurally and
+every sound is synthesized at runtime. "Minecraft" is a trademark of Mojang
+Studios; it is referenced here only to describe the genre this project recreates.
 
 ## Additions log
 

@@ -4,13 +4,12 @@
 // §5's one scoped exception and carries the copyright ship-gate (see
 // scripts/gen-theme-manifest.mjs + vite.config.js's theme-music-ship-gate).
 //
-// 16-AUDIO E1 is not built yet, so this builds a minimal standalone chain that
-// is a byte-for-byte subset of 16 §1.2's graph:
+// E1 (16-AUDIO) is built and main.js constructs this with E1's { context, musicBus }
+// (`externalBus`), so in every real path we ride E1's graph and never touch its
+// gain (E1 owns the §4.3 damage-duck on musicBus — see duck()). The local
+// _buildFallbackGraph() below is a byte-for-byte subset of 16 §1.2's chain,
+// retained only as a defensive path for a caller that passes no bus:
 //   themeSource → themeGain → musicBus → masterGain → compressor → destination
-// TODO: route via 16 masterBus — pass E1's { context, musicBus } to the
-// constructor; the local nodes then drop out and _buildFallbackGraph() is
-// deleted. While the bus is ours we drive its gain; when it is E1's we never
-// touch it (E1 owns the §4.3 damage-duck on musicBus — see duck()).
 import { THEME_TRACKS } from './themeManifest.js';
 import { busGain } from '../ui/options.js';
 

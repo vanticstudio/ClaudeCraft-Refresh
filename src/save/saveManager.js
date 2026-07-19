@@ -142,7 +142,12 @@ export class SaveManager {
   // fire-and-forget single chunk write (unload path, 01 §16.2)
   saveChunkNow(chunk) {
     if (!this.db) return;
-    const game = chunk?.gameRef ?? window.game;
+    // 17-SHIP §1.6 — `window.game` is set ONLY in DEV (Game.js:118), so a
+    // production build reached serializeChunk(chunk, undefined) here and threw on
+    // every chunk-unload / dimension-flush write → silent chunk loss. `this.game`
+    // is wired in startWorld and is the authoritative source in every build.
+    const game = chunk?.gameRef ?? this.game ?? (typeof window !== 'undefined' ? window.game : null);
+    if (!game) return;
     try {
       const record = this.serializeChunk(chunk, game);
       const key = this.keyFor(chunk.key, chunk.dim);

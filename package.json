@@ -1,7 +1,8 @@
 {
-  "name": "mc-clone",
+  "name": "claudecraft",
   "private": true,
-  "version": "1.0.2",
+  "version": "1.2.0",
+  "description": "ClaudeCraft — a browser voxel survival game (Vite + three.js, 100% procedural assets), built from a written spec by AI. Fan-made, not affiliated with Mojang/Microsoft.",
   "type": "module",
   "scripts": {
     "predev": "node scripts/gen-theme-manifest.mjs",
