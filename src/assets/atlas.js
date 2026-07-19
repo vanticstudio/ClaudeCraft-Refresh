@@ -92,7 +92,11 @@ function paintMissing(ctx, x0, y0) {
 export function buildAtlas() {
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = 512;
-  const ctx = canvas.getContext('2d', { willReadFrequently: false });
+  // §6 — willReadFrequently: the edge-light/bevel passes do ~300 small
+  // getImageData/putImageData round-trips during the bake; a GPU-backed canvas
+  // pays a sync stall for each (~1.5 s total). CPU-backed, the whole bake stays
+  // fast — and this canvas is only a build target that three.js uploads once.
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
   const TILE = {};
   for (let t = 0; t < TILE_NAMES.length; t++) {
