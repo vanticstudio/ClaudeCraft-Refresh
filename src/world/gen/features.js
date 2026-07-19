@@ -94,7 +94,7 @@ function pickSpecies(mix, roll) {
 }
 
 // 02 §10.2 — full decoration pass for one chunk (fixed order)
-export function decorate(ctx, blocks, cx, cz, colD) {
+export function decorate(ctx, blocks, cx, cz, colD, states = null) {
   const put = makePut(blocks, cx, cz);
   const wx0 = cx * 16, wz0 = cz * 16;
 
@@ -217,7 +217,7 @@ export function decorate(ctx, blocks, cx, cz, colD) {
 
   // 4. VILLAGE stamp (12-VILLAGES §2, AMENDS 02 §10.2) — after all vegetation
   // (clears it in the stamped volumes), before snow so taiga roofs get caps.
-  const village = stampVillages(ctx, blocks, cx, cz);
+  const village = stampVillages(ctx, blocks, cx, cz, states);   // states: door/bed/crop nibbles
 
   // 5. Snow & ice — climate rule (02 §10.6)
   for (let z = 0; z < 16; z++) {

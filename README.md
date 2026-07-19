@@ -163,6 +163,18 @@ Studios; it is referenced here only to describe the genre this project recreates
 
 *This section is updated as new features land.*
 
+- **2026-07-19** — **Village generation rework.** Villages are now real
+  settlements: a weighted pool of distinct buildings (small and L-shaped houses,
+  a library, a towered church, a smithy with a lava forge, a butcher with a
+  livestock pen, a fletcher's hut) with stepped roofs, windows and furnished
+  interiors, spread along longer roads with proper gaps. Every building levels
+  its plot and fills foundations down the slope — nothing floats or clips into
+  hillsides — and doors always face the road at street level and open correctly.
+  The farm is a fenced, torch-lit field of staged crops around a sunken water
+  channel instead of a dark pit. Same seed still regenerates the identical
+  village with no chunk seams, and villagers claim the new workstations to take
+  up professions and trade as before.
+
 - **2026-07-19** — **3D item icons.** Inventory, hotbar, creative-palette and trade
   icons for full-cube blocks are now proper **isometric 3D renders** — top face lit,
   the two visible sides shaded like the world — instead of flat single-tile sprites.
