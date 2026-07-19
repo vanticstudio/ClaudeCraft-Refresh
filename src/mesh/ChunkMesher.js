@@ -184,6 +184,13 @@ export class ChunkMesher {
         case 'comparator': this.emitBox(x, y, z, blk, st, [0, 0, 0, 1, 2 / 16, 1], false); break;
         case 'piston_head': this.emitBox(x, y, z, blk, st, [0, 0, 0, 1, 1, 1], true); break;
         case 'hopper': this.emitBox(x, y, z, blk, st, [0, 0, 0, 1, 1, 1], true); break;
+        // 10-NETHER §1.1 — Nether custom shapes. soul_sand's Shape column is
+        // "custom: 14/16 top box", so the render box matches its collisionBox.
+        case 'soul_sand': this.emitBox(x, y, z, blk, st, [0, 0, 0, 1, 14 / 16, 1], true); break;
+        case 'stairs': this.emitStairs(x, y, z, blk, st); break;
+        // §6 — the spawner cage is a full cube in the cutout bucket.
+        case 'spawner': this.emitCube(x, y, z, blk, st); break;
+        case 'portal': this.emitPortal(x, y, z, blk, st); break;
         // 11-END §2.2 — custom End shapes.
         case 'iron_bars': this.emitPane(x, y, z, blk, st); break;
         case 'end_rod': this.emitEndRod(x, y, z, blk, st); break;
@@ -491,6 +498,36 @@ export class ChunkMesher {
     }
   }
 
+  // 10-NETHER §1.1 — stairs: the 2-box L profile. bits0-1 = facing, using the
+  // registry's shared facing enum (0 = +Z, 1 = −X, 2 = −Z, 3 = +X, as doorBox);
+  // bit2 = half (0 bottom, 1 top). The half-step sits on the facing side.
+  emitStairs(x, y, z, blk, st) {
+    // 15 §8 — MASK the nibble: bit7 waterlogging is not part of the orientation.
+    const s = st & STATE_NIBBLE;
+    const facing = s & 3, top = (s & 4) !== 0;
+    const slab = top ? [0, 8 / 16, 0, 1, 1, 1] : [0, 0, 0, 1, 8 / 16, 1];
+    const y0 = top ? 0 : 8 / 16, y1 = top ? 8 / 16 : 1;
+    let step;
+    if (facing === 0) step = [0, y0, 8 / 16, 1, y1, 1];         // +Z half
+    else if (facing === 1) step = [0, y0, 0, 8 / 16, y1, 1];    // −X half
+    else if (facing === 2) step = [0, y0, 0, 1, y1, 8 / 16];    // −Z half
+    else step = [8 / 16, y0, 0, 1, y1, 1];                      // +X half
+    this.emitBox(x, y, z, blk, st, slab, true);
+    this.emitBox(x, y, z, blk, st, step, true);
+  }
+
+  // 10-NETHER §3.3 — nether portal: a 2/16-thick vertical pane centered in the
+  // cell, filling the frame interior. state bit0 = axis (0 = frame spans X, so
+  // the pane faces ±Z; 1 = spans Z, faces ±X). The spec's `tr` bucket is the
+  // mesher's translucent (water) builder, as 11's end_portal.
+  emitPortal(x, y, z, blk, st) {
+    const [sky, bl] = this.ownLight(x, y, z);
+    const box = (st & 1)
+      ? [7 / 16, 0, 0, 9 / 16, 1, 1]
+      : [0, 0, 7 / 16, 1, 1, 9 / 16];
+    this.emitWaterBox(x, y, z, box, this.tileFor(blk, st, 4), sky, bl, 220);
+  }
+
   // 11-END §2.2 — iron_bars: 2/16 center post + flat panes toward connecting
   // neighbors (iron_bars or opaque cube), fence-style scan.
   emitPane(x, y, z, blk, st) {
@@ -578,8 +615,8 @@ export class ChunkMesher {
     this.emitWaterBox(x, y, z, [3 / 16, 3 / 16, 3 / 16, 13 / 16, 13 / 16, 13 / 16], this.tileFor(blk, st, 2), sky, bl);
   }
 
-  // A sub-cube box into the translucent water builder (beacon core).
-  emitWaterBox(x, y, z, box, tile, skyV, blkV) {
+  // A sub-cube box into the translucent water builder (beacon core, portal pane).
+  emitWaterBox(x, y, z, box, tile, skyV, blkV, alpha = 255) {
     const bld = builders.water;
     const [x0, y0, z0, x1, y1, z1] = box;
     const uvr = this.tileUV, t4 = tile * 4;
@@ -595,7 +632,7 @@ export class ChunkMesher {
         const px = co[0] ? x1 : x0, py = co[1] ? y1 : y0, pz = co[2] ? z1 : z0;
         const uu = FACE_UVS[f][c][0], vv = FACE_UVS[f][c][1];
         verts[c] = bld.vertex(x + px, y + py, z + pz, n[0], n[1], n[2],
-          U0 + (U1 - U0) * uu, V0 + (V1 - V0) * vv, r, g, bcol, 255);
+          U0 + (U1 - U0) * uu, V0 + (V1 - V0) * vv, r, g, bcol, alpha);
       }
       bld.quad(verts[0], verts[1], verts[2], verts[3], false);
     }

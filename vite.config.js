@@ -1,4 +1,4 @@
-import { rm, readdir } from 'node:fs/promises';
+import { rm } from 'node:fs/promises';
 import { existsSync, createReadStream, statSync } from 'node:fs';
 import { join, basename, resolve, extname } from 'node:path';
 import pkg from './package.json' with { type: 'json' };
@@ -104,9 +104,11 @@ function themeMusicDevServe() {
   };
 }
 
-// BUILD: regenerate the manifest with build semantics, and keep dist/theme-music
-// to actual audio. Every track in public/theme-music/ ships — there is no
-// allowlist and nothing is withheld.
+// BUILD: 17-SHIP §3 copyright ship-gate. The theme layer is dev-only — the
+// build manifest is forced empty (see gen-theme-manifest.mjs) and the entire
+// dist/theme-music folder (copied from publicDir by Vite) is removed, so no
+// local track — cleared or not — can ever be bundled or served from a build.
+// In-game music in every build is the generative synth composer (16-AUDIO).
 function themeMusicBuild() {
   let outDir = 'dist';
   return {
@@ -118,22 +120,15 @@ function themeMusicBuild() {
     configResolved(cfg) { outDir = resolve(cfg.root, cfg.build.outDir); },
     // Regenerate HERE, not only from the npm `prebuild` hook: `npx vite build`
     // bypasses pre* scripts, and a manifest left over from `npm run dev` would
-    // otherwise bake CC-assets/CC-sounds names into the bundle — files Vite
-    // never copies to dist/, so every one of those URLs would 404.
+    // otherwise bake dev-only track names into the bundle.
     async buildStart() {
-      const { count } = await generateThemeManifest({ build: true, quiet: true });
-      this.info?.(`[theme-music] ${count} track(s) in the build.`);
+      await generateThemeManifest({ build: true, quiet: true });
+      this.info?.('[theme-music] ship-gate: 0 track(s) in the build (dev-only layer).');
     },
     // closeBundle runs after the publicDir → outDir copy has completed.
     async closeBundle() {
       const shipped = join(outDir, 'theme-music');
-      if (!existsSync(shipped)) return;
-      // README.md is documentation for people dropping tracks in — it belongs in
-      // the repo, not on a served copy. Audio is left strictly alone.
-      const isAudio = n => AUDIO_EXT.has(extname(n).toLowerCase());
-      for (const e of await readdir(shipped, { withFileTypes: true })) {
-        if (e.isFile() && !isAudio(e.name)) await rm(join(shipped, e.name), { force: true });
-      }
+      if (existsSync(shipped)) await rm(shipped, { recursive: true, force: true });
     },
   };
 }

@@ -2,6 +2,8 @@
 import * as THREE from 'three';
 import { Chunk, ChunkState } from './Chunk.js';
 import { terminatesSky } from './LightEngine.js';
+import { fireTickDelay } from './fire.js';
+import { B } from '../registry/blocks.js';
 import { ChunkMesher, setChunkBoundingSphere } from '../mesh/ChunkMesher.js';
 import {
   chunkKey, GENERATE_RADIUS, RENDER_RADIUS, UNLOAD_RADIUS,
@@ -137,7 +139,25 @@ export class ChunkManager {
     if (record.blockEntities) {
       for (const be of record.blockEntities) chunk.blockEntities.set(be.i, { type: be.type, data: be.data });
     }
+    this.resumeFireTicks(chunk);
     this.game?.onChunkHydrated?.(chunk, record);
+  }
+
+  /**
+   * 15 §6.5 — fire age rides `chunk.states`, but the scheduled-tick bucket is
+   * runtime-only (01 §6.1), so a fire loaded from a save has no pending tick and
+   * would neither spread nor burn out. Re-queue one per fire cell. The origin
+   * map is deliberately NOT restored: §6.5 has each hydrated fire self-register
+   * at its load position on that first tick, re-anchoring the 24-block leash.
+   */
+  resumeFireTicks(chunk) {
+    const blocks = chunk.blocks;
+    if (!blocks) return;
+    const ox = chunk.cx << 4, oz = chunk.cz << 4;
+    for (let i = 0; i < blocks.length; i++) {
+      if (blocks[i] !== B.FIRE) continue;
+      this.world.scheduleTick(ox + (i & 15), i >> 8, oz + ((i >> 4) & 15), fireTickDelay());
+    }
   }
 
   // 14 §2.3 — install a chunk streamed from the host (CLIENT). Mirrors hydrate:

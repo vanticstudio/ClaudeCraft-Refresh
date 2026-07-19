@@ -9,6 +9,9 @@ import { humanoidModel } from '../models.js';
 import { SmallFireball } from '../../SmallFireball.js';
 import { makeAtlasMaterial } from '../../ItemEntity.js';
 import { emitSound, at } from '../../../audio/engine.js';
+import { BLOCKS } from '../../../registry/blocks.js';
+import { ITEMS } from '../../../registry/items.js';
+import { addEffect, EFFECT } from '../../../status/effects.js';
 
 function tintBox(w, h, rgb) {
   const g = new THREE.Group();
@@ -30,6 +33,7 @@ export class Blaze extends Mob {
     this.detectionRange = 48; this.xpValue = 10;
     this.noGravity = true;
     this.attackCooldown = 0; this.charge = 0;
+    this.burstLeft = 0; this.burstTimer = 0;
   }
   tick() {
     this.baseTick(); if (this.dead) { this.deathTime++; return; }
@@ -40,22 +44,60 @@ export class Blaze extends Mob {
     if (this.attackCooldown > 0) this.attackCooldown--;
     const p = this.world.game?.player;
     const dist = p ? this.distTo(p) : 999;
-    if (p && dist <= 48) {
-      this.pos.y += Math.sin(this.age * 0.2) * 0.01;   // bob
+    // §7.4 melee touch — any entity contacting the blaze's box takes 6 and ignites
+    if (p && !p.dead
+      && Math.hypot(p.pos.x - this.pos.x, p.pos.z - this.pos.z) < (this.width + p.width) * 0.5
+      && p.pos.y < this.pos.y + this.height && p.pos.y + p.height > this.pos.y) {
+      p.hurt(6, 'melee', { attacker: this });
+      p.setOnFire?.(60);
+    }
+    if (this.burstLeft > 0) {
+      // §7.4 the 3-shot burst plays out over time: one shot per 4 ticks
+      this.hover(p, dist);
+      if (--this.burstTimer <= 0) {
+        this.shoot(p);
+        this.burstTimer = 4;
+        if (--this.burstLeft === 0) this.attackCooldown = 100;
+      }
+    } else if (p && !p.dead && dist <= 48 && this.canSee(p)) {
+      this.hover(p, dist);
       if (this.attackCooldown === 0) {
         this.charge++;
-        if (this.charge >= 30) { this.burst(p); this.charge = 0; this.attackCooldown = 100; }
+        if (this.charge >= 30) { this.charge = 0; this.burstLeft = 3; this.burstTimer = 0; }
       }
-    } else this.charge = 0;
+    } else {
+      this.charge = 0;
+      this.pos.y += Math.sin(this.age * 0.2) * 0.01;   // bob
+    }
     this.age++;
   }
-  burst(p) {
-    for (let k = 0; k < 3; k++) {
-      const fb = new SmallFireball(this.world, this.pos.x, this.pos.y + 1, this.pos.z,
-        p.pos.x - this.pos.x, p.pos.y - this.pos.y, p.pos.z - this.pos.z, this);
-      this.world.game.entities.add(fb);
-    }
-    emitSound('entity.blaze.shoot', at(this.pos.x, this.pos.y, this.pos.z));
+  // §7.4 hover AI — stays airborne near its target: closes in, backs off when
+  // crowded, holds a little above the target's head, bobs. No A*, no gravity.
+  hover(p, dist) {
+    this.pos.y += Math.sin(this.age * 0.2) * 0.01;   // bob
+    if (!p) return;
+    const dx = p.pos.x - this.pos.x, dz = p.pos.z - this.pos.z;
+    const h = Math.hypot(dx, dz) || 1;
+    this.yaw = Math.atan2(-dx, -dz);
+    const s = 0.04;                                   // ~0.4 b/s hover speed
+    const sign = dist > 12 ? 1 : dist < 5 ? -1 : 0;
+    const nx = this.pos.x + dx / h * s * sign, nz = this.pos.z + dz / h * s * sign;
+    if (sign !== 0 && this.flyFree(nx, this.pos.y, nz)) { this.pos.x = nx; this.pos.z = nz; }
+    const dy = Math.max(-s, Math.min(s, (p.pos.y + 2.5) - this.pos.y));
+    if (this.flyFree(this.pos.x, this.pos.y + dy, this.pos.z)) this.pos.y += dy;
+  }
+  flyFree(x, y, z) {
+    const at1 = BLOCKS[this.world.getBlock(Math.floor(x), Math.floor(y), Math.floor(z))];
+    const at2 = BLOCKS[this.world.getBlock(Math.floor(x), Math.floor(y + 1), Math.floor(z))];
+    return !at1?.collidable && !at2?.collidable;
+  }
+  shoot(p) {
+    if (!p) return;
+    const ex = this.pos.x, ey = this.pos.y + 1, ez = this.pos.z;
+    const fb = new SmallFireball(this.world, ex, ey, ez,
+      p.pos.x - ex, (p.pos.y + p.height * 0.5) - ey, p.pos.z - ez, this);
+    this.world.game.entities.add(fb);
+    emitSound('entity.blaze.shoot', at(ex, ey, ez));
   }
   dropTable() { return this.world.rng() < 0.5 ? [{ name: 'blaze_rod', count: 1 }] : []; }
   buildMesh() { return tintBox(0.6, 1.8, [1.0, 0.75, 0.1]); }
@@ -120,9 +162,10 @@ export class WitherSkeleton extends Mob {
     this.goals = [new SwimGoal(this), new MeleeAttackGoal(this), new WanderGoal(this),
       new LookAtPlayerGoal(this, 8), new IdleLookGoal(this)];
   }
-  onMeleeHit(target) {
-    // §7.7 Wither I 0:10 — 09's effect engine (guarded: 09 not built yet)
-    this.world.game?.addEffect?.(target, 20, 0, 200);
+  // 05 §13 names the landed-hit hook `doMeleeAttack` (MeleeAttackGoal calls it).
+  doMeleeAttack(t) {
+    super.doMeleeAttack(t);
+    addEffect(t, EFFECT.WITHER, 0, 200);   // §7.7 Wither I for 10 s
   }
   dropTable() {
     const r = this.world.rng, out = [];
@@ -204,7 +247,7 @@ export class Piglin extends Mob {
     // §7.8 hostile to a player not wearing gold armour, within 16
     const p = this.world.game?.player;
     if (p && this.distTo(p) < 16) {
-      const gold = p.armor?.some?.(a => a && /golden_/.test(this.world.game.ITEMS?.get?.(a.id)?.name ?? ''));
+      const gold = p.armor?.some?.(a => a && /^golden_/.test(ITEMS.get(a.id)?.name ?? ''));
       this.hostile = !gold;
       this.detectionRange = gold ? 0 : 16;
     }

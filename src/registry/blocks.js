@@ -417,7 +417,18 @@ defBlock(31, 'glass', {
   drops: noDrop,
 });
 
-defBlock(32, 'glowstone', { hardness: 0.3, blast: 0.3, emission: 15 });
+// 10 §4.6 / §8.5 realizes 09 AMENDS 06 §2: glowstone drops 2–4 glowstone_dust,
+// not itself — this is item 395's only survival source. Silk Touch still drops
+// the block (effects.js SILK_SELF). Fortune takes redstone_ore's uniform-bonus
+// form (08 §5.6.3) capped at 4 — 08's "Fortune never affects glowstone" row is
+// scoped to the self-drop that 09/10 replaced.
+defBlock(32, 'glowstone', {
+  hardness: 0.3, blast: 0.3, emission: 15,
+  drops: ctx => [{
+    name: 'glowstone_dust',
+    count: Math.min(4, ri(ctx.rng, 2, 4) + ri(ctx.rng, 0, ctx.fortune ?? 0)),
+  }],
+});
 
 defBlock(33, 'obsidian', { hardness: 50, blast: 1200, tool: 'pickaxe', tier: 3, drops: gated(dropSelf('obsidian')) });
 
@@ -972,7 +983,9 @@ defBlock(119, 'soul_sand', {
 });
 defBlock(120, 'soul_soil', { hardness: 0.5, blast: 0.5, tool: 'shovel', tiles: all('soul_soil') });
 defBlock(121, 'magma_block', {
-  hardness: 0.5, blast: 0.5, tool: 'pickaxe', tier: 0, emission: 3, tiles: all('magma_block'),
+  hardness: 0.5, blast: 0.5, tool: 'pickaxe', tier: 0, emission: 3,
+  infiniteBurn: true,                         // 15 §4.5 — fire above magma burns forever
+  tiles: all('magma_block'),
 });
 ore(122, 'nether_quartz_ore', 0, () => [{ name: 'nether_quartz', count: 1 }],
   function (ctx) { return harvestOK(this, ctx.toolClass, ctx.toolTier) ? ri(ctx.rng, 2, 5) : 0; });
@@ -1035,7 +1048,7 @@ defBlock(143, 'smithing_table', {
 
 // ===================== 12-VILLAGES §7/§12 — village blocks (170–182) =====================
 defBlock(170, 'dirt_path', {                       // §7.1 shovel-made; drops dirt; no block-item
-  hardness: 0.65, blast: 0.65, tool: 'shovel', shape: 'farmland', opaque: false, opacity: 0,
+  hardness: 0.6, blast: 0.6, tool: 'shovel', shape: 'farmland', opaque: false, opacity: 0,
   collisionBox: [0, 0, 0, 1, 15 / 16, 1],
   drops: () => [{ name: 'dirt', count: 1 }],
   tiles: column('dirt_path_top', 'dirt'),
@@ -1333,6 +1346,7 @@ const FIRE = {
   short_grass:       [60, 100, true],
   dandelion:         [60, 100, false], poppy: [60, 100, false],  // 1-block flowers: JE lava-ignite No
   dead_bush:         [60, 100, true],
+  hay_bale:          [60, 20, false], // 15 §3 (12) — catches instantly, burns slowly
   // saplings, crops, farmland, sugar_cane, cactus, pumpkin, jack_o_lantern,
   // torch, ladder, snow, ice, glass, stone/ores/minerals, fluids: all 0/0/no.
 };

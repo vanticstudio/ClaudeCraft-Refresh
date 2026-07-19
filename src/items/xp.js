@@ -25,6 +25,8 @@
 // xpEarnedTotal maps onto it and no field is added. See DEVIATIONS.md.
 // ---------------------------------------------------------------------------
 
+import { GameMode } from '../constants.js';
+
 /** 06 §13 — points required to advance from level L to L+1. */
 export function xpToNext(L) {
   if (L <= 15) return 2 * L + 7;
@@ -90,7 +92,9 @@ export function subtractLevels(player, n) {
 
 /** True iff the player can afford n levels (08 §4.5 / §8.3 gate). */
 export function canAfford(player, n) {
-  return player.gameMode === 'creative' || player.xpLevel >= n;
+  // 18 §1.1 — gameMode is the integer enum; the legacy 'creative' string never
+  // matches it, which silently level-gated creative players.
+  return player.gameMode === GameMode.CREATIVE || player.xpLevel >= n;
 }
 
 // -------------------------------------------------- 08 §3.3 enchantment PRNG

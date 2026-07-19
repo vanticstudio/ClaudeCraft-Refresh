@@ -163,6 +163,24 @@ Studios; it is referenced here only to describe the genre this project recreates
 
 *This section is updated as new features land.*
 
+- **2026-07-19** — **Full audit sweep + self-correction.** Every spec was read
+  front to back and verified against the code by 18 independent auditors, then
+  the findings were fixed. 195 defects found (6 critical, 63 major, 126 minor);
+  47 fixed here — all 6 criticals and every golden-path blocker — with the
+  remainder logged in `DEVIATIONS.md`. See `BUILD-STATE.md` for the full matrix.
+  Highlights: **glowstone now drops glowstone dust**, which had no survival
+  source at all, so the strong-potion branch was unreachable; **nether portals,
+  spawners, stairs and soul sand were invisible** (no mesher case); **fire loaded
+  from a save never resumed ticking**; **beacon and end-crystal beams were never
+  drawn** and **End gateways didn't teleport**; **villager smiths sold unenchanted
+  gear and trades never restocked**; **natural Nether spawning was skipped** and
+  wither skeletons never applied Wither; the **creative Redstone/Brewing tabs were
+  empty**; and in multiplayer the relay **rate-limited the host** (killing healthy
+  rooms) while a joined client **overwrote its own single-player save** with the
+  host's world. The theme-music copyright ship-gate is reinstated structurally —
+  builds ship no theme audio and the folder is gitignored. The F3 overlay gained
+  the redstone-power and effect lines CLAUDE.md §6 asks for. Verified: 34
+  acceptance suites, a production build, and the **golden path end to end, 22/22**.
 - **2026-07-19** — **Theme music: drop a file in and it plays.** The licence
   gate is gone. `public/theme-music/` is now a plain drop zone — any supported
   audio file plays in dev *and* ships in a build, with no declaration step. The

@@ -2,7 +2,7 @@
 import { Mob } from './Mob.js';
 import { Goal, SwimGoal, WanderGoal, LookAtPlayerGoal, IdleLookGoal, MeleeAttackGoal } from './ai.js';
 import { creeperModel } from './models.js';
-import { startLoop, emitSound, at } from '../../audio/engine.js';
+import { startLoop } from '../../audio/engine.js';
 import { lootedRange } from '../../items/effects.js';
 
 class SwellGoal extends Goal {
@@ -35,11 +35,11 @@ class SwellGoal extends Goal {
     m.clearPath();
     if (t) m.lookAt(t.pos.x, t.pos.y + t.height * 0.85, t.pos.z);
     if (m.swell >= 30) {
-      // 13-BOSSES reconciliation — the detonation removes the creeper directly
-      // (bypassing die()/onDeath), so emit its death sound here or it never plays.
-      emitSound('mob.creeper.death', at(m.pos.x, m.pos.y + m.height / 2, m.pos.z));
+      // Detonation is a real death routed through die(): onDeath emits
+      // mob.creeper.death before its noDrops guard, and the guard skips drops
+      // AND xp — exactly the exploded-creeper contract (no loot, no orbs).
       m.noDrops = true;
-      m.dead = true;
+      m.die(null, {});
       m.deathTime = m.deathAnimTicks;   // removed before damage — never hurts itself
       m.world.game?.explode(m.pos.x, m.pos.y + m.height / 2, m.pos.z, 3);
     }

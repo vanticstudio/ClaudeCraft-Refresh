@@ -14,6 +14,7 @@ import { RemotePlayer } from '../entities/RemotePlayer.js';
 import { ETYPE_REV } from './protocol.js';
 
 const REQUIRED_CHUNKS = (JOIN_RADIUS * 2 + 1) ** 2;   // 121
+const HANDSHAKE_TIMEOUT_MS = 15000;   // §2.2 — "Every step has a 15 s timeout"
 
 export class NetClient {
   constructor(game, { url, code, name }) {
@@ -53,7 +54,21 @@ export class NetClient {
     };
     ws.onclose = () => { if (this.phase !== 'closed') this._fail('lost'); };
     ws.onerror = () => {};
+    this._armHandshake();
   }
+
+  // §2.2 — every handshake step is bounded by 15 s. Without it a stall with the
+  // socket still open (relay accepted the join but the host never answered hello,
+  // or the chunk stream died mid-join) parks the player on CONNECTING forever,
+  // since `onclose` never fires. Re-armed on each phase advance, cleared at PLAYING.
+  _armHandshake() {
+    clearTimeout(this._hsTimer);
+    this._hsTimer = setTimeout(() => {
+      if (this.phase !== 'playing' && this.phase !== 'closed') this._fail('timeout');
+    }, HANDSHAKE_TIMEOUT_MS);
+  }
+
+  _clearHandshake() { clearTimeout(this._hsTimer); this._hsTimer = null; }
 
   _sendControl(obj) { try { this.ws.send(JSON.stringify(obj)); } catch {} }
   _send(u8) { try { this.ws.send(u8); this.stats.out++; this.stats.outBytes += u8.length; } catch {} }
@@ -62,18 +77,20 @@ export class NetClient {
   _fail(reason) {
     if (this.phase === 'closed') return;
     this.phase = 'closed';
+    this._clearHandshake();
     try { this.ws?.close(); } catch {}
     this.onError?.(reason);
   }
 
   disconnect() {
     this.phase = 'closed';
+    this._clearHandshake();
     try { this.ws?.close(); } catch {}
   }
 
   // ---------------------------------------------------------------- relay control frames
   _onControl(m) {
-    if (m.t === 'joined') { this.slot = m.slot; this._sendHello(); }
+    if (m.t === 'joined') { this.slot = m.slot; this._armHandshake(); this._sendHello(); }
     else if (m.t === 'hostGone') this._fail('hostGone');
     else if (m.t === 'err') this._fail(m.reason || 'err');
   }
@@ -134,6 +151,7 @@ export class NetClient {
     this.game.startClientWorld(m, this);
     this.predictor = new Predictor(this.game.player, (pl, fr) => this.game.tickClientPlayer(pl, fr));
     this.phase = 'streaming';
+    this._armHandshake();
   }
 
   _onChunkData(d) {
@@ -143,6 +161,9 @@ export class NetClient {
     this.chunksReceived++;
     if (this.phase === 'streaming') {
       this.game.ui?.netMenus?.setProgress?.(Math.min(this.chunksReceived, REQUIRED_CHUNKS), REQUIRED_CHUNKS);
+      // progress resets the §2.2 deadline: the stream is slow, not stalled (the host
+      // may still be generating terrain for a first join). 15 s of NO chunk fails.
+      this._armHandshake();
     }
   }
 
@@ -154,6 +175,7 @@ export class NetClient {
     this.netEntityId = m.entityId;
     this.predictor.reset();
     this.phase = 'playing';
+    this._clearHandshake();          // §2.2 — handshake complete
     this.game.setState(STATE.PLAYING);
     this.game.input.requestLock();
   }
@@ -170,6 +192,7 @@ export class NetClient {
       if (!this.spawnReadySent && meshed >= needed && this.chunksReceived >= REQUIRED_CHUNKS - 4) {
         this.spawnReadySent = true;
         this.phase = 'ready';
+        this._armHandshake();        // §2.2 — bound the wait for spawnConfirm
         this.sendJson({ t: 'spawnReady' });
       }
       return;
@@ -350,6 +373,7 @@ export class NetClient {
     this.chunksReceived = 0;
     this.spawnReadySent = false;
     this.phase = 'streaming';
+    this._armHandshake();            // §2.2 — a dimension re-stream is a handshake too
   }
   _onForceMove(m) {
     const p = this.game.player;

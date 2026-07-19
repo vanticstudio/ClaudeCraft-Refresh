@@ -6,6 +6,7 @@
 // data (18 §0).
 import { BLOCKS, B } from '../registry/blocks.js';
 import { ITEMS } from '../registry/items.js';
+import { isIngredient } from '../status/potions.js';
 
 export const TAB = {
   BUILDING: 'building',
@@ -36,13 +37,29 @@ export const TABS = [
 ];
 
 // ---------------------------------------------------------------------------
-// The small static id-lists §6.2 names. Each expansion file owns its own set —
-// 07 fills REDSTONE_BLOCKS, 09 fills BREWING_INGREDIENTS — so they are empty
-// until those phases land, and the classifier already routes around them.
+// The small id-lists §6.2 names. Each is DERIVED from the live registry over its
+// owning expansion's id range (18 "Registry footprint"), so an id a later phase
+// registers lands in its tab without this file being edited again.
 // ---------------------------------------------------------------------------
 
-const REDSTONE_BLOCKS = new Set();            // 07 (blocks 70–104)
-const BREWING_INGREDIENTS = new Set();        // 09 (items 370–389)
+// §6.2 tab 3 — "every id 07 registers". 07's ranges are blocks 70–104 (70–89 in
+// use) and items 460–469 (07 registers none today). The dust ITEM is base 06's
+// 342, which tab 8 names under "redstone/lapis items", so it stays in Misc.
+const REDSTONE_BLOCKS = new Set(BLOCKS.filter(b => b && b.id >= 70 && b.id <= 104).map(b => b.id));
+const REDSTONE_ITEMS = new Set(
+  [...ITEMS.values()].filter(i => i.id >= 460 && i.id <= 469).map(i => i.name));
+
+// §6.2 tab 7 — 09's own item range 370–389 (glass bottle, the three potion forms,
+// fermented spider eye…) plus every ingredient 09 §12's live mix() graph names
+// that an expansion registered (nether wart, blaze powder, magma cream, ghast
+// tear, glowstone dust, dragon's breath). Base-06 ingredients — gunpowder 329,
+// sugar 339, redstone 342 — deliberately stay out: §6.2 tab 8 names them under
+// Ingredients / Misc. Combat and Food are tested first, so tipped arrow and the
+// golden apple/carrot keep the tabs §6.2 files THEM under.
+const BREWING_ITEMS = new Set(
+  [...ITEMS.values()]
+    .filter(i => (i.id >= 370 && i.id <= 389) || (i.id > 345 && isIngredient(i.name)))
+    .map(i => i.name));
 
 // §6.2 tab 4 — "crafting_table, furnace, chest … enchanting_table + anvil +
 // grindstone (08), brewing_stand (09), smithing_table (10), beacon (13)".
@@ -95,19 +112,25 @@ function blockTab(block) {
  */
 export function creativeTab(entry) {
   if (entry.kind === 'block' && entry.place != null) return blockTab(BLOCKS[entry.place]);
+  if (REDSTONE_ITEMS.has(entry.name)) return TAB.REDSTONE;   // 07's non-placing items
 
   // Weapons are tested BEFORE tools. §6.2's pseudocode puts `entry.toolClass`
   // first, which assumes toolClass ∈ {pickaxe,axe,shovel,hoe,shears} — but this
   // registry also files swords under toolClass ('sword', items.js:93), so the
   // spec's own order would put every sword in Tools and contradict tab 5's
   // stated contents ("swords, bow, arrow…"). The tab tables are the intent.
+  // §6.2 tab 5 lists "tipped arrows (09)" here, ahead of Brewing's claim on 09's
+  // item range — it is ammo, not a brewable.
   if (entry.kind === 'sword' || entry.kind === 'bow' || entry.kind === 'armor' ||
-      entry.name === 'arrow') {
+      entry.name === 'arrow' || entry.name === 'tipped_arrow') {
     return TAB.COMBAT;
   }
   if (entry.toolClass || TOOL_ITEMS.has(entry.name)) return TAB.TOOLS;
   if (entry.kind === 'food') return TAB.FOOD;
-  if (entry.isPotion || BREWING_INGREDIENTS.has(entry.name)) return TAB.BREWING;
+  // §6.2's pseudocode tests `entry.isPotion`, which no registry row carries — the
+  // potion FORMS are `kind` values inside 09's item range, so BREWING_ITEMS covers
+  // them and the ingredients in one lookup.
+  if (BREWING_ITEMS.has(entry.name)) return TAB.BREWING;
   if (DECOR_ITEMS.has(entry.name)) return TAB.DECORATION;
   return TAB.MISC;      // sticks, ingots, gems, pearls, emeralds… (§6.2)
 }
@@ -143,9 +166,9 @@ export function searchPalette(query) {
 }
 
 /**
- * §6.2 lists ten tabs, but 07's Redstone and 09's Brewing enumerate ids that do
- * not exist yet — an empty tab today is noise, and hard-coding the visible set
- * would need editing again at E5/E9. A tab appears exactly when its registry
+ * §6.2 lists ten tabs, but a tab whose expansion has not landed enumerates ids
+ * that do not exist yet — an empty tab is noise, and hard-coding the visible set
+ * would need editing again per phase. A tab appears exactly when its registry
  * range is populated. Search and Survival Inventory are never registry-driven.
  */
 export function visibleTabs() {

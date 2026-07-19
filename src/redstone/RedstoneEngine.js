@@ -30,12 +30,18 @@ export class RedstoneEngine {
     this._solving = false;              // re-entrancy guard for solvePending
     this._tickSolves = 0;               // §5.2 budget accumulates across the tick
     this._tickCells = 0;
+    // 07 §5.5 / CLAUDE.md §6 — total solver time spent in the CURRENT tick, in
+    // ms. Accumulated by solvePending (which runs from several entry points per
+    // tick, not just drainAtTickStart) and published to the F3 overlay, where
+    // the ≤ 1 ms/tick budget is finally observable.
+    this.tickSolveMs = 0;
   }
 
   // ---- §5.2 overflow carry-over: processed before step 2 of the tick order ----
   drainAtTickStart() {
     this._tickSolves = 0;               // §5.2 caps are PER-TICK, reset here
     this._tickCells = 0;
+    this.tickSolveMs = 0;
     if (this.carry.length) {
       for (const [x, y, z] of this.carry) this.queueNetwork(x, y, z);
       this.carry.length = 0;
@@ -147,6 +153,7 @@ export class RedstoneEngine {
   solvePending() {
     if (this._solving) return;          // re-entrant calls just add to `pending`
     this._solving = true;
+    const t0 = performance.now();
     try {
       while (this.pending.size) {
         // §5.2 caps are per-TICK (accumulated in _tickSolves/_tickCells), so a
@@ -166,6 +173,7 @@ export class RedstoneEngine {
       }
     } finally {
       this._solving = false;
+      this.tickSolveMs += performance.now() - t0;
     }
   }
 

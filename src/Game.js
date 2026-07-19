@@ -98,7 +98,7 @@ export class Game {
     this.save = null;                   // saveManager, wired by main.js
     this.particles = null;
     this.sleeping = null;               // { ticks }
-    this.debug = { fps: 0, frameMs: 0, remeshCount: 0, lastRemeshes: 0, audioMs: 0 };
+    this.debug = { fps: 0, frameMs: 0, remeshCount: 0, lastRemeshes: 0, audioMs: 0, redstoneMs: 0 };
     this._fpsWindow = [];
 
     // 14-MULTIPLAYER — session + identity. net is a NetHost, NetClient, or null (solo).
@@ -312,6 +312,9 @@ export class Game {
     this.audio?.tick();                 // AMENDS 01 §3 tick step 10
     this.atlas.animate?.(this.world.time);
     this.ui?.containers?.tickOpen?.();
+    // 07 §5.5 — publish the tick's total solver cost once every entry point has
+    // run, so the F3 line reports the whole tick rather than one drain.
+    this.debug.redstoneMs = this.redstone?.tickSolveMs ?? 0;
 
     // LOADING → PLAYING gate: 7×7 around player meshed (01 §15.2)
     if (this.state === STATE.LOADING) {
@@ -362,7 +365,16 @@ export class Game {
 
     const dt = performance.now() - tickStart;
     if (dt > 40 && this.state !== STATE.LOADING) {
-      if (++this.slowTicks >= 2) console.warn(`[game] slow tick: ${dt.toFixed(1)} ms`);
+      // Throttled to one line per 10 s: a sustained slow patch (a weak GPU, a
+      // huge redstone build) fires this every tick, and an unthrottled warn
+      // buries every other console message at 20 lines/second.
+      if (++this.slowTicks >= 2) {
+        const now = performance.now();
+        if (now - (this._lastSlowWarn ?? -Infinity) > 10000) {
+          this._lastSlowWarn = now;
+          console.warn(`[game] slow tick: ${dt.toFixed(1)} ms (further slow-tick warnings muted for 10 s)`);
+        }
+      }
     } else this.slowTicks = 0;
   }
 

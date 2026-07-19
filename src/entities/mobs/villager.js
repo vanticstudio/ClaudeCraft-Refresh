@@ -7,7 +7,7 @@ import { SwimGoal, WanderGoal, LookAtPlayerGoal, IdleLookGoal, MeleeAttackGoal, 
 import { humanoidModel } from './models.js';
 import { splitmix32 } from '../../math/rng.js';
 import { rng32 } from '../../items/xp.js';
-import { randomEnchantedBook } from '../../items/enchanting.js';
+import { randomEnchantedBook, selectEnchants, applyOffer } from '../../items/enchanting.js';
 import { CATALOG } from '../../items/enchants.js';
 import { EFFECT, hasEffect } from '../../status/effects.js';
 import { cloneStack } from '../../items/tags.js';
@@ -22,7 +22,11 @@ export const STATION_PROFESSION = {
 };
 const XP_THRESHOLDS = [0, 10, 70, 150, 250];   // Novice..Master (§9.1)
 
-// §9 — per-profession trade pools by tier. Each entry: [buyA, buyB|null, sell, maxUses, xp].
+// §9 — per-profession trade pools by tier. Each entry:
+// [buyA, buyB|null, sell, maxUses, xp, opts?] with opts = { hi, ench, mult }:
+// `hi` makes buyA's count a §9 emerald RANGE [count, hi] rolled from the villager
+// seed; `ench` routes the sold stack through 08's selectEnchants (§9.5–§9.7,
+// §9.9); `mult` is §9.10's priceMult (0.05 default, 0.2 for enchant rows).
 // (id, count) tuples; a representative subset of the §9 tables. Librarian's book
 // rows are generated dynamically (§9.3).
 const TRADES = {
@@ -33,19 +37,52 @@ const TRADES = {
   cleric: [
     [[314, 32], null, [EMERALD, 1], 16, 2], [[EMERALD, 1], null, [342, 2], 12, 1],
     [[EMERALD, 5], null, [334, 1], 12, 15], [[EMERALD, 4], null, [32, 1], 12, 30],
+    [[370, 9], null, [EMERALD, 1], 12, 30],     // §9.4 Expert — 09's glass_bottle
+    [[390, 22], null, [EMERALD, 1], 12, 30],    // §9.4 Master — 10's nether_wart
   ],
-  armorer: [[[EMERALD, 5], null, [322, 4], 16, 2], [[EMERALD, 12], null, [301, 1], 3, 30]],  // iron ingot / diamond chest
-  toolsmith: [[[EMERALD, 6], null, [325, 1], 12, 5], [[EMERALD, 8], null, [277, 1], 3, 30]],
-  weaponsmith: [[[EMERALD, 7], null, [276, 1], 12, 5], [[EMERALD, 12], null, [325, 1], 3, 30]],
-  butcher: [[[309, 10], null, [EMERALD, 1], 16, 2], [[EMERALD, 1], null, [307, 5], 16, 1]],
-  fletcher: [[[327, 16], null, [EMERALD, 1], 16, 2], [[EMERALD, 1], null, [282, 16], 12, 1]],
+  // §9.5–§9.7 — the Expert/Master smith rows sell ENCHANTED diamond gear.
+  armorer: [
+    [[319, 15], null, [EMERALD, 1], 16, 2], [[EMERALD, 5], null, [296, 1], 12, 1],
+    [[322, 4], null, [EMERALD, 1], 12, 10],
+    [[EMERALD, 19], null, [302, 1], 3, 15, { hi: 33, ench: true, mult: 0.2 }],
+    [[EMERALD, 13], null, [303, 1], 3, 30, { hi: 27, ench: true, mult: 0.2 }],
+  ],
+  toolsmith: [
+    [[319, 15], null, [EMERALD, 1], 16, 2], [[326, 30], null, [EMERALD, 1], 12, 20],
+    [[EMERALD, 6], null, [267, 1], 3, 10, { hi: 20, ench: true, mult: 0.2 }],
+    [[325, 1], null, [EMERALD, 1], 12, 30],
+    [[EMERALD, 18], null, [277, 1], 3, 30, { hi: 32, ench: true, mult: 0.2 }],
+  ],
+  weaponsmith: [
+    [[319, 15], null, [EMERALD, 1], 16, 2], [[EMERALD, 3], null, [268, 1], 12, 1],
+    [[EMERALD, 7], null, [266, 1], 3, 1, { hi: 21, ench: true, mult: 0.2 }],
+    [[325, 1], null, [EMERALD, 1], 12, 30],
+    [[EMERALD, 13], null, [276, 1], 3, 30, { hi: 27, ench: true, mult: 0.2 }],
+  ],
+  butcher: [[[308, 10], null, [EMERALD, 1], 16, 20], [[EMERALD, 1], null, [307, 5], 16, 1]],
+  fletcher: [
+    [[327, 16], null, [EMERALD, 1], 16, 2], [[EMERALD, 1], null, [282, 16], 12, 1],
+    [[EMERALD, 7], null, [281, 1], 3, 15, { hi: 21, ench: true, mult: 0.2 }],
+  ],
 };
 
-function mkTrade(buyA, buyB, sell, maxUses, xp) {
+// §9.5 — enchanted gear rows roll through 08's own selector at level 5–19 with
+// treasure excluded, so the sold stack carries real `tags.enchants`.
+function enchantTags(itemId, rng) {
+  const stack = { id: itemId, count: 1 };
+  const picked = selectEnchants(rng, stack, 5 + rng.int(0, 14), false);
+  return picked.length ? applyOffer(stack, picked).tags : null;
+}
+
+function mkTrade(buyA, buyB, sell, maxUses, xp, opts = {}, seed = 0, slot = 0) {
+  // Distinct from librarianBookTrade's mix so the two seed streams never collide.
+  const rng = (opts.hi || opts.ench) ? rng32((seed ^ (slot * 0x85ebca6b)) >>> 0) : null;
+  const count = opts.hi ? rng.int(buyA[1], opts.hi) : buyA[1];
+  const tags = opts.ench ? enchantTags(sell[0], rng) : (sell[2] ?? null);
   return {
-    buyA: { id: buyA[0], count: buyA[1] }, buyB: buyB ? { id: buyB[0], count: buyB[1] } : null,
-    sell: { id: sell[0], count: sell[1], ...(sell[2] ? { tags: sell[2] } : {}) },
-    maxUses, uses: 0, xp, specialPrice: 0,
+    buyA: { id: buyA[0], count }, buyB: buyB ? { id: buyB[0], count: buyB[1] } : null,
+    sell: { id: sell[0], count: sell[1], ...(tags ? { tags } : {}) },
+    maxUses, uses: 0, xp, priceMult: opts.mult ?? 0.05, demand: 0, specialPrice: 0,
   };
 }
 
@@ -61,7 +98,7 @@ function librarianBookTrade(villagerSeed, tradeSlot) {
   const treasure = !!meta?.treasure;
   let cost = 2 + 3 * primary.lvl; if (treasure) cost *= 2;
   cost = Math.max(5, Math.min(64, cost));
-  return mkTrade([EMERALD, cost], [BOOK, 1], [ENCHANTED_BOOK, 1, book.tags], 12, treasure ? 30 : 5);
+  return mkTrade([EMERALD, cost], [BOOK, 1], [ENCHANTED_BOOK, 1, book.tags], 12, treasure ? 30 : 5, { mult: 0.2 });
 }
 
 export function generateTrades(profession, seed) {
@@ -74,7 +111,7 @@ export function generateTrades(profession, seed) {
     for (let slot = 0; slot < 4; slot++) { const t = librarianBookTrade(seed, slot); if (t) out.push(t); }
     return out;
   }
-  return (TRADES[profession] ?? []).map(t => mkTrade(...t));
+  return (TRADES[profession] ?? []).map((t, i) => mkTrade(t[0], t[1], t[2], t[3], t[4], t[5] ?? {}, seed, i));
 }
 
 export class Villager extends Mob {
@@ -93,6 +130,10 @@ export class Villager extends Mob {
     this.foodPoints = 0; this.curedDiscount = opts.curedDiscount ?? 0;
     this.seed = opts.seed ?? ((world.rng() * 0xffffffff) >>> 0);
     this.trades = opts.trades ?? (this.profession !== 'none' ? generateTrades(this.profession, this.seed) : []);
+    this.restocksToday = 0; this.lastRestockDay = -1;             // §9.10
+    // §11.5 step 4 — the cure discount lands AT CURE TIME, not at some later
+    // level-up: finishCure spawns this villager with curedDiscount already set.
+    if (this.curedDiscount > 0) this.refreshPrices();
     if (opts.isBaby) { this.isBaby = true; this.adultWidth = 0.6; this.adultHeight = 1.95; this.width = 0.3; this.height = 0.975; this.ageTicks = opts.ageTicks ?? 6000; }
     this.goals = [new SwimGoal(this), new PanicGoal(this, 1.6), new WanderGoal(this), new LookAtPlayerGoal(this, 8), new IdleLookGoal(this)];
   }
@@ -103,14 +144,48 @@ export class Villager extends Mob {
     const w = this.world, px = Math.floor(this.pos.x), py = Math.floor(this.pos.y), pz = Math.floor(this.pos.z);
     for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) for (let dy = -1; dy <= 1; dy++) {
       const prof = STATION_PROFESSION[w.getBlock(px + dx, py + dy, pz + dz)];
-      if (prof) { this.profession = prof; this.workstation = [px + dx, py + dy, pz + dz]; this.trades = generateTrades(prof, this.seed); return; }
+      if (prof) { this.profession = prof; this.workstation = [px + dx, py + dy, pz + dz]; this.trades = generateTrades(prof, this.seed); this.refreshPrices(); return; }
     }
+  }
+
+  // §9.10 — effective emerald cost = clamp(base + demandSurcharge + cureDiscount,
+  // 1, 64), folded into the one `specialPrice` number doTrade and the trade UI
+  // both read. Reputation (§9.10's third term) is not modeled — see the report.
+  refreshPrices() {
+    const cureFrac = this.curedDiscount > 0 ? Math.min(0.3 * this.curedDiscount, 0.85) : 0;
+    for (const t of this.trades) {
+      if (t.buyA.id !== EMERALD) { t.specialPrice = 0; continue; }
+      const base = t.buyA.count;
+      let sp = Math.round(base * (t.priceMult ?? 0.05) * (t.demand ?? 0));
+      if (cureFrac > 0) sp -= Math.max(1, Math.round(base * cureFrac));
+      t.specialPrice = Math.max(1, Math.min(64, base + sp)) - base;   // MC-exact clamps
+    }
+  }
+
+  // §9.10 — restock: up to 2×/day, at the workstation, during WORK (T 2000–9000).
+  // This is what unlocks used-up trades; without it a trade locks forever.
+  tryRestock() {
+    const day = Math.floor(this.world.time / 24000), t = this.world.time % 24000;
+    if (day !== this.lastRestockDay) { this.restocksToday = 0; this.lastRestockDay = day; }
+    if (t < 2000 || t >= 9000 || this.restocksToday >= 2) return;
+    // "A jobless-but-locked villager cannot restock until it reclaims one."
+    if (!this.workstation || !this.trades.some(tr => tr.uses > 0)) return;
+    const [sx, sy, sz] = this.workstation;
+    if (Math.abs(this.pos.x - (sx + 0.5)) > 3 || Math.abs(this.pos.z - (sz + 0.5)) > 3
+      || Math.abs(this.pos.y - sy) > 3) return;
+    for (const tr of this.trades) {
+      tr.demand = Math.max(0, (tr.demand ?? 0) + (tr.uses - tr.maxUses / 2));
+      tr.uses = 0;
+    }
+    this.refreshPrices();
+    this.restocksToday++;
   }
 
   tick() {
     super.tick();
     if (this.dead) return;
     if (this.profession === 'none' && !this.nitwit && !this.isBaby && this.age % 40 === 0) this.claimStation();
+    if (this.profession !== 'none' && !this.isBaby && this.age % 20 === 0) this.tryRestock();
   }
 
   // §9.1 — RMB opens the trade screen (not baby, not fleeing).
@@ -134,17 +209,11 @@ export class Villager extends Mob {
     const give = cloneStack(t.sell); const left = player.give(give);
     if (left > 0) this.world.game?.throwStack?.({ ...give, count: left });
     t.uses++; this.villagerXP += t.xp;
-    // level up; §9.4 — a cured villager (curedDiscount>0) also cheapens its
-    // emerald-cost trades. Plain leveling carries no discount.
+    // §9.1 — crossing a threshold levels up AND restocks. Pricing (cure discount
+    // + demand) is not level-gated; refreshPrices owns it.
     while (this.level < 5 && this.villagerXP >= XP_THRESHOLDS[this.level]) {
       this.level++;
-      if (this.curedDiscount > 0) {
-        for (const tr of this.trades) {
-          if (tr.buyA.id !== EMERALD) continue;
-          const disc = Math.max(1, Math.round(tr.buyA.count * Math.min(0.3 * this.curedDiscount, 0.85)));
-          tr.specialPrice = Math.min(tr.specialPrice, -disc);
-        }
-      }
+      for (const tr of this.trades) tr.uses = 0;
     }
     emitSound('villager.trade', at(this.pos.x, this.pos.y + 1, this.pos.z));
     return true;
@@ -154,9 +223,10 @@ export class Villager extends Mob {
 
   serialize() {
     return { ...super.serialize(), profession: this.profession, nitwit: this.nitwit, level: this.level, villagerXP: this.villagerXP,
-      workstation: this.workstation, bed: this.bed, homeVillage: this.homeVillage, curedDiscount: this.curedDiscount, seed: this.seed, trades: this.trades };
+      workstation: this.workstation, bed: this.bed, homeVillage: this.homeVillage, curedDiscount: this.curedDiscount, seed: this.seed, trades: this.trades,
+      restocksToday: this.restocksToday, lastRestockDay: this.lastRestockDay };
   }
-  deserialize(rec) { super.deserialize(rec); Object.assign(this, { profession: rec.profession ?? 'none', nitwit: !!rec.nitwit, level: rec.level ?? 1, villagerXP: rec.villagerXP ?? 0, workstation: rec.workstation ?? null, bed: rec.bed ?? null, homeVillage: rec.homeVillage ?? null, curedDiscount: rec.curedDiscount ?? 0, seed: rec.seed ?? this.seed, trades: rec.trades ?? this.trades }); }
+  deserialize(rec) { super.deserialize(rec); Object.assign(this, { profession: rec.profession ?? 'none', nitwit: !!rec.nitwit, level: rec.level ?? 1, villagerXP: rec.villagerXP ?? 0, workstation: rec.workstation ?? null, bed: rec.bed ?? null, homeVillage: rec.homeVillage ?? null, curedDiscount: rec.curedDiscount ?? 0, seed: rec.seed ?? this.seed, trades: rec.trades ?? this.trades, restocksToday: rec.restocksToday ?? 0, lastRestockDay: rec.lastRestockDay ?? -1 }); }
 }
 
 export class IronGolem extends Mob {

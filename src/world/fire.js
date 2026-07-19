@@ -43,6 +43,14 @@ export function forgetFireInChunk(cx, cz) {
 
 const randInt = (a, b) => a + Math.floor(Math.random() * (b - a + 1));
 
+/**
+ * §2 — the canonical fire tick delay, 30 + randInt(0,9). Exported because the
+ * scheduled-tick bucket is runtime-only (01 §6.1): a chunk hydrated from a save
+ * carries the fire id + age but no pending tick, so ChunkManager re-queues one
+ * per fire cell with this same delay.
+ */
+export function fireTickDelay() { return 30 + randInt(0, 9); }
+
 // §2.6 — maps vanilla's increased_fire_burnout tag (jungle/swamp/mushroom/snowy
 // slopes/frozen+jagged peaks) onto the two base biomes that plausibly qualify;
 // 02's biome set has no jungle or swamp.
@@ -190,7 +198,7 @@ function tryBurn(world, x, y, z, bound, age, origin) {
 /** The scheduled-tick handler for id 65. Wired from the registry. */
 export function fireTick(world, x, y, z, state) {
   // re-schedule first thing on every run (§2)
-  world.scheduleTick(x, y, z, 30 + randInt(0, 9));
+  world.scheduleTick(x, y, z, fireTickDelay());
 
   const age = state & STATE_NIBBLE;
   const below = world.getBlock(x, y - 1, z);

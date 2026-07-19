@@ -3,6 +3,11 @@ import { BIOME_NAMES } from '../world/gen/biomes.js';
 
 const DIM_NAMES = { 0: 'overworld', 1: 'nether', 2: 'the_end' };   // 11-END — F3 dim label
 import { GameMode } from '../constants.js';
+// CLAUDE.md §6 — the overlay must carry the redstone power under the crosshair
+// and the active effect list alongside dim and the audio voice count.
+import { strongPower, weakPower, wirePower } from '../redstone/power.js';
+import { EFFECT_META } from '../status/effects.js';
+import { B } from '../registry/blocks.js';
 
 export class DebugOverlay {
   constructor(game, overlayEl) {
@@ -49,8 +54,37 @@ draws ${info.render.calls} tris ${(info.render.triangles / 1000).toFixed(0)}k ge
 entities ${g.entities.count()} time ${g.world.time} (day ${Math.floor(g.world.time / 24000)} ${(Math.floor((g.world.time % 24000) / 1000) + 6) % 24}:00)${heap}
 weather ${g.dayNight.raining ? 'rain' : 'clear'}${g.dayNight.thundering ? '+thunder' : ''} seed ${g.world.seedString}
 gameMode ${p.gameMode === GameMode.CREATIVE ? 'creative' : 'survival'}${p.flying ? ' (flying)' : ''}
-audio ${a.voices}/${g.audio?.poolSize?.() ?? 0} voices drops ${a.drops}/s ${a.state} ${a.budgetMs.toFixed(2)} ms music ${music}${netLine(g)}`;
+audio ${a.voices}/${g.audio?.poolSize?.() ?? 0} voices drops ${a.drops}/s ${a.state} ${a.budgetMs.toFixed(2)} ms music ${music}
+${redstoneLine(g)}
+effects ${effectsLine(p)}${netLine(g)}`;
   }
+}
+
+// CLAUDE.md §6 — redstone power under the crosshair + the engine's per-tick cost
+// (07's ≤ 1 ms/tick budget is unobservable without this).
+function redstoneLine(g) {
+  const hit = g.interaction?.currentHit ?? g.interaction?.rayHit?.();
+  const ms = g.debug.redstoneMs ?? 0;
+  const cost = `solve ${ms.toFixed(3)} ms/tick`;
+  if (!hit) return `redstone — (no target) ${cost}`;
+  const { x, y, z } = hit;
+  const id = g.world.getBlock(x, y, z);
+  const st = g.world.getState(x, y, z);
+  const wire = id === B.REDSTONE_WIRE ? ` wire ${wirePower(st)}` : '';
+  return `redstone @${x},${y},${z} strong ${strongPower(g.world, x, y, z)} weak ${weakPower(g.world, x, y, z)}${wire} ${cost}`;
+}
+
+// 09-POTIONS §6 — the active effect list (name, level, remaining seconds).
+function effectsLine(p) {
+  if (!p.effects?.size) return 'none';
+  const parts = [];
+  for (const [id, e] of p.effects) {
+    const meta = EFFECT_META[id];
+    const lvl = (e.amplifier ?? 0) + 1;
+    const secs = Math.ceil((e.duration ?? 0) / 20);
+    parts.push(`${meta?.name ?? id}${lvl > 1 ? ' ' + lvl : ''} ${secs}s`);
+  }
+  return parts.join(', ');
 }
 
 // 14 §13 — F3 net line (role/slot, RTT, peers, snapshot size, corrections, interp).
