@@ -7,7 +7,7 @@ asset files**. Every texture is painted procedurally at startup and every sound 
 synthesized at runtime; nothing is downloaded. The entire game was implemented by
 **Claude** from a set of frozen written specifications.
 
-> **Live:** _(paste your Vercel URL here after the first deploy)_
+> **Live:** _(https://claudecraftrefresh.vercel.app/)_
 
 ![ClaudeCraft gameplay](docs/screenshot.png)
 
