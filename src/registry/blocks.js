@@ -78,8 +78,15 @@ export function harvestOK(block, toolClass, toolTier) {
   if (block.tier === 'class') return toolClass === block.tool;
   return toolClass === block.tool && (toolTier ?? -1) >= block.tier;
 }
-const gated = fn => function (ctx) {
-  return harvestOK(this, ctx.toolClass, ctx.toolTier) ? fn.call(this, ctx) : [];
+// Tagged so defBlock can tell an already-gated closure from a raw one and never
+// double-wrap (the wrapper forwards `this` and the whole ctx, so wrapping is
+// transparent to dropSelf / arrow closures alike).
+const gated = fn => {
+  const w = function (ctx) {
+    return harvestOK(this, ctx.toolClass, ctx.toolTier) ? fn.call(this, ctx) : [];
+  };
+  w.__gated = true;
+  return w;
 };
 
 // Leaves drop table A (06 §2)
@@ -230,13 +237,9 @@ function ladderNeighbor(world, x, y, z, state) {
   if (!isSolidSupport(world.getBlock(x - d[0], y, z - d[2]))) world.popBlock(x, y, z);
 }
 
-function tntNeighbor(world, x, y, z) {
-  for (const [dx, dy, dz] of DIRS6)
-    if (world.getBlock(x + dx, y + dy, z + dz) === B.FIRE) {
-      world.igniteTnt?.(x, y, z);
-      return;
-    }
-}
+// (15 AMENDS 06 §5.6 deleted the "adjacent fire primes TNT" handler that used to
+// live here. TNT now primes only from flint & steel, an explosion, redstone, and
+// fire's burn-out check consuming it — world/fire.js's tryBurn, burn odds 100.)
 
 // Closed/open door collision panel (3/16 thick), shared by physics + mesher.
 // Closed: panel sits on the cell edge OPPOSITE the facing direction (the edge
@@ -295,6 +298,7 @@ function defBlock(id, name, opts = {}) {
     mat: 'none',                 // material class (16 §3.1); assigned below
     // --- 07-REDSTONE (AMENDS 01 §5) ---
     conductive: null,            // §3.2 — conducts power; null → default opaque&&cube (resolved below)
+    occludes: null,              // AMENDS 01 §8.1 — seals a neighbour's flush face; null → resolved below
     onUse: null,                 // §6-§12 right-click handler (world,x,y,z,state,player,hit)
     onMoved: null,               // §6.6/§9 — fired when a piston moves this block
     emissionFor: null,           // state-dependent light (redstone_torch): (state) → 0..15
@@ -310,6 +314,18 @@ function defBlock(id, name, opts = {}) {
   // overrides. (Pistons/observer/redstone_block/hopper/glass/leaves opt out;
   // dispenser/dropper/note_block/lamp keep the default true.)
   if (block.conductive === null) block.conductive = block.opaque && block.shape === 'cube';
+  // AMENDS 01 §8.1 — occlusion is a RENDER property, not a light one: only a
+  // full-cube render seals a neighbour's flush face. farmland (15/16) and
+  // soul_sand (14/16) keep Opac = O (06 §3 row 55 / 10 §1.1 row 119) but are
+  // SHORT boxes, so ChunkMesher must not cull against them.
+  if (block.occludes === null)
+    block.occludes = block.opaque && block.shape !== 'farmland' && block.shape !== 'soul_sand';
+  // 06 §1 — the harvest gate is a registry INVARIANT, not a per-row opt-in:
+  // "Wrong/no tool → break at hand speed and (if a tier is required) drop
+  // nothing." breakBlock/popBlock call drops() unconditionally, so the ONLY
+  // place that can guarantee the rule for every row is here. Idempotent: rows
+  // that already wrote `drops: gated(...)` carry the __gated tag.
+  if (block.tier != null && !block.drops.__gated) block.drops = gated(block.drops);
   BLOCKS[id] = block;
   B[name.toUpperCase()] = id;
   return block;
@@ -439,9 +455,11 @@ defBlock(34, 'crafting_table', {
 
 // Furnace front by facing: face order [+X,−X,+Y,−Y,+Z,−Z]; facing f → face index
 const FACING_FACE = [4, 1, 5, 0];
-const furnaceTiles = front => (state, face) => {
-  if (face === 2 || face === 3) return 'furnace_top';
-  return face === FACING_FACE[state & 3] ? front : 'furnace_side';
+// 12 §12.1 — the top/side pair is a parameter: the blast furnace and the smoker
+// have their own painted top/side tiles and must not borrow the furnace's.
+const furnaceTiles = (front, top = 'furnace_top', side = 'furnace_side') => (state, face) => {
+  if (face === 2 || face === 3) return top;
+  return face === FACING_FACE[state & 3] ? front : side;
 };
 defBlock(35, 'furnace', {
   hardness: 3.5, blast: 3.5, tool: 'pickaxe', tier: 0,
@@ -567,8 +585,10 @@ defBlock(50, 'bookshelf', {
 defBlock(51, 'tnt', {
   displayName: 'TNT',
   hardness: 0, blast: 0,
+  // 15 AMENDS 06 §5.6 — NO neighborUpdate handler: an adjacent fire block must
+  // not prime TNT. redstone/components.js composes its own hook on with
+  // `prev?.(...)`, so a null base handler here is expected and safe.
   tiles: ['tnt_side', 'tnt_side', 'tnt_top', 'tnt_bottom', 'tnt_side', 'tnt_side'],
-  neighborUpdate: tntNeighbor,
 });
 
 defBlock(52, 'oak_fence', {
@@ -746,7 +766,24 @@ const RS_ATTACH = { bucket: 'cutout', opaque: false, opacity: 0, collidable: fal
 defBlock(70, 'redstone_wire', {
   ...RS_ATTACH, shape: 'wire', needsSupport: 'below',
   drops: () => [{ name: 'redstone', count: 1 }],
+  // §4.5/§14 — 16 power-tinted variants of each dust tile live in the atlas as
+  // dust_dot_<p> / dust_line_<p>; `tiles` names the unlit (p = 0) line as the
+  // static fallback every non-state consumer (icons, item entities) reads.
+  // tileIndexFor's cache key is ((state & 15) << 3) | face — the power nibble
+  // exactly — so one cached entry per power is correct and complete. The mesher
+  // does NOT go through here: a dust cell needs BOTH families on one face, so
+  // emitDust reads the atlas tables directly (§4.5 quad composition).
   tiles: all('dust_line_0'),
+  tilesFor: st => 'dust_line_' + (st & 0x0f),
+  // §4.5 — lit dust has a 1/8 chance per random-cosmetic frame of one red
+  // particle. 01 §6.2's random tick is the engine's only per-block random
+  // cosmetic pass, so it is the frame this rolls on. Math.random() per 15 §1
+  // (cosmetic RNG must never draw from the seeded world.rng stream).
+  randomTick: (world, x, y, z, state) => {
+    if ((state & 0x0f) === 0 || Math.random() >= 0.125) return;
+    world.game?.particles?.redstoneSpark?.(
+      x + 0.25 + Math.random() * 0.5, y + 1 / 16, z + 0.25 + Math.random() * 0.5);
+  },
 });
 
 defBlock(71, 'redstone_torch', {
@@ -927,8 +964,10 @@ const mushroomCanPlace = (world, x, y, z) =>
 const mushroomNeighbor = id => (world, x, y, z) => {
   if (!mushroomSupport(world, x, y, z) || world.internalLight(x, y, z) >= 13) world.popBlock(x, y, z);
 };
+// §7.1 — NO light test here: "vanilla checks light only on update, not random
+// tick — a lit mushroom survives until something updates it; keep this quirk".
+// The pop lives in mushroomNeighbor; mushroomCanPlace gates the spread target.
 const mushroomTick = id => (world, x, y, z) => {
-  if (world.internalLight(x, y, z) >= 13) { world.popBlock(x, y, z); return; }
   if (world.rng() >= 1 / 25) return;                       // §7.4 slow spread
   let count = 0;                                            // 5-in-9×9×3 cap
   for (let dx = -4; dx <= 4; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -4; dz <= 4; dz++)
@@ -949,7 +988,9 @@ for (const [id, name, emission] of [[110, 'brown_mushroom', 1], [111, 'red_mushr
 defBlock(112, 'brewing_stand', {
   hardness: 0.5, blast: 0.5, tool: 'pickaxe', tier: 0, emission: 1,
   shape: 'brewing_stand', bucket: 'cutout', opaque: false, opacity: 0,
-  collisionBox: [0, 0, 0, 1, 2 / 16, 1],           // low base only
+  // §7.2: "No collision box (like torch)" — with stepHeight 0 a 2/16 kerb is
+  // pure annoyance. `targetable` stays true, so the raycast + RMB path is intact.
+  collidable: false,
   blockEntity: 'brewing', interactable: 'brewing',
   drops: gated(dropSelf('brewing_stand')),
   tiles: all('brewing_stand'),
@@ -999,7 +1040,7 @@ defBlock(124, 'ancient_debris', {
 const nylium = (id, name) => defBlock(id, name, {
   hardness: 0.4, blast: 0.4, tool: 'pickaxe', tier: 0,
   drops: ctx => [{ name: 'netherrack', count: 1 }],
-  tiles: column(name, 'netherrack'),
+  tiles: column(name, 'netherrack', 'netherrack'),   // §1.1: top/side/bottom=netherrack
 });
 nylium(125, 'crimson_nylium');
 nylium(126, 'warped_nylium');
@@ -1048,10 +1089,23 @@ defBlock(143, 'smithing_table', {
 
 // ===================== 12-VILLAGES §7/§12 — village blocks (170–182) =====================
 defBlock(170, 'dirt_path', {                       // §7.1 shovel-made; drops dirt; no block-item
-  hardness: 0.6, blast: 0.6, tool: 'shovel', shape: 'farmland', opaque: false, opacity: 0,
+  // §12.1 Opac column is `O` for every village block except composter/bell/
+  // lectern/fletching_table, and §1.1 reuses the farmland shape — so dirt_path
+  // matches farmland (55) exactly: opaque, opacity 15. Safe only because
+  // defBlock now derives `occludes` from the SHAPE (AMENDS 01 §8.1), so a
+  // 15/16 box never culls its neighbour's flush face.
+  hardness: 0.6, blast: 0.6, tool: 'shovel', shape: 'farmland', opaque: true, opacity: 15,
   collisionBox: [0, 0, 0, 1, 15 / 16, 1],
   drops: () => [{ name: 'dirt', count: 1 }],
   tiles: column('dirt_path_top', 'dirt'),
+  // §7.1 reversion — "on a neighbor/support update, if a solid or fluid occupies
+  // the cell above -> revert to dirt (MC-exact 'path trampled')". The same
+  // handler covers §7.1's second clause: a landing gravity block writes through
+  // setBlock, which fans out neighbor updates into this cell.
+  neighborUpdate: (world, x, y, z) => {
+    const b = BLOCKS[world.getBlock(x, y + 1, z)];
+    if (b && (b.collidable || b.fluid)) world.setBlock(x, y, z, B.DIRT, { state: 0 });
+  },
 });
 defBlock(171, 'bell', {                            // §7.2 interactable; rings
   hardness: 5.0, blast: 5.0, tool: 'pickaxe', tier: 0, interactable: 'bell',
@@ -1060,7 +1114,21 @@ defBlock(171, 'bell', {                            // §7.2 interactable; rings
 });
 defBlock(172, 'composter', {                       // §7.3 fill 0–8 in state nibble
   hardness: 0.6, blast: 0.6, tool: 'axe', fuel: 300, interactable: 'composter',
-  drops: dropSelf('composter'), tiles: column('composter_top', 'composter_side'),
+  // §12.1 render: Opac `T`, shape "14/16 hollow box" (floor + four walls; the
+  // mesher owns the boxes). Pass stays `op`, exactly like the sibling bell row.
+  // Knock-on per 07 §3.2: defBlock resolves conductive from opaque && cube, so
+  // a hollow composter correctly stops conducting redstone.
+  shape: 'composter', opaque: false, opacity: 0,
+  drops: dropSelf('composter'), tiles: column('composter_top_0', 'composter_side_0'),
+  // §7.3/§12.2 — the fill level 0–8 lives in the state nibble and MUST be
+  // visible: without this the player gets no feedback between "just started"
+  // and "one more item to READY". Face order is column()'s: 2 = top, 3 = bottom.
+  tilesFor: (state, face) => {
+    const lvl = Math.min(8, state & 15);
+    return face === 2 ? 'composter_top_' + lvl
+      : face === 3 ? 'composter_top_0'
+        : 'composter_side_' + lvl;
+  },
 });
 defBlock(173, 'barrel', {                          // §7.4 27-slot container
   hardness: 2.5, blast: 2.5, tool: 'axe', fuel: 300, blockEntity: 'chest', interactable: 'barrel',
@@ -1068,36 +1136,41 @@ defBlock(173, 'barrel', {                          // §7.4 27-slot container
 });
 defBlock(174, 'lectern', {                         // §7.5 librarian workstation (no UI)
   hardness: 2.5, blast: 2.5, tool: 'axe', fuel: 300,
+  // §12.1 render: Opac `T`, shape "12/16 slant desk" (base + desk box). The
+  // book screen is out of scope (DEVIATIONS) — this is geometry/light only.
+  shape: 'lectern', opaque: false, opacity: 0,
   drops: dropSelf('lectern'), tiles: column('lectern_top', 'lectern_side'),
 });
 defBlock(175, 'blast_furnace', {                   // §7.6 ore smelting 2×
   hardness: 3.5, blast: 3.5, tool: 'pickaxe', tier: 0, blockEntity: 'blast_furnace', interactable: 'furnace',
   drops: gated(() => [{ name: 'blast_furnace', count: 1 }]), tiles: column('blast_furnace_top', 'blast_furnace_side'),
-  tilesFor: furnaceTiles('blast_furnace_front'),
+  tilesFor: furnaceTiles('blast_furnace_front', 'blast_furnace_top', 'blast_furnace_side'),
 });
 defBlock(176, 'blast_furnace_lit', {
   displayName: 'Blast Furnace', hardness: 3.5, blast: 3.5, tool: 'pickaxe', tier: 0, emission: 13,
   blockEntity: 'blast_furnace', interactable: 'furnace',
   drops: gated(() => [{ name: 'blast_furnace', count: 1 }]), tiles: column('blast_furnace_top', 'blast_furnace_side'),
-  tilesFor: furnaceTiles('blast_furnace_front_lit'),
+  tilesFor: furnaceTiles('blast_furnace_front_lit', 'blast_furnace_top', 'blast_furnace_side'),
 });
 defBlock(177, 'smoker', {                          // §7.7 food smelting 2×
   hardness: 3.5, blast: 3.5, tool: 'pickaxe', tier: 0, blockEntity: 'smoker', interactable: 'furnace',
   drops: gated(() => [{ name: 'smoker', count: 1 }]), tiles: column('smoker_top', 'smoker_side'),
-  tilesFor: furnaceTiles('smoker_front'),
+  tilesFor: furnaceTiles('smoker_front', 'smoker_top', 'smoker_side'),
 });
 defBlock(178, 'smoker_lit', {
   displayName: 'Smoker', hardness: 3.5, blast: 3.5, tool: 'pickaxe', tier: 0, emission: 13,
   blockEntity: 'smoker', interactable: 'furnace',
   drops: gated(() => [{ name: 'smoker', count: 1 }]), tiles: column('smoker_top', 'smoker_side'),
-  tilesFor: furnaceTiles('smoker_front_lit'),
+  tilesFor: furnaceTiles('smoker_front_lit', 'smoker_top', 'smoker_side'),
 });
 defBlock(179, 'fletching_table', {                 // §7.8 fletcher workstation (no UI)
   hardness: 2.5, blast: 2.5, tool: 'axe', fuel: 300,
   drops: dropSelf('fletching_table'), tiles: column('fletching_table_top', 'fletching_table_side'),
 });
 defBlock(180, 'hay_bale', {                         // §7.9 fall ×0.2
-  hardness: 0.5, blast: 0.5, tool: 'hoe', drops: dropSelf('hay_bale'),
+  // §12.1 row 180 gives Tool `—`: no class matches, so it always breaks at hand
+  // speed (a hoe must NOT get the ×8 multiplier).
+  hardness: 0.5, blast: 0.5, drops: dropSelf('hay_bale'),
   tiles: column('hay_bale_top', 'hay_bale_side'),
 });
 ore(181, 'emerald_ore', 2,                          // §6.2 mountains worldgen; iron+ to drop
@@ -1172,10 +1245,25 @@ defBlock(155, 'end_stone_bricks', { hardness: 3.0, blast: 9.0, tool: 'pickaxe', 
 defBlock(156, 'purpur_block', { hardness: 1.5, blast: 6.0, tool: 'pickaxe', tier: 0, drops: gated(dropSelf('purpur_block')), tiles: all('purpur_block') });
 defBlock(157, 'purpur_pillar', { hardness: 1.5, blast: 6.0, tool: 'pickaxe', tier: 0, drops: gated(dropSelf('purpur_pillar')), tiles: column('purpur_pillar_top', 'purpur_pillar_side') });
 // end_rod (158) — emissive rod, placeable on any solid face, pops on support loss (§2.2).
+// §2.2 facing nibble: bits0-2, 0 up, 1 down, 2-5 = N/E/S/W wall. The support cell
+// is the neighbor OPPOSITE the facing, indexed here (a floor rod faces up and is
+// held from below; a ceiling rod faces down and hangs from above). `needsSupport`
+// itself is read only by the piston mover and the creative tabs — the world
+// enforces support through neighborUpdate/canPlaceAt, exactly as torch does.
+const ROD_SUPPORT = [[0, -1, 0], [0, 1, 0], [0, 0, 1], [-1, 0, 0], [0, 0, -1], [1, 0, 0]];
+const rodSupportDir = state => ROD_SUPPORT[(state & 7) % 6];   // 6/7 are unreachable; clamp anyway
 defBlock(158, 'end_rod', {
   shape: 'end_rod', bucket: 'cutout', opaque: false, opacity: 0, collidable: false,
   hardness: 0, blast: 0, emission: 14, needsSupport: 'attach',
   drops: dropSelf('end_rod'), tiles: all('end_rod'),
+  neighborUpdate: (world, x, y, z, state) => {
+    const d = rodSupportDir(state);
+    if (!isSolidSupport(world.getBlock(x + d[0], y + d[1], z + d[2]))) world.popBlock(x, y, z);
+  },
+  canPlaceAt: (world, x, y, z, state = 0) => {
+    const d = rodSupportDir(state);
+    return isSolidSupport(world.getBlock(x + d[0], y + d[1], z + d[2]));
+  },
 });
 // chorus_plant (159) / chorus_flower (160) — §8 outer-island vegetation.
 defBlock(159, 'chorus_plant', {
@@ -1216,7 +1304,8 @@ defBlock(163, 'end_gateway', {
 // shulker_box (164) — 27-slot container, contents retained on break (§9.4).
 defBlock(164, 'shulker_box', {
   hardness: 2.0, blast: 2.0, tool: 'pickaxe',
-  opaque: false, bucket: 'opaque', blockEntity: 'shulker_box', interactable: 'shulker',
+  // §2.2 row 164: Opac T (06 §3 legend: transparent = opacity 0), Pass op.
+  opaque: false, opacity: 0, bucket: 'opaque', blockEntity: 'shulker_box', interactable: 'shulker',
   drops: noDrop,   // break routes through spillBlockEntity → item with tags.containerItems
   tiles: column('shulker_box_top', 'shulker_box_side', 'shulker_box_bottom'),
 });
@@ -1235,6 +1324,13 @@ defBlock(186, 'wither_skeleton_skull', {
   hardness: 1.0, blast: 1.0, opaque: false, opacity: 0, collidable: false,
   shape: 'wither_skull_block', bucket: 'cutout', needsSupport: 'below',
   drops: dropSelf('wither_skeleton_skull'), tiles: all('wither_skeleton_skull'),
+  // §5 — "floor-only, on the top face of any solid block … support removed →
+  // pops as item (torch rule)". needsSupport is only read by the piston mover
+  // and the creative tabs; the world enforces support via these two hooks.
+  neighborUpdate: (world, x, y, z) => {
+    if (!isSolidSupport(world.getBlock(x, y - 1, z))) world.popBlock(x, y, z);
+  },
+  canPlaceAt: (world, x, y, z) => isSolidSupport(world.getBlock(x, y - 1, z)),
 });
 // beacon (187) — pyramid GUI + buffs + beam; always emits light 15.
 defBlock(187, 'beacon', {
@@ -1261,18 +1357,13 @@ defBlock(187, 'beacon', {
 // metal blocks), dirt/farmland→gravel, sandstone→stone, dead_bush→grass.
 const MAT = {
   // 08 §2.2: enchanting_table + grindstone → 'stone' (anvil is 'metal').
-  // 07-REDSTONE §13: stone-material components + metal-ish machines. 10-NETHER §1:
-  // the nether stone/brick family + machines join 'stone' (nyliums/wart → 'grass',
-  // stems/planks → 'wood').
+  // 07-REDSTONE §13: stone-material components + metal-ish machines.
   stone: ['stone', 'cobblestone', 'sandstone', 'bedrock', 'obsidian', 'furnace', 'furnace_lit', 'coal_block',
     'enchanting_table', 'grindstone', 'brewing_stand',
     'blast_furnace', 'blast_furnace_lit', 'smoker', 'smoker_lit', 'emerald_ore',   // 12-VILLAGES
     'redstone_wire', 'redstone_torch', 'lever', 'stone_button', 'stone_pressure_plate',
     'repeater', 'comparator', 'piston', 'sticky_piston', 'piston_head', 'observer',
-    'dispenser', 'dropper', 'hopper', 'redstone_lamp', 'redstone_lamp_lit', 'redstone_block',
-    'netherrack', 'nether_bricks', 'nether_brick_fence', 'nether_brick_stairs', 'magma_block',
-    'nether_quartz_ore', 'nether_gold_ore', 'ancient_debris', 'bone_block', 'spawner',
-    'netherite_block', 'smithing_table', 'nether_portal', 'crimson_nylium', 'warped_nylium'],
+    'dispenser', 'dropper', 'hopper', 'redstone_lamp', 'redstone_lamp_lit', 'redstone_block'],
   ore: ['coal_ore', 'iron_ore', 'gold_ore', 'diamond_ore', 'redstone_ore', 'lapis_ore'],
   metal: ['iron_block', 'gold_block', 'diamond_block', 'anvil',
     'bell', 'emerald_block'],   // 12-VILLAGES
@@ -1280,20 +1371,32 @@ const MAT = {
     'crafting_table', 'chest', 'bookshelf', 'ladder', 'oak_fence', 'oak_door', 'bed_block',
     'torch', 'pumpkin', 'jack_o_lantern',
     'wooden_button', 'wooden_pressure_plate', 'note_block',
-    'crimson_stem', 'warped_stem', 'crimson_planks', 'warped_planks',
     'composter', 'barrel', 'lectern', 'fletching_table'],   // 12-VILLAGES
   gravel: ['gravel', 'dirt', 'farmland', 'dirt_path'],       // 12-VILLAGES
   sand: ['sand'],
   grass: ['grass_block', 'oak_leaves', 'birch_leaves', 'spruce_leaves', 'oak_sapling',
     'birch_sapling', 'spruce_sapling', 'wheat_crop', 'carrot_crop', 'potato_crop',
     'sugar_cane_block', 'short_grass', 'dandelion', 'poppy', 'dead_bush', 'tnt',
-    'soul_sand', 'soul_soil', 'nether_wart_block', 'warped_wart_block', 'shroomlight',
-    'crimson_fungus', 'warped_fungus', 'crimson_roots', 'warped_roots', 'nether_wart',
     'brown_mushroom', 'red_mushroom',   // 09-POTIONS §7.1
     'hay_bale',   // 12-VILLAGES
     'chorus_plant', 'chorus_flower'],   // 11-END (plant-like → grass voice)
   glass: ['glass', 'ice', 'glowstone',
     'beacon'],   // 13-BOSSES — glassy shell voice
+  // 16 §3.1 — the two reserved dimension classes. Their rows carry no block list
+  // in the spec, only a recipe and the rule "10's blocks default here" / "11's
+  // blocks default here" (restated by §3.1's AMENDS 06 §2 line: "nether-family
+  // blocks default `nether`, end-family `end`"). So the whole 115–143 range goes
+  // to 'nether' — including the crimson/warped stems and planks, which the End
+  // side already treats the same way (iron_bars and the stone-brick family sit in
+  // 'end', not 'stone'). Splitting them across stone/grass/wood by look left
+  // block.step/dig/break/place.nether and mob.step.nether generated but dead.
+  nether: ['netherrack', 'nether_bricks', 'nether_brick_fence', 'nether_brick_stairs',
+    'soul_sand', 'soul_soil', 'magma_block', 'nether_quartz_ore', 'nether_gold_ore',
+    'ancient_debris', 'crimson_nylium', 'warped_nylium', 'crimson_stem', 'warped_stem',
+    'crimson_planks', 'warped_planks', 'nether_wart_block', 'warped_wart_block',
+    'shroomlight', 'crimson_fungus', 'warped_fungus', 'crimson_roots', 'warped_roots',
+    'nether_wart', 'bone_block', 'nether_portal', 'spawner', 'netherite_block',
+    'smithing_table'],
   // 11-END §3.1 — the End family (stone-brick/end-stone/purpur/rods/portals default to 'end').
   end: ['stone_bricks', 'mossy_stone_bricks', 'cracked_stone_bricks', 'iron_bars',
     'end_stone', 'end_stone_bricks', 'purpur_block', 'purpur_pillar', 'end_rod',
@@ -1376,6 +1479,8 @@ export function matOf(id) {
   return m === 'none' || m === 'fluid' || !m ? null : m;
 }
 
+// Zero consumers in this build (Game.js imported it and never called it). Kept
+// as registry surface only — do NOT add a second name→block lookup beside it.
 export function blockByName(name) {
   const id = B[name.toUpperCase()];
   return id === undefined ? undefined : BLOCKS[id];

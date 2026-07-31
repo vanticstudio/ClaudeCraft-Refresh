@@ -32,6 +32,12 @@ export class Mob extends LivingEntity {
     this.arthropod = false;
     this.fireImmune = false;      // 10-NETHER AMENDS 05 §2
     this.detectionRange = 16;
+    // 05 §6 — generic give-up radius is detectionRange×1.5; a mob whose §8 rules
+    // define their own disengage (enderman: 800-tick lost target + daylight roll)
+    // sets this to opt out of the distance drop without widening acquisition.
+    this.giveUpRange = null;
+    this.despawns = false;      // 05 §4 — despawn eligibility, independent of the
+                                // transient `hostile` flag (neutral Nether mobs)
     this.attackDamage = 0;
     this.attackReach = 2.0;
     this.walkSpeed = 0.09;      // b/t
@@ -54,6 +60,9 @@ export class Mob extends LivingEntity {
     this.moveIntent = null;
     this.moveSpeed = 0;
     this.wantJump = false;
+    // 05 §8.4 — a goal that writes vel directly (spider leap) stamps the tick it
+    // fired so applyLocomotion skips the ground-friction blend for that tick only.
+    this.impulseTick = -1;
 
     this.path = null;
     this.pathIndex = 0;
@@ -80,6 +89,21 @@ export class Mob extends LivingEntity {
   }
 
   distTo(e) { return Math.hypot(e.pos.x - this.pos.x, e.pos.y - this.pos.y, e.pos.z - this.pos.z); }
+
+  // 14-MULTIPLAYER AMENDS 05 §6 — every player-facing test resolves the NEAREST
+  // player, never game.player (which is the host's own on a host session).
+  nearestPlayer() {
+    const g = this.world.game;
+    return g?.nearestPlayerTo?.(this.pos.x, this.pos.y, this.pos.z) ?? g?.player ?? null;
+  }
+
+  // 14-MULTIPLAYER §4.4 — the live roster for per-player tests (enderman stare,
+  // creeper swell). Falls back to the single local player when there is no list.
+  playerRoster() {
+    const g = this.world.game;
+    if (g?.players?.length) return g.players;
+    return g?.player ? [g.player] : [];
+  }
 
   centerDistTo(e) {
     return Math.hypot(e.pos.x - this.pos.x,
@@ -136,7 +160,7 @@ export class Mob extends LivingEntity {
 
     // 4. AI (skipped beyond 64 blocks — 05 §1 sim range). 13-BOSSES AMENDS 05 §1:
     // bosses (isBoss) always run full AI regardless of distance.
-    const player = this.world.game?.nearestPlayerTo?.(this.pos.x, this.pos.y, this.pos.z) ?? this.world.game?.player;
+    const player = this.nearestPlayer();
     const pd = player ? this.distTo(player) : 999;
     this.moveIntent = null;
     this.wantJump = false;
@@ -221,8 +245,12 @@ export class Mob extends LivingEntity {
   }
 
   tickDespawn() {
-    if (!this.hostile || this.persistent) return false;
-    const player = this.world.game?.nearestPlayerTo?.(this.pos.x, this.pos.y, this.pos.z) ?? this.world.game?.player;
+    // 05 §4 exempts only passives and `persistent` mobs. `hostile` is transient on
+    // the neutral Nether roster (piglin / zombified piglin flip it per-tick), so
+    // despawn eligibility rides on the stable `despawns` flag as well — otherwise
+    // those two accumulate forever against 10 §7.2's shared Nether cap.
+    if ((!this.hostile && !this.despawns) || this.persistent) return false;
+    const player = this.nearestPlayer();
     if (!player) return false;
     const d = this.distTo(player);
     if (d > 128) { this.despawn(); return true; }
@@ -247,13 +275,16 @@ export class Mob extends LivingEntity {
     // sit in the give-up branch, not the acquire branch below: an existing
     // target short-circuits this method before acquisition is ever reconsidered.
     if (this.target && (this.target.dead || this.target.creative ||
-        this.distTo(this.target) > this.detectionRange * 1.5)) {
+        this.distTo(this.target) > (this.giveUpRange ?? this.detectionRange * 1.5))) {
       this.target = null;
+      // 05 §5 — retaliation exemption is scoped to the aggro EPISODE, not the
+      // mob's lifetime: releasing the target ends it (spider's light gate again).
+      this.forcedAggro = false;
     }
     if (this.target) {
       if (this.age % 10 === 0) {
         if (this.canSee(this.target)) this.losMemory = 0;
-        else if (++this.losMemory >= 10) { this.target = null; this.losMemory = 0; }
+        else if (++this.losMemory >= 10) { this.target = null; this.losMemory = 0; this.forcedAggro = false; }
       }
       return;
     }
@@ -351,7 +382,9 @@ export class Mob extends LivingEntity {
         this.vel.x += dir.x * speed * 0.05;
         this.vel.z += dir.z * speed * 0.05;
       }
-    } else if (this.onGround) {
+    } else if (this.onGround && this.impulseTick !== this.age) {
+      // 05 §8.4 — MC applies ground friction AFTER move(); an impulse written this
+      // tick (spider pounce) must not be halved before it has travelled at all.
       this.vel.x *= 0.5;
       this.vel.z *= 0.5;
     }
@@ -501,12 +534,13 @@ export class Mob extends LivingEntity {
 
   updateRender(alpha) {
     if (!this.object3d) return;
+    const a = this.isPuppet ? 1 : alpha;   // 14 §4.4 — puppet positions are already interpolated by NetClient.renderTick
     this.object3d.position.set(
-      lerp(this.prevPos.x, this.pos.x, alpha),
-      lerp(this.prevPos.y, this.pos.y, alpha),
-      lerp(this.prevPos.z, this.pos.z, alpha));
+      lerp(this.prevPos.x, this.pos.x, a),
+      lerp(this.prevPos.y, this.pos.y, a),
+      lerp(this.prevPos.z, this.pos.z, a));
     // model faces +Z; entity yaw 0 faces −Z
-    this.object3d.rotation.y = lerpAngle(this.prevYaw, this.yaw, alpha) + Math.PI;
+    this.object3d.rotation.y = lerpAngle(this.prevYaw, this.yaw, a) + Math.PI;
 
     // death fall-over (05 §16.3)
     if (this.dead) {
@@ -517,7 +551,9 @@ export class Mob extends LivingEntity {
     }
 
     this.applyLightScalar();
-    this.animate(alpha);
+    // 14 §4.4 — NetClient._applyPuppetState advances prevWalkCycle→walkCycle
+    // once per FRAME as well, so the limb swing needs the same `a`.
+    this.animate(a);
   }
 
   animate(alpha) {
@@ -579,11 +615,22 @@ export class Mob extends LivingEntity {
     super.deserialize(rec);
     this.health = rec.health ?? this.health;
     this.persistent = rec.persistent ?? this.persistent;
+    // 05 §10 — baby state must survive a reload EXACTLY. The constructor may have
+    // already applied a baby box (Zombie's own 5% roll, Villager's opts.isBaby), so
+    // the halving is idempotent, and an adult record always beats a ctor-rolled
+    // baby. `ageTicks` may come back as null (JSON drops the baby zombie's
+    // Infinity), so the ctor's value is the fallback before the 6000 default.
     if (rec.isBaby) {
-      this.isBaby = true;
-      this.ageTicks = rec.ageTicks ?? 6000;
-      this.adultWidth = this.width; this.adultHeight = this.height;
-      this.width /= 2; this.height /= 2;
+      if (!this.isBaby) {
+        this.isBaby = true;
+        this.adultWidth = this.width; this.adultHeight = this.height;
+        this.width /= 2; this.height /= 2;
+      }
+      this.ageTicks = rec.ageTicks ?? this.ageTicks ?? 6000;
+    } else if (this.isBaby) {
+      this.isBaby = false;
+      this.width = this.adultWidth ?? this.width * 2;
+      this.height = this.adultHeight ?? this.height * 2;
     }
     this.breedCooldown = rec.breedCooldown ?? 0;
     this.loveTicks = rec.loveTicks ?? 0;

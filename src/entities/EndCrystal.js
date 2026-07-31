@@ -2,6 +2,7 @@
 // Sits on End pillars healing the dragon; player-placed ones respawn the dragon.
 import * as THREE from 'three';
 import { Entity } from './Entity.js';
+import { B } from '../registry/blocks.js';
 
 // Scratch basis for the §3.3 beam orientation (one shared instance; the beam is
 // re-oriented every frame and never keeps a reference to it).
@@ -22,6 +23,20 @@ export class EndCrystal extends Entity {
     // §7.11 — a pillar crystal spawned by the respawn ritual is invulnerable
     // until the dragon appears at t=604.
     this.ritualInvuln = !!opts.ritualInvuln;
+    // §3 — "ANY damage instance destroys it in one hit". Every damage-delivery
+    // site in the tree filters on `instanceof LivingEntity` (melee pick, the
+    // arrow sweep, the explosion pass, the thrown-projectile sweep); a crystal
+    // is deliberately NOT a LivingEntity, so it advertises itself with this flag
+    // instead — without it no player-reachable path could ever destroy one.
+    this.damageable = true;
+    // §6.3 — DESTROYED (hurt() ran) vs merely `dead` (its chunk unloaded and
+    // EntityManager reaped it, 01 §13.2). The dragon's link hit must only fire
+    // on the former, or flying to the outer islands hands it 10 free damage.
+    this.destroyed = false;
+    // §10.1 — pillar index 0..9 for the natural/ritual crystals (null for
+    // player-placed ones), so destruction is recorded in the fight record and
+    // the count survives an arena chunk unload.
+    this.pillar = opts.pillar ?? null;
   }
 
   // AABB = base Entity: 2x2x2 box centered horizontally on pos.x/z, feet at pos.y.
@@ -39,15 +54,36 @@ export class EndCrystal extends Entity {
       // Chain-detonation from a neighbour: vanish SILENTLY (no secondary blast),
       // otherwise a cluster would recursively amplify into a mega-explosion.
       this.dead = true;
+      this.onDestroyed();
       return true;
     }
     this.dead = true;
+    this.onDestroyed();
     // (a) Linked crystals: the dragon reads `dead` on the crystals it tracks each
     // tick and takes the 10-HP link hit itself. beamTarget being non-null marks
     // the link; we expose nothing further — the dragon owns that bookkeeping.
     // (b) Power-6 explosion at bottom-center (pos.y = feet = cell floor).
     this.world.game?.explode?.(this.pos.x, this.pos.y, this.pos.z, 6);
     return true;
+  }
+
+  /**
+   * Shared destruction bookkeeping for both hurt() branches (§3/§6.3/§10.1):
+   * flag the real destruction (the dragon distinguishes it from a chunk-unload
+   * reap), write it into the §10.1 record so the count survives an unload, and
+   * clear §3.1's cosmetic flame so no orphan fire is left on the pillar.
+   */
+  onDestroyed() {
+    this.destroyed = true;
+    const game = this.world.game;
+    if (this.pillar !== null) {
+      const r = game?.endFight?.ensureRecord?.();
+      if (r?.crystalsAlive) r.crystalsAlive[this.pillar] = false;
+    }
+    const cx = Math.floor(this.pos.x), cy = Math.floor(this.pos.y), cz = Math.floor(this.pos.z);
+    if (this.world.getBlock(cx, cy, cz) === B.FIRE) {
+      this.world.setBlock(cx, cy, cz, B.AIR, { noUpdates: true });
+    }
   }
 
   buildMesh() {
@@ -148,6 +184,7 @@ export class EndCrystal extends Entity {
       hasBase: this.hasBase,
       playerPlaced: this.playerPlaced,
       ritualInvuln: this.ritualInvuln,
+      pillar: this.pillar,          // §10.1 — absent in pre-existing saves (null)
     };
   }
 
@@ -158,6 +195,7 @@ export class EndCrystal extends Entity {
       hasBase: rec.hasBase,
       playerPlaced: rec.playerPlaced,
       ritualInvuln: rec.ritualInvuln,
+      pillar: rec.pillar ?? null,
     });
     return e;
   }

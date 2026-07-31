@@ -23,6 +23,9 @@ npm install
 npm run dev        # → http://localhost:5173
 ```
 
+(In a second terminal, `npm run smoke` runs the project's checks — no browser,
+no dependencies. See [Build & deploy](#build--deploy).)
+
 Press **Start**, click **New World**, then click the screen to grab the mouse.
 Your world autosaves to the browser's IndexedDB every 30 seconds — close the tab
 and **Continue** picks up exactly where you left off.
@@ -59,8 +62,10 @@ The whole survival arc is here:
 - **Mobs & combat** — zombies, skeletons, creepers, spiders, endermen, breedable
   farm animals, villagers with professions & trading, iron golems, and the full
   Nether/End roster — goal-based AI with A* pathfinding.
-- **Redstone** — dust, torches, repeaters, comparators, pistons, observers,
-  dispensers/droppers, hoppers, lamps, note blocks, with tick-accurate scheduling.
+- **Redstone** — dust that renders its 0–15 power as 16 brightness levels and
+  auto-shapes to its neighbours (dot, line, cross, and the climb up a block face),
+  torches, repeaters, comparators, pistons, observers, dispensers/droppers,
+  hoppers, lamps, note blocks, with tick-accurate scheduling.
 - **Enchanting & potions** — enchanting table + full catalog, anvil, grindstone,
   a status-effect engine, a brewing stand with splash & lingering potions.
 - **The Nether & The End** — light a portal, raid a fortress, mine ancient debris
@@ -127,11 +132,25 @@ all and makes zero network connections.
 ## Audio & copyright
 
 All sound effects and background music are **synthesized in the browser** — the
-repo ships with no audio files at all. The optional file-based theme-music layer
-is a clean slate: drop any `.mp3` (or `.ogg`/`.wav`/`.flac`/…) into
-`public/theme-music/` and it plays, in dev and in a build alike. No config, no
-registration step — the player adapts to however many tracks are there and
-shuffles them. See `public/theme-music/README.md`.
+game loads no audio file, ever. The optional file-based theme-music layer is a
+drop zone: put any `.mp3` (or `.ogg`/`.wav`/`.flac`/…) into `public/theme-music/`
+and it plays in dev. No config, no registration step — the player adapts to
+however many tracks are there and shuffles them.
+
+**One correction, 2026-07-31:** this section used to say "the repo ships with no
+audio files at all". That is **false** and always was. `public/theme-music/`
+still has **14 tracked `*.mp3`** — Minecraft/C418 OST dev placeholders — in git
+at HEAD; `.gitignore` was changed to cover the folder, but ignoring a path does
+not untrack what is already in it. A build is unaffected (see below), but a
+`git clone` gets them. Untracking them is a one-commit fix and is tracked as an
+open operator action in `DEVIATIONS.md`; the older blobs also remain in history
+and need a separate scrub before this repository is made public.
+
+That layer is **dev-only, by construction**: `npm run build` forces an empty
+playlist and deletes `dist/theme-music/`, so no local file can reach a build,
+and a production boot makes zero audio requests. Builds play the generative
+synth composer instead. (`public/theme-music/README.md` still describes the
+older behaviour, where the folder shipped — it is out of date on that point.)
 
 ## Browser support
 
@@ -143,9 +162,19 @@ WebGL2, Web Workers, IndexedDB, Pointer Lock, and WebAudio.
 ## Build & deploy
 
 ```bash
+npm run smoke      # 8 static + load-time checks; exit 0 = green
 npm run build      # → dist/ (static; Vite)
 npm run preview    # serve the production build locally
 ```
+
+`npm run smoke` is the project's only test harness and runs in plain Node with
+no packages: it parses every file under `src/` and `server/`, resolves every
+named import against a real export and every `this.x()` call against a real
+method, and checks block-shape, atlas-painter, id-range and sound-event
+coverage. It exists because an interrupted audit sweep once shipped a call to an
+undefined `this.tickParticles()` — a `ReferenceError` in `Game.tick()` unwinds
+the whole tick while the render loop keeps painting, so it looks like a stutter
+rather than a crash. Run it before a build.
 
 Deploys as a **static site** — Vercel auto-detects Vite (build `npm run build`,
 output `dist/`); no `vercel.json` is needed. The relay (`server/relay.js`) is not
@@ -154,14 +183,63 @@ part of the web build and is run separately (see [Multiplayer](#multiplayer)).
 ## Disclaimer
 
 **ClaudeCraft is a fan-made, original-asset project. It is not affiliated with,
-endorsed by, or associated with Mojang Studios or Microsoft.** It contains **no
-Minecraft assets, code, or audio** — every texture is generated procedurally and
-every sound is synthesized at runtime. "Minecraft" is a trademark of Mojang
-Studios; it is referenced here only to describe the genre this project recreates.
+endorsed by, or associated with Mojang Studios or Microsoft.** The *game* uses
+**no Minecraft assets, code, or audio** — every texture is generated
+procedurally, every sound is synthesized at runtime, and a build contains nothing
+else. The *repository*, as of 2026-07-31, still tracks 14 C418 OST mp3s in the
+`public/theme-music/` dev drop zone and has more in its history; see
+[Audio & copyright](#audio--copyright). Removing them is an open item, not a
+claim this file makes. "Minecraft" is a trademark of Mojang Studios; it is
+referenced here only to describe the genre this project recreates.
 
 ## Additions log
 
 *This section is updated as new features land.*
+
+- **2026-07-31** — **Verification pass + a smoke harness.** A large fix sweep had
+  landed its changes and then stopped before any of its verification phases ran,
+  so those were re-run separately. They found the same failure repeatedly: a new
+  function written and never wired. **Two of them were live crashes, and only
+  running the game found either** — `Game.tick()` called an undefined
+  `tickParticles()`, which threw every tick and killed the redstone and
+  scheduled-tick passes underneath it (it looked like a stutter, not a crash);
+  and the piglins built their model through the wrong override, so the screen
+  froze on the first Nether spawn while the world kept ticking. Both are fixed,
+  along with a beacon-beam teardown that was defined but never called, a dead
+  import, and a pickup-flash HUD method that was being called and did not exist.
+  Six improvements the sweep had *reported* as done were checked against the tree
+  and are **not there** (frustum culling, an early-Z gate, a particle pool, the
+  Nether reverb send, and two smaller items); `BUILD-STATE.md` and
+  `DEVIATIONS.md` now say so plainly rather than quietly dropping them. New:
+  **`npm run smoke`**, this repo's first test harness — dependency-free Node,
+  8 checks, the tripwire that would have caught the tick crash on day one.
+  A follow-on records pass then re-checked the repo's own backlog against the
+  tree: **11 logged defects turned out to be fixed and unmarked**, 2 had been
+  fixed before the sweep, 21 are genuinely still open — and one long-standing
+  claim in `DEVIATIONS.md` (and in this README) was **false**: the 14 C418
+  placeholder mp3s were never actually removed from HEAD. All corrected in place;
+  see [Audio & copyright](#audio--copyright).
+
+- **2026-07-30** — **Fifteen-cluster fix sweep.** Fifteen fixers worked disjoint
+  file groups against the 2026-07-19 backlog. The most visible result is
+  **redstone dust that finally looks like redstone dust**: 16 brightness levels
+  baked into the atlas as 32 tiles, a real dot/line/cross figure that shapes
+  itself to its neighbours, and the quad that climbs a block face — all driven by
+  the *same* connection graph the power solver uses, so what you see and what
+  conducts cannot disagree. Also newly visible: **composters and lecterns**, which
+  had been invisible in every village because the mesher had no case for their
+  shape (the composter's 0–8 fill level now shows), **levers, buttons and
+  redstone torches sitting on the wall they are attached to** instead of on the
+  floor, and a **piston head** that is a plate and an arm rather than a full cube.
+  Behaviour: the **composter composts**, **blast furnaces and smokers** are their
+  own machines with the right input filters instead of re-skinned furnaces,
+  **dispensers can bone-meal**, **punching a note block plays it**, boss bars
+  **replicate to multiplayer clients**, and a host's **Save & Quit now tells its
+  clients** instead of leaving them hanging. Boot failures — a dead terrain
+  worker, blocked storage, a corrupt chunk — now fail loudly with a defined
+  outcome rather than hanging on the loading screen. Two worldgen retunes
+  (stronghold layout, Nether cavern density) **change existing seeds**; details
+  and the save-seam consequence are in `DEVIATIONS.md`.
 
 - **2026-07-19** — **Full audit sweep + self-correction.** Every spec was read
   front to back and verified against the code by 18 independent auditors, then

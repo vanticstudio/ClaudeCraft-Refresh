@@ -19,6 +19,22 @@ class LeapAtTargetGoal extends Goal {
     m.vel.x = (dx / h) * 0.4 + m.vel.x * 0.2;
     m.vel.z = (dz / h) * 0.4 + m.vel.z * 0.2;
     m.vel.y = 0.4;
+    m.impulseTick = m.age;   // 05 §8.4 — don't let this tick's ground friction halve it
+  }
+}
+
+// 05 §5 — "on aggro loss a spider keeps walking straight ahead for 40 ticks (this
+// makes it climb walls in its path)". Driven from the goal phase so the intent
+// lands BEFORE applyLocomotion and claims MOVE (postMove() ran after locomotion,
+// and Mob.tick clears moveIntent next tick, so the write was never consumed).
+class PostAggroWalkGoal extends Goal {
+  canStart() { return this.mob.postAggroWalk > 0; }
+  shouldContinue() { return this.mob.postAggroWalk > 0; }
+  tick() {
+    const m = this.mob;
+    m.postAggroWalk--;
+    m.moveIntent = m.walkDir;
+    m.moveSpeed = m.walkSpeed;
   }
 }
 
@@ -42,6 +58,7 @@ export class Spider extends Mob {
     this.goals = [
       new SwimGoal(this),
       new LeapAtTargetGoal(this),
+      new PostAggroWalkGoal(this),
       new MeleeAttackGoal(this),
       new WanderGoal(this),
       new LookAtPlayerGoal(this, 8),
@@ -71,10 +88,13 @@ export class Spider extends Mob {
     if ((this.target || this.postAggroWalk > 0) && this.hitWall) {
       this.vel.y = 0.2;
     }
-    if (this.postAggroWalk > 0) {
-      this.postAggroWalk--;
-      this.moveIntent = this.walkDir;
-      this.moveSpeed = this.walkSpeed;
+  }
+
+  // 05 §16.3 melee swing — the spider head-butts. 40° rather than the spec's 120°:
+  // the head pivot sits at y=9 px, so a 120° dip buries the face in the floor.
+  animateExtra() {
+    if (this.attackAnim < 6 && this.parts?.head) {
+      this.parts.head.rotation.x -= Math.sin(this.attackAnim / 6 * Math.PI) * (40 * Math.PI / 180);
     }
   }
 

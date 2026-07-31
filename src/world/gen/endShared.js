@@ -10,13 +10,27 @@ export const strongholdSeed = ws => mix32(ws ^ hashString('sys:stronghold'));
 
 /**
  * §4.2 — the single overworld stronghold's XZ (3 RNG draws; cheap, main-safe).
- * distance 1200–2000; the 3rd draw pins the start-piece rotation.
+ * distance 800–1600; the 3rd draw pins the start-piece rotation.
+ *
+ * UPDATE-structure-density DEVIATES from §4.2's pinned 1200–2000. There is exactly
+ * ONE stronghold per world and it gates the entire End progression, making it by
+ * far the rarest structure in the game; 800–1600 (mean 1200, not 1600) puts it
+ * inside a typical explored radius. Clearance is ample: 800 − stronghold RADIUS 96
+ * = 704 blocks from origin, and findWorldSpawn only searches out to 256.
+ *
+ * CRITICAL COUPLED INVARIANT — THIS FUNCTION MUST CONSUME EXACTLY THREE DRAWS.
+ * stronghold.js mirrors them with a bare `rng(); rng(); rng();` before continuing
+ * the SAME stream into buildPlan, so adding or removing a draw here silently
+ * reshuffles the whole stronghold plan (piece types, library/altar placement,
+ * portal socket). Changing the numeric constants keeps the count at 3 and is
+ * therefore safe. Consumers inherit the new position with no code change:
+ * terrain.js (the single stamper) and entities/EyeOfEnder.js (eye navigation).
  */
 export function strongholdXZ(worldSeed) {
   const ws = typeof worldSeed === 'number' ? (worldSeed >>> 0) : hashString(String(worldSeed ?? ''));
   const rng = splitmix32(strongholdSeed(ws));
   const ang = rng() * 2 * Math.PI;
-  const dist = 1200 + rng() * 800;
+  const dist = 800 + rng() * 800;
   const rot = rng();
   return { SX: Math.round(Math.cos(ang) * dist), SZ: Math.round(Math.sin(ang) * dist), rot: (rot * 4) | 0 };
 }

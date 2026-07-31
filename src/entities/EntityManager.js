@@ -95,27 +95,63 @@ export class EntityManager {
     }
     if (entity.object3d) {
       this.scene.remove(entity.object3d);
-      entity.object3d.traverse(o => {
-        if (!o.isMesh || !o.material) return;
-        const mats = Array.isArray(o.material) ? o.material : [o.material];
-        for (const m of mats) if (!m.userData?.shared) m.dispose();
-      });
+      this._disposeObject(entity.object3d);
       entity.object3d = null;
     }
     entity.onRemoved?.();
+  }
+
+  // 01 §17.2 — GL teardown for one entity model. Geometry is included because
+  // three only frees a geometry's buffers on dispose(): the fireballs, the wither
+  // skull, the end crystal and the ghast still build per-instance BoxGeometry, so
+  // spawn/despawn churn grew renderer.info.memory.geometries monotonically.
+  // `userData.shared` is the opt-out for the module-level caches (models.js
+  // boxGeo, ItemEntity's cube/sprite caches, glint.js's singleton material).
+  // A Sprite's GEOMETRY is skipped deliberately (three keeps one singleton for
+  // every sprite in the process) but its MATERIAL is per-instance and must go:
+  // RemotePlayer.makeNameplate mints a CanvasTexture + SpriteMaterial per model,
+  // and NetClient re-flags needsMeshRebuild on every `equip` message, so a remote
+  // player scrolling their hotbar leaked one 128×32 texture per scroll.
+  _disposeObject(obj) {
+    obj.traverse(o => {
+      if (o.isSprite) {
+        const m = o.material;
+        if (m && m.userData?.shared !== true) {
+          // The map follows the same opt-out: XpOrb's radial-gradient texture is
+          // a module singleton (userData.shared), the nameplate's canvas is not.
+          if (m.map && m.map.userData?.shared !== true) m.map.dispose();
+          m.dispose();
+        }
+        return;
+      }
+      if (!o.isMesh) return;
+      if (o.geometry && !o.geometry.userData?.shared) o.geometry.dispose();
+      const mats = Array.isArray(o.material) ? o.material : (o.material ? [o.material] : []);
+      for (const m of mats) if (!m.userData?.shared) m.dispose();
+    });
   }
 
   updateRender(alpha, player) {
     for (const entity of this.entities.values()) {
       if (entity === player) continue;
       if (entity.needsMeshRebuild && entity.object3d) {
+        // Same teardown as remove(): a rebuild (mob growUp, item pile change,
+        // remote-player equip/armor swap) discarded the old model with no
+        // disposal at all, leaking its per-instance materials and geometry.
         this.scene.remove(entity.object3d);
+        this._disposeObject(entity.object3d);
         entity.object3d = null;
         entity.needsMeshRebuild = false;
       }
       if (!entity.object3d) {
         const mesh = entity.buildMesh();
-        if (mesh) {
+        // isObject3D, not just truthiness: a builder that returns the raw
+        // { group, parts } record instead of unwrapping it is truthy, and
+        // assigning it here made updateRender's `object3d.position.set(...)`
+        // throw inside render() — before renderer.render(), so the screen froze
+        // on its last frame while the tick loop kept running. A mis-typed mesh
+        // must degrade to an invisible entity, never to a dead renderer.
+        if (mesh && mesh.isObject3D) {
           entity.object3d = mesh;
           this.scene.add(mesh);
         }

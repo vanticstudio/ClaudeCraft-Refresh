@@ -106,7 +106,13 @@ export function glintMaterial() {
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
   tex.magFilter = THREE.NearestFilter;
   tex.minFilter = THREE.NearestFilter;
-  tex.repeat.set(2, 2);
+  // §11 — "the scrolling streaks ARE the effect". The pass shares the source
+  // geometry, whose uv attribute carries ATLAS coordinates: one 16-px tile of
+  // the 512-px atlas spans ~1/32, so repeat 2 sampled a SINGLE texel per face —
+  // a flat wash that blinked as the offset scrolled. 64 puts ~2 streak repeats
+  // back on every face. The offset is applied after the repeat scale, so
+  // tickGlint's scroll speed is unchanged.
+  tex.repeat.set(64, 64);
   _worldMat = new THREE.MeshBasicMaterial({
     map: tex,
     blending: THREE.AdditiveBlending,
@@ -117,6 +123,11 @@ export function glintMaterial() {
     polygonOffsetFactor: -1,          // kill z-fighting with the surface beneath
     polygonOffsetUnits: -1,
   });
+  // 01 §17.2 — this is a process-lifetime singleton. EntityManager.remove()
+  // disposes every mesh material lacking this flag, so reaping any glinted drop
+  // used to dispose the shared material and force a shader relink on the next
+  // glinted draw.
+  _worldMat.userData.shared = true;
   return _worldMat;
 }
 

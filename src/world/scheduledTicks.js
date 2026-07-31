@@ -1,6 +1,6 @@
 // Bucket queue for fluid/block scheduled updates (01 §6.1).
 import { BLOCKS } from '../registry/blocks.js';
-import { SIM_RADIUS } from '../constants.js';
+import { SIM_RADIUS, chunkKey } from '../constants.js';
 
 export class ScheduledTicks {
   constructor(world) {
@@ -26,6 +26,13 @@ export class ScheduledTicks {
     const p = world.playerChunk;   // {cx, cz} set by Game each tick
     for (let i = 0; i < b.arr.length; i += 3) {
       const x = b.arr[i], y = b.arr[i + 1], z = b.arr[i + 2];
+      // 01 §6.1 — a tick whose chunk unloaded has no block to run. UNLOAD_RADIUS
+      // is always > SIM_RADIUS, so the deferral below would re-queue it every
+      // 40 t forever (allocating a fresh key each hop and slowing hasScheduled).
+      // Dropping is safe: fire re-seeds on hydrate, fluids on wake.
+      // `chunks.has` rather than getChunkAt — a resident REQUESTED chunk is
+      // mid-rehydrate and its ticks are still worth deferring.
+      if (!world.chunks.has(chunkKey(x >> 4, z >> 4))) continue;
       if (p) {
         const dcx = Math.abs((x >> 4) - p.cx), dcz = Math.abs((z >> 4) - p.cz);
         if (Math.max(dcx, dcz) > SIM_RADIUS) {   // outside sim: defer, don't run

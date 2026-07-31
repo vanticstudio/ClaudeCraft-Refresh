@@ -60,14 +60,20 @@ function placeVein(ctx, blocks, cx, cz, rng, ox, oy, oz, size, blockId, discard,
     const t = size <= 1 ? 0.5 : i / (size - 1);
     const r = 0.6 + tsin(t * Math.PI) * (0.4 + size / 16);
     const r2 = r * r;
+    // 02 §14 — clip the sphere bbox to this chunk BEFORE iterating (the same trick
+    // caves.js:141 already uses). 8 of the 9 re-simulated origin chunks write
+    // nothing here, so the in-loop clip was scanning ~3x more cells than needed.
+    // Output-identical: nothing in the loop consumes the rng stream, cells only
+    // ever go stone → ore, and the clamped range is exactly the admitted set.
+    const bx0 = Math.max(Math.floor(x - r), wx0), bx1 = Math.min(Math.floor(x + r), wx0 + 15);
+    const by0 = Math.max(Math.floor(y - r), 0), by1 = Math.min(Math.floor(y + r), 127);
+    const bz0 = Math.max(Math.floor(z - r), wz0), bz1 = Math.min(Math.floor(z + r), wz0 + 15);
     // fixed iteration order: x → y → z ascending
-    for (let bx = Math.floor(x - r); bx <= Math.floor(x + r); bx++) {
-      for (let by = Math.floor(y - r); by <= Math.floor(y + r); by++) {
-        for (let bz = Math.floor(z - r); bz <= Math.floor(z + r); bz++) {
+    for (let bx = bx0; bx <= bx1; bx++) {
+      for (let by = by0; by <= by1; by++) {
+        for (let bz = bz0; bz <= bz1; bz++) {
           const dx = bx + 0.5 - x, dy = by + 0.5 - y, dz = bz + 0.5 - z;
           if (dx * dx + dy * dy + dz * dz > r2) continue;
-          if (bx < wx0 || bx > wx0 + 15 || bz < wz0 || bz > wz0 + 15 ||
-              by < 0 || by > 127) continue;          // clip (no rng consumed)
           const idx = (by << 8) | ((bz & 15) << 4) | (bx & 15);
           if (blocks[idx] !== ID.stone) continue;
           // 12-VILLAGES §6.1 — biome gate (mountains); skip without consuming draws.

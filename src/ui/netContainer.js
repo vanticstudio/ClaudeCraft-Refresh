@@ -73,8 +73,10 @@ export class NetContainer {
     d.className = 'nc-slot';
     if (stack) {
       const item = ITEMS.get(stack.id);
-      d.title = item?.display ?? stack.id;
-      d.textContent = (item?.display ?? ('#' + stack.id)).slice(0, 3);
+      // The registry field is `displayName` (items.js §1) — `display` exists only
+      // on EFFECT_META, so every cell fell back to the raw id.
+      d.title = item?.displayName ?? String(stack.id);
+      d.textContent = (item?.displayName ?? ('#' + stack.id)).slice(0, 3);
       if (stack.count > 1) { const c = document.createElement('span'); c.className = 'nc-count'; c.textContent = stack.count; d.appendChild(c); }
     }
     d.oncontextmenu = e => e.preventDefault();
@@ -91,7 +93,7 @@ export class NetContainer {
     this.invEl.innerHTML = '';
     this.inv.forEach((s, i) => this.invEl.appendChild(this._cell(s, 'inv', i)));
     // cursor
-    if (this.cursor) { const item = ITEMS.get(this.cursor.id); this.cursorEl.textContent = (item?.display ?? '#' + this.cursor.id).slice(0, 3) + (this.cursor.count > 1 ? ' ' + this.cursor.count : ''); this.cursorEl.hidden = false; }
+    if (this.cursor) { const item = ITEMS.get(this.cursor.id); this.cursorEl.textContent = (item?.displayName ?? '#' + this.cursor.id).slice(0, 3) + (this.cursor.count > 1 ? ' ' + this.cursor.count : ''); this.cursorEl.hidden = false; }
     else this.cursorEl.hidden = true;
   }
 }

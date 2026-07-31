@@ -1,5 +1,6 @@
 // 10-NETHER §4-§5 — the Nether generator. Pure, deterministic per (seed, cx, cz),
-// worker-importable (no registry/DOM). Native Y 0-127, no remap: bedrock floor/
+// worker-importable (no DOM; the only registry touch is features.computeHeightMap,
+// 01 §5's single sky predicate). Native Y 0-127, no remap: bedrock floor/
 // roof, netherrack carved into the "swiss-cheese" cavern field, a lava sea at
 // Y≤31, ores, biome surface palettes, and deterministic fortresses.
 //
@@ -9,7 +10,8 @@
 //   nether_quartz_ore 122, nether_gold_ore 123, ancient_debris 124,
 //   crimson_nylium 125, warped_nylium 126, nether_wart 138, spawner 141.
 
-import { hashString, splitmix32, chunkSeed, posHash, mix32 } from '../../math/rng.js';
+import { hashString, splitmix32, chunkSeed, posHash, mix32, triSample } from '../../math/rng.js';
+import { computeHeightMap } from './features.js';   // 01 §5 — ONE heightmap predicate
 
 const AIR = 0, BEDROCK = 17, GLOWSTONE = 32, CHEST = 37, LAVA = 64;
 const NETHERRACK = 115, NETHER_BRICKS = 116, FENCE = 117, SOUL_SAND = 119;
@@ -56,6 +58,11 @@ function biomeAt(s, x, z) {
   return WASTES;
 }
 
+// §4.3 base carve threshold. |netherDensity| concentrates near 0 (two smoothstep
+// value-noise samples over 1.5), so the spec's literal 0.30 carves ~70% of the
+// interior; 0.175 measures 45.5%, inside §4.3's "~40-55% open" band.
+const CAVERN_THR = 0.175;
+
 // §4.3 cavern density
 function netherDensity(s, x, y, z) {
   const n1 = noise3(s.cavern, x / 48, y / 40, z / 48);
@@ -82,7 +89,6 @@ export function createNetherGenerator(seed) {
   function generateChunk(cx, cz) {
     const blocks = new Uint8Array(32768);
     const biomes = new Uint8Array(256);
-    const heightMap = new Uint8Array(256);   // match overworld/Chunk (values ≤ 127)
     const spawns = [];
     const set = (x, y, z, id) => { blocks[idx(x, y, z)] = id; };
     const get = (x, y, z) => blocks[idx(x, y, z)];
@@ -98,10 +104,14 @@ export function createNetherGenerator(seed) {
           else if (y <= 4) id = posHash(s.bedrock, wx, y, wz) < (5 - y) / 4 ? BEDROCK : NETHERRACK;
           else if (y >= 123) id = posHash(s.bedrock, wx, y, wz) < (y - 122) / 4 ? BEDROCK : NETHERRACK;
           else {
-            // cavern carve; taper near roof/floor so they stay mostly closed
-            let thr = 0.30;
-            if (y > 112) thr += (y - 112) * 0.05;
-            if (y < 10) thr += (10 - y) * 0.05;
+            // cavern carve; taper near roof/floor so they stay mostly closed.
+            // The taper is MULTIPLICATIVE: a larger thr carves MORE, so the old
+            // additive form opened the roof/floor instead of closing them (an
+            // empty attic under the bedrock roof, no floor under the lava sea).
+            // thr reaches 0 at y=122 and y=5, sealing the last layer either side.
+            let thr = CAVERN_THR;
+            if (y > 112) thr *= Math.max(0, (122 - y) / 10);
+            if (y < 10) thr *= Math.max(0, (y - 5) / 5);
             if (Math.abs(netherDensity(s, wx, y, wz)) < thr) id = AIR;
           }
           set(lx, y, lz, id);
@@ -120,14 +130,11 @@ export function createNetherGenerator(seed) {
     // 4. fortress (deterministic; may write spawner + wart + chests + a spawn record)
     generateFortress(s, blocks, cx, cz, spawns);
 
-    // 5. heightmap: topmost solid (feeds nothing with sky off, but kept consistent)
-    for (let lz = 0; lz < 16; lz++) {
-      for (let lx = 0; lx < 16; lx++) {
-        let h = 0;
-        for (let y = 127; y >= 0; y--) { if (get(lx, y, lz) !== AIR) { h = y + 1; break; } }
-        heightMap[(lz << 4) | lx] = h;
-      }
-    }
+    // 5. heightmap (01 §5): the SAME predicate the overworld gen and ChunkManager's
+    // hydrate/_recomputeHeightMap use. The old "topmost non-AIR" loop was a third,
+    // disagreeing predicate — a column topped by nether_wart / roots / a fence
+    // (opacity 0) changed its heightMap between worldgen and reload.
+    const heightMap = computeHeightMap(blocks);   // values ≤ 127, match overworld/Chunk
     return { blocks, heightMap, biomes, spawns };
   }
 
@@ -144,9 +151,14 @@ function generateOres(s, blocks, cx, cz) {
     get(x + 1, y, z) === AIR || get(x - 1, y, z) === AIR ||
     get(x, y + 1, z) === AIR || get(x, y - 1, z) === AIR ||
     get(x, y, z + 1) === AIR || get(x, y, z - 1) === AIR;
-  const vein = (id, cxCount, size, ylo, yhi, buriedOnly) => {
+  // yPeak (optional): §4.5 asks for tri(lo, peak, hi) on the large debris cluster.
+  // triSample draws exactly ONE value like rngInt, so the stream stays aligned.
+  const vein = (id, cxCount, size, ylo, yhi, buriedOnly, yPeak) => {
     for (let a = 0; a < cxCount; a++) {
-      const ox = rngInt(rng, 16), oz = rngInt(rng, 16), oy = ylo + rngInt(rng, yhi - ylo + 1);
+      const ox = rngInt(rng, 16), oz = rngInt(rng, 16);
+      const oy = yPeak === undefined
+        ? ylo + rngInt(rng, yhi - ylo + 1)
+        : Math.max(ylo, Math.min(yhi, Math.floor(triSample(rng, ylo, yPeak, yhi + 1))));
       for (let b = 0; b < size; b++) {
         const x = ox + rngInt(rng, 3) - 1, y = oy + rngInt(rng, 3) - 1, z = oz + rngInt(rng, 3) - 1;
         if (get(x, y, z) !== NETHERRACK) continue;
@@ -159,7 +171,7 @@ function generateOres(s, blocks, cx, cz) {
   vein(QUARTZ_ORE, 16, 14, 10, 117);
   vein(GOLD_ORE, 10, 13, 10, 117);
   vein(MAGMA, 4, 16, 27, 36);
-  vein(DEBRIS, 1, 3, 8, 24, true);    // large-ish cluster, fully buried
+  vein(DEBRIS, 1, 3, 8, 24, true, 16);   // §4.5 row 4 — tri(8,16,24), fully buried
   vein(DEBRIS, 1, 2, 8, 119, true);
   // glowstone ceiling blobs
   for (let a = 0; a < 10; a++) {
@@ -218,20 +230,56 @@ function decorate(s, blocks, biomes, cx, cz, spawns) {
 
 // ------------------------------------------------------------ §5 fortress
 // SIMPLIFIED (see DEVIATIONS): rather than the full BFS piece grammar, each
-// 27×27-chunk region deterministically places ONE compact fortress core — a
+// region deterministically places ONE compact fortress core — a
 // nether-brick bridge platform with a blaze room (spawner + fence cage) and a
 // wart garden (soul_sand + stage-3 nether_wart + a loot chest). This guarantees
 // the gate item (a fortress with a blaze spawner) deterministically, replayed
 // identically from every overlapping chunk.
-const REGION = 27;
+// UPDATE-structure-density DEVIATES from 10-NETHER §5.1's "region = 27×27 chunks
+// (432×432 blocks) — Minecraft's average fortress spacing" and its 20-chunk
+// sub-box. Every region places a fortress unconditionally (there is no roll), so
+// spacing WAS exactly 432 blocks for a structure whose whole footprint is a 13×13
+// platform + a 1-block clearance ring = 15 blocks: the placement grid was ~29×
+// wider than the thing being placed. 22 chunks = 352 blocks (1.5× more fortresses
+// per unit area), a deliberately mild step.
+// COUPLED INVARIANT — JITTER <= REGION: the origin must stay inside its own
+// region or the ±1-region scan in generateFortress starts missing fortresses.
+// 16 <= 22 holds; the shipped 20 would NOT, so the jitter literal MUST move with
+// REGION. Min separation = 22 − 16 = 6 chunks = 96 blocks against a 15-block
+// footprint, so overlap remains impossible.
+const REGION = 22, JITTER = 16;
+
+// Memoized: generateFortress re-derives 9 regions for EVERY chunk, and the site
+// scan below is far too costly to repeat. Pure function of (fortress seed, region),
+// so caching cannot change output.
+const originCache = new Map();
 
 function fortressOrigin(s, regionX, regionZ) {
+  const key = s.fortress + '|' + regionX + ',' + regionZ;
+  const hit = originCache.get(key);
+  if (hit) return hit;
   const rng = splitmix32(mix32(s.fortress ^ mix32(regionX * 341873128 + regionZ * 132897987)));
-  return {
-    ocx: regionX * REGION + rngInt(rng, 20),
-    ocz: regionZ * REGION + rngInt(rng, 20),
-    oy: 48 + rngInt(rng, 24),
+  const ocx = regionX * REGION + rngInt(rng, JITTER);
+  const ocz = regionZ * REGION + rngInt(rng, JITTER);
+  const jitter = 48 + rngInt(rng, 24);           // draw kept: the stream stays aligned
+  // §5.1 "48..71 — above the lava sea, IN OPEN CAVERN SPACE where possible": score
+  // each candidate floor by how much of the 13x13x5 build volume the cavern field
+  // has already carved and keep the most open one (jitter wins ties). Without this
+  // ~1 fortress in 5 landed inside solid netherrack, entombing its blaze spawner.
+  const bx = ocx * 16, bz = ocz * 16;
+  const openness = y0 => {
+    let open = 0;
+    for (let dx = 0; dx <= 12; dx += 4) for (let dz = 0; dz <= 12; dz += 4)
+      for (let dy = 1; dy <= 5; dy++)
+        if (Math.abs(netherDensity(s, bx + dx, y0 + dy, bz + dz)) < CAVERN_THR) open++;
+    return open;
   };
+  let oy = jitter, best = openness(jitter);
+  for (let y0 = 48; y0 <= 71; y0++) { const o = openness(y0); if (o > best) { best = o; oy = y0; } }
+  const out = { ocx, ocz, oy };
+  originCache.set(key, out);
+  if (originCache.size > 64) originCache.delete(originCache.keys().next().value);
+  return out;
 }
 
 function generateFortress(s, blocks, cx, cz, spawns) {
@@ -249,6 +297,12 @@ function generateFortress(s, blocks, cx, cz, spawns) {
         if ((wx >> 4) === cx && (wz >> 4) === cz) set(wx & 15, y, wz & 15, id);
       };
       const bx = baseX, bz = baseZ, y0 = oy;
+      // §5.1 clearance: carve the build volume (footprint + a 1-block ring) BEFORE
+      // stamping. Even on a well-scored site the platform can land in netherrack,
+      // and a buried blaze room has no legal spawn cell — tickSpawner then never
+      // produces a blaze and the E7 gate (blaze rods → brewing) is unreachable.
+      for (let x = -1; x <= 13; x++) for (let z = -1; z <= 13; z++)
+        for (let dy = 1; dy <= 5; dy++) writeCell(bx + x, y0 + dy, bz + z, AIR);
       // main platform 13×13 nether-brick floor
       for (let x = 0; x < 13; x++) for (let z = 0; z < 13; z++) writeCell(bx + x, y0, bz + z, NETHER_BRICKS);
       // perimeter fence rail

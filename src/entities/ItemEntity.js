@@ -49,6 +49,10 @@ export function blockCubeGeometry(blockId, size) {
     }
   }
   uv.needsUpdate = true;
+  // 01 §17.2 — module-level cache: EntityManager's disposal sweep must leave it
+  // alone or reaping one drop would free the geometry every other drop draws with
+  // (same contract as models.js boxGeo).
+  geo.userData.shared = true;
   cubeGeoCache.set(key, geo);
   return geo;
 }
@@ -68,6 +72,41 @@ export function tileSpriteGeometry(tile, size) {
     uv.setXY(i, u0 + (u1 - u0) * uv.getX(i), v0 + (v1 - v0) * (1 - uv.getY(i)));
   }
   uv.needsUpdate = true;
+  geo.userData.shared = true;      // 01 §17.2 — cached; see blockCubeGeometry
+  spriteGeoCache.set(key, geo);
+  return geo;
+}
+
+/**
+ * 06 §16 — the same sprite as two quads crossed at 90°, so an item sprite has
+ * some thickness instead of vanishing to a hairline when viewed edge-on (the
+ * dropped-item spin and the first-person viewmodel both pass through that
+ * angle every cycle). three's mergeGeometries lives in examples/ and must not
+ * be imported, so the two buffers are concatenated by hand.
+ */
+export function crossedSpriteGeometry(tile, size) {
+  const key = tile + '|' + size + '|X';
+  let geo = spriteGeoCache.get(key);
+  if (geo) return geo;
+  const a = tileSpriteGeometry(tile, size);          // cached + shared: never mutate
+  const b = a.clone();
+  b.rotateY(Math.PI / 2);
+  geo = new THREE.BufferGeometry();
+  const base = a.attributes.position.count;
+  for (const name of ['position', 'normal', 'uv']) {
+    const pa = a.attributes[name], pb = b.attributes[name], its = pa.itemSize;
+    const arr = new Float32Array((pa.count + pb.count) * its);
+    arr.set(pa.array, 0);
+    arr.set(pb.array, pa.count * its);
+    geo.setAttribute(name, new THREE.BufferAttribute(arr, its));
+  }
+  const ia = a.index, ib = b.index;
+  const idx = new Uint16Array(ia.count + ib.count);
+  idx.set(ia.array, 0);
+  for (let i = 0; i < ib.count; i++) idx[ia.count + i] = ib.array[i] + base;
+  geo.setIndex(new THREE.BufferAttribute(idx, 1));
+  b.dispose();
+  geo.userData.shared = true;      // 01 §17.2 — cached; see blockCubeGeometry
   spriteGeoCache.set(key, geo);
   return geo;
 }
@@ -79,6 +118,12 @@ export function itemTileFor(itemId) {
   if (item.place != null && BLOCKS[item.place]?.tileIndex) return BLOCKS[item.place].tileIndex[4];
   return 0;
 }
+
+// 06 §16 "Visual" — the rendered pile is 1 / 2 / 3 / 4 sprites, chosen from the
+// stack count by these thresholds. buildMesh below is the only consumer of the
+// shape; every count MUTATION consults this so a rebuild is only requested when
+// the pile would actually look different (a rebuild is a full dispose + realloc).
+const countBucket = n => (n >= 33 ? 3 : n >= 17 ? 2 : n >= 2 ? 1 : 0);
 
 // ---------------------------------------------------------------------------
 
@@ -121,7 +166,10 @@ export class ItemEntity extends Entity {
     this.vel.x *= 0.98; this.vel.y *= 0.98; this.vel.z *= 0.98;
     if (this.onGround) { this.vel.x *= 0.6; this.vel.z *= 0.6; }
 
-    if ((this.age % 40) === 0) this.tryMerge();
+    // 06 §16 "every 40 t AND on spawn". baseTick() already incremented age, so
+    // the first tick of a fresh entity is age 1 — register() ran in add() before
+    // it, so the neighbours are already in the spatial index.
+    if (this.age === 1 || (this.age % 40) === 0) this.tryMerge();
     this.tryPickup();
   }
 
@@ -150,11 +198,18 @@ export class ItemEntity extends Entity {
            tagsEqual(e.stack, this.stack));
     for (const other of near) {
       if (this.stack.count + other.stack.count > max) continue;
+      const before = this.stack.count;
       this.stack.count += other.stack.count;
       this.despawnAge = Math.max(this.despawnAge - this.age, other.despawnAge - other.age) + this.age;
       other.deathTime = 0;
       other.dead = true;
-      this.refreshCountVisual = true;
+      // 06 §16 "Visual" — the sprite count (1 / 2 / 3 / 4) is chosen in
+      // buildMesh, so a changed count only shows if the mesh is rebuilt.
+      // needsMeshRebuild is the flag EntityManager.updateRender honours, and it
+      // costs a full teardown (dispose + fresh Group/material), so raise it only
+      // when the count crosses a BUCKET boundary — inside one bucket the mesh
+      // that would be rebuilt is identical to the one already on screen.
+      if (countBucket(this.stack.count) !== countBucket(before)) this.needsMeshRebuild = true;
     }
   }
 
@@ -170,6 +225,7 @@ export class ItemEntity extends Entity {
       if (!player || player.dead) continue;
       const pbox = player.getAABB().expand(1.0, 0.5, 1.0);
       if (!pbox.intersects(box)) continue;
+      const before = this.stack.count;
       const leftover = player.give(this.stack);
       if (leftover <= 0) {
         this.dead = true;
@@ -177,7 +233,12 @@ export class ItemEntity extends Entity {
         if (player === game.player) game.ui?.hud?.flashPickup?.(this.stack);
         return;
       }
+      // §16 Visual — a partial pickup shrank the pile. Player.give returns the
+      // FULL count when NOTHING fit (36 occupied slots, no mergeable stack), so
+      // an unconditional flag here rebuilt the model 20×/s for as long as a
+      // full-inventory player stood on the drop. Same bucket rule as tryMerge.
       this.stack.count = leftover;
+      if (countBucket(leftover) !== countBucket(before)) this.needsMeshRebuild = true;
     }
   }
 
@@ -190,11 +251,11 @@ export class ItemEntity extends Entity {
       inner = new THREE.Mesh(blockCubeGeometry(item.place, 0.25), mat);
       inner.position.x = -0;   // centered
     } else {
-      inner = new THREE.Mesh(tileSpriteGeometry(itemTileFor(this.stack.id), 0.5), mat);
+      inner = new THREE.Mesh(crossedSpriteGeometry(itemTileFor(this.stack.id), 0.5), mat);
     }
     group.add(inner);
     // stacked visuals for larger counts (06 §16)
-    const extra = this.stack.count >= 33 ? 3 : this.stack.count >= 17 ? 2 : this.stack.count >= 2 ? 1 : 0;
+    const extra = countBucket(this.stack.count);
     for (let i = 0; i < extra; i++) {
       const dup = inner.clone();
       dup.position.set((i + 1) * 0.06 - 0.09, i * 0.02, (i + 1) * 0.05 - 0.08);

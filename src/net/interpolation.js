@@ -11,13 +11,13 @@ export class Interpolator {
   constructor() {
     this.tracks = new Map();     // entityId → { samples:[], newest }
     this.interpTime = 0;         // host-clock ms domain
-    this.hostEpochOffset = 0;    // hostTick*50 → client performance.now() (§7.1)
-    this.haveClock = false;
     this.newestSampleTime = 0;
   }
 
-  // hostTick timestamp (ms on host clock) → client clock ms.
-  setClock(hostEpochOffset) { this.hostEpochOffset = hostEpochOffset; this.haveClock = true; }
+  // §7.1's host-clock mapping is NOT modelled: advance()/sample() run purely off
+  // newestSampleTime, which self-anchors. The setClock/hostEpochOffset/haveClock
+  // trio that used to sit here had no caller and no reader, and advertised a
+  // drift-correction path that does not exist.
 
   // Add a snapshot sample for an entity. `time` = hostTick*50 (host clock ms).
   addSample(id, time, s) {

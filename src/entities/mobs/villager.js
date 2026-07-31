@@ -23,46 +23,53 @@ export const STATION_PROFESSION = {
 const XP_THRESHOLDS = [0, 10, 70, 150, 250];   // Novice..Master (§9.1)
 
 // §9 — per-profession trade pools by tier. Each entry:
-// [buyA, buyB|null, sell, maxUses, xp, opts?] with opts = { hi, ench, mult }:
+// [buyA, buyB|null, sell, maxUses, xp, opts?, lvl] with opts = { hi, ench, mult }:
 // `hi` makes buyA's count a §9 emerald RANGE [count, hi] rolled from the villager
 // seed; `ench` routes the sold stack through 08's selectEnchants (§9.5–§9.7,
 // §9.9); `mult` is §9.10's priceMult (0.05 default, 0.2 for enchant rows).
 // (id, count) tuples; a representative subset of the §9 tables. Librarian's book
 // rows are generated dynamically (§9.3).
+// `lvl` (1..5 = Novice..Master) is the §9.2–§9.9 "Lvl" column: doTrade refuses a
+// row above the villager's current level, so a fresh Novice no longer offers the
+// Master enchanted-diamond rows. Two rows carry a deliberately LOWER tier than
+// the spec table (marked below): this file only keeps a subset of each pool, and
+// a profession with no Novice row could never earn the XP to unlock anything.
 const TRADES = {
   farmer: [
-    [[336, 20], null, [EMERALD, 1], 16, 2], [[316, 26], null, [EMERALD, 1], 16, 2],
-    [[EMERALD, 1], null, [305, 6], 16, 1], [[EMERALD, 3], null, [377, 3], 12, 30],
+    [[336, 20], null, [EMERALD, 1], 16, 2, {}, 1], [[316, 26], null, [EMERALD, 1], 16, 2, {}, 1],
+    [[EMERALD, 1], null, [305, 6], 16, 1, {}, 1], [[EMERALD, 3], null, [377, 3], 12, 30, {}, 5],
   ],
   cleric: [
-    [[314, 32], null, [EMERALD, 1], 16, 2], [[EMERALD, 1], null, [342, 2], 12, 1],
-    [[EMERALD, 5], null, [334, 1], 12, 15], [[EMERALD, 4], null, [32, 1], 12, 30],
-    [[370, 9], null, [EMERALD, 1], 12, 30],     // §9.4 Expert — 09's glass_bottle
-    [[390, 22], null, [EMERALD, 1], 12, 30],    // §9.4 Master — 10's nether_wart
+    [[314, 32], null, [EMERALD, 1], 16, 2, {}, 1], [[EMERALD, 1], null, [342, 2], 12, 1, {}, 1],
+    [[EMERALD, 5], null, [334, 1], 12, 15, {}, 4], [[EMERALD, 4], null, [32, 1], 12, 30, {}, 3],
+    [[370, 9], null, [EMERALD, 1], 12, 30, {}, 4],     // §9.4 Expert — 09's glass_bottle
+    [[390, 22], null, [EMERALD, 1], 12, 30, {}, 5],    // §9.4 Master — 10's nether_wart
   ],
   // §9.5–§9.7 — the Expert/Master smith rows sell ENCHANTED diamond gear.
   armorer: [
-    [[319, 15], null, [EMERALD, 1], 16, 2], [[EMERALD, 5], null, [296, 1], 12, 1],
-    [[322, 4], null, [EMERALD, 1], 12, 10],
-    [[EMERALD, 19], null, [302, 1], 3, 15, { hi: 33, ench: true, mult: 0.2 }],
-    [[EMERALD, 13], null, [303, 1], 3, 30, { hi: 27, ench: true, mult: 0.2 }],
+    [[319, 15], null, [EMERALD, 1], 16, 2, {}, 1], [[EMERALD, 5], null, [296, 1], 12, 1, {}, 1],
+    [[322, 4], null, [EMERALD, 1], 12, 10, {}, 2],
+    [[EMERALD, 19], null, [302, 1], 3, 15, { hi: 33, ench: true, mult: 0.2 }, 4],
+    [[EMERALD, 13], null, [303, 1], 3, 30, { hi: 27, ench: true, mult: 0.2 }, 5],
   ],
   toolsmith: [
-    [[319, 15], null, [EMERALD, 1], 16, 2], [[326, 30], null, [EMERALD, 1], 12, 20],
-    [[EMERALD, 6], null, [267, 1], 3, 10, { hi: 20, ench: true, mult: 0.2 }],
-    [[325, 1], null, [EMERALD, 1], 12, 30],
-    [[EMERALD, 18], null, [277, 1], 3, 30, { hi: 32, ench: true, mult: 0.2 }],
+    [[319, 15], null, [EMERALD, 1], 16, 2, {}, 1], [[326, 30], null, [EMERALD, 1], 12, 20, {}, 3],
+    [[EMERALD, 6], null, [267, 1], 3, 10, { hi: 20, ench: true, mult: 0.2 }, 3],
+    [[325, 1], null, [EMERALD, 1], 12, 30, {}, 4],
+    [[EMERALD, 18], null, [277, 1], 3, 30, { hi: 32, ench: true, mult: 0.2 }, 5],
   ],
   weaponsmith: [
-    [[319, 15], null, [EMERALD, 1], 16, 2], [[EMERALD, 3], null, [268, 1], 12, 1],
-    [[EMERALD, 7], null, [266, 1], 3, 1, { hi: 21, ench: true, mult: 0.2 }],
-    [[325, 1], null, [EMERALD, 1], 12, 30],
-    [[EMERALD, 13], null, [276, 1], 3, 30, { hi: 27, ench: true, mult: 0.2 }],
+    [[319, 15], null, [EMERALD, 1], 16, 2, {}, 1], [[EMERALD, 3], null, [268, 1], 12, 1, {}, 1],
+    [[EMERALD, 7], null, [266, 1], 3, 1, { hi: 21, ench: true, mult: 0.2 }, 1],
+    [[325, 1], null, [EMERALD, 1], 12, 30, {}, 4],
+    [[EMERALD, 13], null, [276, 1], 3, 30, { hi: 27, ench: true, mult: 0.2 }, 5],
   ],
-  butcher: [[[308, 10], null, [EMERALD, 1], 16, 20], [[EMERALD, 1], null, [307, 5], 16, 1]],
+  // beef is §9.8 Journeyman, kept at Novice: it is this pool's only buy row and
+  // the butcher would otherwise open with nothing to trade and never level.
+  butcher: [[[308, 10], null, [EMERALD, 1], 16, 20, {}, 1], [[EMERALD, 1], null, [307, 5], 16, 1, {}, 2]],
   fletcher: [
-    [[327, 16], null, [EMERALD, 1], 16, 2], [[EMERALD, 1], null, [282, 16], 12, 1],
-    [[EMERALD, 7], null, [281, 1], 3, 15, { hi: 21, ench: true, mult: 0.2 }],
+    [[327, 16], null, [EMERALD, 1], 16, 2, {}, 1], [[EMERALD, 1], null, [282, 16], 12, 1, {}, 1],
+    [[EMERALD, 7], null, [281, 1], 3, 15, { hi: 21, ench: true, mult: 0.2 }, 4],
   ],
 };
 
@@ -74,7 +81,7 @@ function enchantTags(itemId, rng) {
   return picked.length ? applyOffer(stack, picked).tags : null;
 }
 
-function mkTrade(buyA, buyB, sell, maxUses, xp, opts = {}, seed = 0, slot = 0) {
+function mkTrade(buyA, buyB, sell, maxUses, xp, opts = {}, seed = 0, slot = 0, lvl = 1) {
   // Distinct from librarianBookTrade's mix so the two seed streams never collide.
   const rng = (opts.hi || opts.ench) ? rng32((seed ^ (slot * 0x85ebca6b)) >>> 0) : null;
   const count = opts.hi ? rng.int(buyA[1], opts.hi) : buyA[1];
@@ -82,13 +89,13 @@ function mkTrade(buyA, buyB, sell, maxUses, xp, opts = {}, seed = 0, slot = 0) {
   return {
     buyA: { id: buyA[0], count }, buyB: buyB ? { id: buyB[0], count: buyB[1] } : null,
     sell: { id: sell[0], count: sell[1], ...(tags ? { tags } : {}) },
-    maxUses, uses: 0, xp, priceMult: opts.mult ?? 0.05, demand: 0, specialPrice: 0,
+    maxUses, uses: 0, xp, lvl, priceMult: opts.mult ?? 0.05, demand: 0, specialPrice: 0,
   };
 }
 
 // §9.3 — a librarian enchanted-book offer via E4's helper. Deterministic from
 // (villagerSeed, tradeSlot). cost = 2 + 3·enchLevel, doubled for treasure, [5,64].
-function librarianBookTrade(villagerSeed, tradeSlot) {
+function librarianBookTrade(villagerSeed, tradeSlot, tier) {
   const seedRng = splitmix32((villagerSeed ^ (tradeSlot * 0x9e3779b9)) >>> 0);
   const lvl = 5 + Math.floor(seedRng() * 15);                       // 5–19
   const book = randomEnchantedBook(rng32((villagerSeed ^ tradeSlot) >>> 0), lvl, true);
@@ -98,20 +105,22 @@ function librarianBookTrade(villagerSeed, tradeSlot) {
   const treasure = !!meta?.treasure;
   let cost = 2 + 3 * primary.lvl; if (treasure) cost *= 2;
   cost = Math.max(5, Math.min(64, cost));
-  return mkTrade([EMERALD, cost], [BOOK, 1], [ENCHANTED_BOOK, 1, book.tags], 12, treasure ? 30 : 5, { mult: 0.2 });
+  return mkTrade([EMERALD, cost], [BOOK, 1], [ENCHANTED_BOOK, 1, book.tags], 12, treasure ? 30 : 5, { mult: 0.2 }, 0, 0, tier);
 }
 
 export function generateTrades(profession, seed) {
   if (!profession || profession === 'nitwit' || profession === 'none') return [];
   if (profession === 'librarian') {
     const out = [
-      mkTrade([340, 24], null, [EMERALD, 1], 16, 2),      // 24 paper → 1 emerald
-      mkTrade([EMERALD, 9], null, [50, 1], 12, 1),        // 9 emerald → bookshelf
+      mkTrade([340, 24], null, [EMERALD, 1], 16, 2, {}, 0, 0, 1),   // 24 paper → 1 emerald (Novice)
+      mkTrade([EMERALD, 9], null, [50, 1], 12, 1, {}, 0, 0, 1),     // 9 emerald → bookshelf (Novice)
     ];
-    for (let slot = 0; slot < 4; slot++) { const t = librarianBookTrade(seed, slot); if (t) out.push(t); }
+    // §9.3 — the four book slots are Novice / Apprentice / Journeyman / Master.
+    const bookLvl = [1, 2, 3, 5];
+    for (let slot = 0; slot < 4; slot++) { const t = librarianBookTrade(seed, slot, bookLvl[slot]); if (t) out.push(t); }
     return out;
   }
-  return (TRADES[profession] ?? []).map((t, i) => mkTrade(t[0], t[1], t[2], t[3], t[4], t[5] ?? {}, seed, i));
+  return (TRADES[profession] ?? []).map((t, i) => mkTrade(t[0], t[1], t[2], t[3], t[4], t[5] ?? {}, seed, i, t[6] ?? 1));
 }
 
 export class Villager extends Mob {
@@ -198,7 +207,9 @@ export class Villager extends Mob {
   // §9.1 — execute trade index i for the player. Returns true if completed.
   doTrade(i, player) {
     const t = this.trades[i];
-    if (!t || t.uses >= t.maxUses) return false;
+    // §9.1 — a tier's rows unlock only when the villager reaches it. Trades saved
+    // before `lvl` existed have none, so an absent field reads as Novice.
+    if (!t || (t.lvl ?? 1) > this.level || t.uses >= t.maxUses) return false;
     const cost = a => a.id === EMERALD ? Math.max(1, a.count + t.specialPrice) : a.count;
     const has = a => !a || countItem(player, a.id) >= cost(a);
     if (!has(t.buyA) || !has(t.buyB)) return false;
@@ -241,7 +252,8 @@ export class IronGolem extends Mob {
     this.detectionRange = 16; this.xpValue = 0;
     this.takesFallDamage = false;                 // §11.1 fall immune
     this.homeVillage = opts.homeVillage ?? null;
-    this.goals = [new SwimGoal(this), new MeleeAttackGoal(this), new WanderGoal(this), new IdleLookGoal(this)];
+    // §11.1/§11.3 — the golem's attack cooldown is 10 ticks, not the roster's 20.
+    this.goals = [new SwimGoal(this), new MeleeAttackGoal(this, 10), new WanderGoal(this), new IdleLookGoal(this)];
   }
 
   knockbackResistance() { return 1.0; }           // §11.1 immune (AMENDS 05 §2)
@@ -291,6 +303,11 @@ export class ZombieVillager extends Zombie {
     if (!hasEffect(this, EFFECT.WEAKNESS) || this.converting) return false;
     player.consumeIn?.('main', 1);
     this.converting = true;
+    // §11.5 step 3 assumes the mob survives the 3–5 minute cure. zombie_villager
+    // is in HOSTILE_TYPES and spawns non-persistent, so without this the 05 §4
+    // random despawn eats the villager (and the golden apple) ~98% of the time
+    // when the player walks 32+ blocks away and waits.
+    this.persistent = true;
     this.convertTimer = 3600 + Math.floor(this.world.rng() * 2401);   // 3–5 min
     emitSound('zombie_villager.converting', at(this.pos.x, this.pos.y + 1, this.pos.z));
     return true;

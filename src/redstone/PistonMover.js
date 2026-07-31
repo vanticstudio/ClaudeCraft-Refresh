@@ -19,6 +19,13 @@ const IMMOVABLE = new Set([
 function immovable(world, x, y, z) {
   const id = world.getBlock(x, y, z);
   if (IMMOVABLE.has(id)) return true;
+  // §9.3's list is "storage block entities", justified as blocks with stored
+  // data (it explicitly allows the crafting table BECAUSE it has none). The
+  // literal six predate barrel 173 / blast_furnace 175-176 / smoker 177-178 /
+  // shulker_box 164 / brewing_stand 112 / spawner 141 / beacon 187, all of which
+  // were being pushed — spilling their contents through setBlock's block-entity
+  // spill and, for the shulker, duplicating it. Cover them generically.
+  if (BLOCKS[id]?.blockEntity) return true;
   // an EXTENDED piston base is immovable (its head is anchored)
   if ((id === B.PISTON || id === B.STICKY_PISTON) && (world.getState(x, y, z) & 0x08)) return true;
   return false;
@@ -28,6 +35,11 @@ function immovable(world, x, y, z) {
 function breaksWhenPushed(id) {
   const b = BLOCKS[id];
   if (!b) return false;
+  // §9.3 lists hopper 85 and piston_head 81 as IMMOVABLE, and both are non-cube;
+  // the shape test below would otherwise pop them (spilling the hopper) instead
+  // of FAILing the push. Same for the non-cube block entities (spawner 141,
+  // brewing_stand 112, shulker_box 164, end_gateway 163), which drop nothing.
+  if (IMMOVABLE.has(id) || b.blockEntity) return false;
   if (b.shape !== 'cube') return true;      // wire/torch/lever/button/plate/repeater/comparator/fence/door/bed/…
   if (b.needsSupport) return true;
   if (LEAVES.has(id)) return true;
@@ -71,25 +83,29 @@ export function tryExtend(game, x, y, z, st, id) {
   if (!push) return false;                            // stay retracted; retry on next update
   const { set, endCell } = push;
 
-  // clear the end cell: a breakable block pops (drops), a fluid is deleted
+  // clear the end cell: a breakable block pops (drops), a fluid is deleted.
+  // `byPlayer` is deliberately NOT passed on any of the writes below: its only
+  // effect is chunkManager.rebuildNow, a synchronous full-chunk re-mesh per
+  // block, so a 12-block push cost ~26 of them in one tick. markDirty already
+  // ran for the same keys — the budgeted drainRemesh picks them up (§5.5).
   const endId = world.getBlock(endCell[0], endCell[1], endCell[2]);
   if (endId !== B.AIR) {
     if (breaksWhenPushed(endId)) world.popBlock(endCell[0], endCell[1], endCell[2]);
-    else world.setBlock(endCell[0], endCell[1], endCell[2], B.AIR, { byPlayer: true });
+    else world.setBlock(endCell[0], endCell[1], endCell[2], B.AIR);
   }
 
   // snapshot, clear sources silently, then write destinations with full updates
   const snap = set.map(([cx, cy, cz]) => ({ cx, cy, cz, id: world.getBlock(cx, cy, cz), st: world.getState(cx, cy, cz) }));
-  for (const s of snap) world.setBlock(s.cx, s.cy, s.cz, B.AIR, { byPlayer: true, noUpdates: true });
+  for (const s of snap) world.setBlock(s.cx, s.cy, s.cz, B.AIR, { noUpdates: true });
   for (const s of snap) {
     const dx = s.cx + dir[0], dy = s.cy + dir[1], dz = s.cz + dir[2];
-    world.setBlock(dx, dy, dz, s.id, { state: s.st, byPlayer: true });
+    world.setBlock(dx, dy, dz, s.id, { state: s.st });
     BLOCKS[s.id]?.onMoved?.(world, dx, dy, dz, s.st);
   }
 
   // place the head and extend the base
   const hx = x + dir[0], hy = y + dir[1], hz = z + dir[2];
-  world.setBlock(hx, hy, hz, B.PISTON_HEAD, { state: headStateFor(st, id), byPlayer: true });
+  world.setBlock(hx, hy, hz, B.PISTON_HEAD, { state: headStateFor(st, id) });
   world.setState(x, y, z, st | 0x08);
 
   pushEntities(game, set, hx, hy, hz, dir);
@@ -106,7 +122,7 @@ export function tryRetract(game, x, y, z, st, id) {
   // Removing the head fires its onBroken (headBroken), which would break the
   // base — so flag this as a controlled move; headBroken no-ops while set.
   game.pistonMoving = true;
-  world.setBlock(hx, hy, hz, B.AIR, { byPlayer: true });        // remove head
+  world.setBlock(hx, hy, hz, B.AIR);                            // remove head
   game.pistonMoving = false;
 
   if (id === B.STICKY_PISTON) {
@@ -115,8 +131,8 @@ export function tryRetract(game, x, y, z, st, id) {
     if (pid !== B.AIR && !isFluid(world, px, py, pz) &&
         !immovable(world, px, py, pz) && !breaksWhenPushed(pid)) {
       const pst = world.getState(px, py, pz);
-      world.setBlock(px, py, pz, B.AIR, { byPlayer: true, noUpdates: true });
-      world.setBlock(hx, hy, hz, pid, { state: pst, byPlayer: true });
+      world.setBlock(px, py, pz, B.AIR, { noUpdates: true });
+      world.setBlock(hx, hy, hz, pid, { state: pst });
       BLOCKS[pid]?.onMoved?.(world, hx, hy, hz, pst);
     }
   }
@@ -133,12 +149,15 @@ export function tryRetract(game, x, y, z, st, id) {
  */
 function pushEntities(game, set, hx, hy, hz, dir) {
   const cells = [[hx, hy, hz], ...set.map(([cx, cy, cz]) => [cx + dir[0], cy + dir[1], cz + dir[2]])];
+  // §9.3 is "1.0 × dir", once. The cells are collinear along dir, so a 0.6-wide
+  // player straddling two of them was collected twice and flung 2 blocks (and
+  // shove writes pos directly, so straight through a wall). Dedup first.
+  const hit = new Set();
   for (const [cx, cy, cz] of cells) {
     const box = new AABB(cx, cy, cz, cx + 1, cy + 1, cz + 1);
-    for (const e of game.world.getEntitiesInBox(box, e => !e.dead && e.type !== 'item')) {
-      e.moveEntity?.(dir[0], dir[1], dir[2]) ?? shove(e, dir);
-    }
+    for (const e of game.world.getEntitiesInBox(box, e => !e.dead && e.type !== 'item')) hit.add(e);
   }
+  for (const e of hit) e.moveEntity?.(dir[0], dir[1], dir[2]) ?? shove(e, dir);
 }
 function shove(e, dir) {
   e.pos.x += dir[0]; e.pos.y += dir[1]; e.pos.z += dir[2];

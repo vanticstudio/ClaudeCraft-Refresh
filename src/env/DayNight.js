@@ -69,6 +69,20 @@ const KEYS = [
 const MOON_BRIGHTNESS = [1.0, 0.75, 0.5, 0.25, 0.0, 0.25, 0.5, 0.75];
 
 const cScratch = [new THREE.Color(), new THREE.Color(), new THREE.Color()];
+// 11-END §7 — reused per-frame targets for the End's static dome colors. Sky.update
+// copies them immediately, so allocating a THREE.Color here every frame was pure
+// garbage during the dragon fight (the worst moment for the frame budget).
+const endZenith = new THREE.Color(), endHorizon = new THREE.Color();
+
+// 04 §12.6 — one shared unit box + one shared material for every lightning bolt
+// segment. strikeLightning used to allocate 4 BoxGeometry + 1 material per strike
+// and tickLightningMeshes only detached the group, so each thunderstorm leaked GPU
+// resources for the life of the page (17-SHIP §1.5 — no unbounded growth).
+const BOLT_GEO = new THREE.BoxGeometry(1, 1, 1);
+const BOLT_MAT = new THREE.MeshBasicMaterial({
+  color: 0xf4f8ff, blending: THREE.AdditiveBlending, transparent: true, opacity: 0.9,
+  depthWrite: false, fog: false,
+});
 
 function keyframeAt(dayTime, out) {
   let i = 0;
@@ -158,8 +172,16 @@ export class DayNight {
 
     if (this.flashTicks > 0) this.flashTicks--;
 
-    if (this.raining) this.snowIceLoop();
-    if (this.isThunderstorm) this.lightningLoop();
+    // 10-NETHER §13.1 / 11-END §7 — weather does not TICK in a no-sky dimension:
+    // no snow/ice conversion, no strikes (in the End the heightMap follows the
+    // island, so ungated bolts dealt 10 damage + fire mid-dragon-fight). The
+    // timer/level machine above stays global (10-NETHER §2.6 keeps weather timers
+    // global), and in-flight bolt meshes still expire below.
+    const hasSky = getDimension(this.world.activeDim)?.hasSkyLight !== false;
+    if (hasSky) {
+      if (this.raining) this.snowIceLoop();
+      if (this.isThunderstorm) this.lightningLoop();
+    }
     this.tickLightningMeshes();
   }
 
@@ -233,15 +255,14 @@ export class DayNight {
     emitSound('weather.thunder', at(x, y, z));
     // visual: white column with jogs
     const group = new THREE.Group();
-    const mat = new THREE.MeshBasicMaterial({
-      color: 0xf4f8ff, blending: THREE.AdditiveBlending, transparent: true, opacity: 0.9,
-      depthWrite: false, fog: false,
-    });
     let cx = x, cz = z;
     let prevY = y;
     for (let s = 0; s < 4; s++) {
       const nextY = y + (s + 1) * 16;
-      const seg = new THREE.Mesh(new THREE.BoxGeometry(0.3, nextY - prevY, 0.3), mat);
+      // shared unit box, scaled per segment — nothing here is per-strike, so the
+      // remove() in tickLightningMeshes has nothing left to orphan.
+      const seg = new THREE.Mesh(BOLT_GEO, BOLT_MAT);
+      seg.scale.set(0.3, nextY - prevY, 0.3);
       seg.position.set(cx, (prevY + nextY) / 2, cz);
       group.add(seg);
       cx += (w.rng() - 0.5) * 4;
@@ -345,6 +366,9 @@ export class DayNight {
     const netherLike = dim && dim.sky?.kind === 'nether';
     // 11-END §7 — static void-purple sky: its own gradient + faint fog, no day cycle.
     const endLike = dim && dim.sky?.kind === 'end';
+    // 10-NETHER §13.1 "no sunrise band, no clouds … weather does not render" /
+    // 11-END §7 — one flag for every celestial/weather feed below.
+    const noSky = !!dim && !dim.hasSkyLight;
     if (dim && !dim.hasSkyLight) {
       if (!underFluid) {
         this.fogColor.setHex((netherLike || endLike) ? dim.sky.clearColor : 0x000000);
@@ -386,20 +410,30 @@ export class DayNight {
     this.sky.update({
       camera, angle,
       // 10-NETHER §13.1 — flat fog-colored void, no sun/moon/stars in no-sky dims.
-      zenith: endLike ? new THREE.Color(dim.sky.zenith) : (underFluid || netherLike) ? this.fogColor : this.kf.zenith,
-      horizon: endLike ? new THREE.Color(dim.sky.horizon) : (underFluid || netherLike) ? this.fogColor : this.kf.horizon,
+      zenith: endLike ? endZenith.setHex(dim.sky.zenith) : (underFluid || netherLike) ? this.fogColor : this.kf.zenith,
+      horizon: endLike ? endHorizon.setHex(dim.sky.horizon) : (underFluid || netherLike) ? this.fogColor : this.kf.horizon,
       starAlpha: (netherLike || endLike) ? 0 : starBrightness(t) * (1 - this.rainLevel),
       sunAlpha: (netherLike || endLike) ? 0 : (1 - this.rainLevel),
-      sunrise: sunriseColor(t),
+      // a null sunrise hides the band (Sky.update): it is additive with fog:false at
+      // ±360 m, so ungated it blazed on the Nether/End horizon twice per game day.
+      sunrise: noSky ? null : sunriseColor(t),
       cloudTint: (0.16 + 0.84 * sunIntensity) * (1 - 0.3 * this.rainLevel),
       sunIntensity, ambient,
       sunDir: sunDir.y > 0 ? sunDir : { x: -sunDir.x, y: -sunDir.y, z: 0 },
       world: this.world,
-      rainLevel: this.rainLevel,
+      rainLevel: noSky ? 0 : this.rainLevel,   // rain.count → 0 in dim 1 / dim 2
       moonBright: this.moonBrightness(),
       isSnowAt: (x, z) => this.isSnowAtColumn(x, z),
       dtSec,
     });
+    // §13.1 — the cloud plane is parented to the scene, not to the sky group, and
+    // its .visible was never touched: it hung at y = 110 over the End's void and
+    // sliced through the Nether's high caverns (carved to y ≈ 122).
+    this.sky.clouds.visible = !noSky;
+    // 11-END §7 — the void-purple "static": the dome's grain term (Sky.js uStatic)
+    // was declared and sampled but never raised, so dim 2 rendered a perfectly
+    // smooth two-colour gradient that bands on large displays. On in the End only.
+    this.sky.setStatic(endLike ? 1 : 0);
     if (endLike) {
       // §7 — pin the End's constant scene lights (defeat the day-cycle moonlight dim).
       this.sky.sunLight.intensity = 0.12;
@@ -437,5 +471,12 @@ export class DayNight {
     this.world.skyDarken = this.computeSkyDarken(this.world.time);
   }
 
-  dispose() { this.sky.dispose(); }
+  // 17-SHIP §1.5 — drain any in-flight bolts before tearing the sky down; their
+  // geometry/material are the module-level singletons, so only the scene graph
+  // needs unwinding. Sky.dispose() frees the dome/sun/moon/star/cloud/rain rig.
+  dispose() {
+    for (const L of this.lightningMeshes) this.scene.remove(L.group);
+    this.lightningMeshes.length = 0;
+    this.sky.dispose();
+  }
 }

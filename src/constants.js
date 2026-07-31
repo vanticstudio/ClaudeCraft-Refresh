@@ -35,6 +35,12 @@ export function setRenderRadius(r) {
   return RENDER_RADIUS;
 }
 export const WORKER_COUNT = 2;
+// 01 §9 — a terrain worker that never reports `ready` (blocked Worker
+// constructor, a throw inside its init branch) used to park the player on
+// "Building terrain…" forever with nothing able to observe it. ChunkManager arms
+// this as a watchdog on initWorkers and clears it on the ready message; it is
+// deliberately generous, since a cold first generate on a slow machine is slow.
+export const WORKER_READY_TIMEOUT_MS = 20000;
 export const MAX_JOBS_IN_FLIGHT = 16;
 export const REMESH_FRAME_BUDGET_MS = 6;
 export const REMESH_FRAME_MAX = 4;

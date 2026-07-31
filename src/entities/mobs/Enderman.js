@@ -18,7 +18,7 @@ class StareDownGoal extends Goal {
     if (m.screamTicks > 0) m.screamTicks--;
     m.moveIntent = null;
     m.clearPath();
-    const p = m.world.game?.player;
+    const p = m.starePlayer ?? m.nearestPlayer();
     if (p) m.lookAt(p.pos.x, p.pos.y + p.eyeHeight, p.pos.z);
   }
 }
@@ -32,12 +32,19 @@ export class Enderman extends Mob {
     this.tall3 = true;
     this.health = this.maxHealth = 40;
     this.detectionRange = 16;      // post-aggro reacquire
+    // 05 §8.5 — a stare provokes out to 64, but §6's generic
+    // dist > detectionRange×1.5 give-up would drop that target on the same tick.
+    // The enderman's disengage rules are its own: 100-tick LOS memory, the
+    // 800-tick lost-target timer and the 1/500 daylight roll below.
+    this.giveUpRange = Infinity;
     this.attackDamage = 7;
     this.attackReach = 2.5;
     this.walkSpeed = 0.14; this.chaseSpeed = 0.30;
     this.xpValue = 5;
     this.aggro = false;
-    this.stareTicks = 0;
+    this.stareTicks = 0;           // max over the roster (drives the shake + goal)
+    this.stareBy = new Map();      // 14 line 31 — per-player stare counters
+    this.starePlayer = null;       // whoever is currently staring hardest
     this.screamTicks = 0;
     this.noLosTicks = 0;
     this.outOfReachTicks = 0;
@@ -61,11 +68,15 @@ export class Enderman extends Mob {
 
   tickEnderman() {
     const w = this.world;
-    const p = w.game?.player;
 
-    // stare detection (05 §8.5) — run every tick within 64
-    if (p && !p.dead && !p.creative) {          // 18 §7.1 — no stare-aggro in creative
-      const ex = this.pos.x, ey = this.pos.y + this.height * 0.9, ez = this.pos.z;
+    // stare detection (05 §8.5) — run every tick within 64. 14-MULTIPLAYER line 31
+    // (AMENDS 05 §6): "Enderman stare-trigger ... test each player independently",
+    // so the 5-tick counter is per player and the first to reach 5 provokes.
+    const ex = this.pos.x, ey = this.pos.y + this.height * 0.9, ez = this.pos.z;
+    let topTicks = 0, topPlayer = null;
+    const roster = this.playerRoster();
+    for (const p of roster) {
+      if (!p || p.dead || p.creative) { this.stareBy.delete(p); continue; }   // 18 §7.1 — no stare-aggro in creative
       const px = p.pos.x, py = p.pos.y + p.eyeHeight, pz = p.pos.z;
       const dx = ex - px, dy = ey - py, dz = ez - pz;
       const d = Math.hypot(dx, dy, dz);
@@ -76,8 +87,10 @@ export class Enderman extends Mob {
         const dot = (vx * dx + vy * dy + vz * dz) / d;
         staring = dot > 1 - 0.025 / d && hasLineOfSight(w, px, py, pz, ex, ey, ez);
       }
-      this.stareTicks = staring ? this.stareTicks + 1 : 0;
-      if (this.stareTicks >= 5 && !this.aggro) {
+      const n = staring ? (this.stareBy.get(p) ?? 0) + 1 : 0;
+      if (n > 0) this.stareBy.set(p, n); else this.stareBy.delete(p);
+      if (n > topTicks) { topTicks = n; topPlayer = p; }
+      if (n >= 5 && !this.aggro) {
         this.aggro = true;
         this.screamTicks = 10;
         this.target = p;
@@ -86,6 +99,17 @@ export class Enderman extends Mob {
         emitSound('mob.enderman.scream', at(this.pos.x, this.pos.y + this.height / 2, this.pos.z));
       }
     }
+    // Prune players that left the roster so the Map cannot pin dead references.
+    // UNCONDITIONAL: the old `size > roster.length` guard could not fire in the
+    // common case — one departed starer out of two players leaves size 1 against
+    // roster 1 — so the removed Player (and, through Player.world, the entire
+    // World it belonged to) stayed reachable from this enderman for its whole
+    // life. The map holds at most one entry per player, so the walk is trivial.
+    if (this.stareBy.size) {
+      for (const p of [...this.stareBy.keys()]) if (!roster.includes(p)) this.stareBy.delete(p);
+    }
+    this.stareTicks = topTicks;
+    this.starePlayer = topPlayer;
 
     // water / rain hurt + teleport (05 §5)
     const inRain = w.isRainingAt(this.pos.x, Math.floor(this.pos.y + this.height), this.pos.z);
@@ -215,6 +239,11 @@ export class Enderman extends Mob {
   }
 
   animateExtra() {
+    // 05 §16.3 melee swing: active arm rotX −120° → 0 over 6 ticks. Applied here
+    // (after animate()) so it overrides the walk-cycle arm pose.
+    if (this.attackAnim < 6 && this.parts?.armR) {
+      this.parts.armR.rotation.x -= Math.sin(this.attackAnim / 6 * Math.PI) * (120 * Math.PI / 180);
+    }
     // shake while stared-at / screaming; jaw texture while aggro (05 §16.3)
     if (this.object3d && (this.stareTicks > 0 || this.screamTicks > 0)) {
       this.object3d.position.x += (Math.random() - 0.5) * 0.06;

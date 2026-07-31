@@ -5,6 +5,17 @@ import { Entity, LivingEntity } from './Entity.js';
 import { BLOCKS } from '../registry/blocks.js';
 import { makeAtlasMaterial } from './ItemEntity.js';
 
+// 01 §17.2 — one shared box for every blaze fireball (same contract as models.js
+// boxGeo): three frees a geometry's GL buffers only on dispose(), and a blaze
+// burst spawns 3 per attack, so a per-instance BoxGeometry grew
+// renderer.info.memory.geometries monotonically. `shared` opts it out of
+// EntityManager's disposal sweep.
+let GEO = null;
+function fireballGeo() {
+  if (!GEO) { GEO = new THREE.BoxGeometry(0.3, 0.3, 0.3); GEO.userData.shared = true; }
+  return GEO;
+}
+
 export class SmallFireball extends Entity {
   constructor(world, x, y, z, dx, dy, dz, owner) {
     super(world, x, y, z);
@@ -35,7 +46,7 @@ export class SmallFireball extends Entity {
   }
 
   buildMesh() {
-    const m = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.3, 0.3), makeAtlasMaterial());
+    const m = new THREE.Mesh(fireballGeo(), makeAtlasMaterial());
     m.material.userData?.baseColor?.setRGB(1.0, 0.7, 0.15);
     const g = new THREE.Group(); g.add(m); return g;
   }

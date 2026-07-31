@@ -158,7 +158,6 @@ export class Hud {
     this.pips(this.el.armor, 10);
     this.pips(this.el.absorption, 10);   // 09-POTIONS §3.7 — yellow row above hearts
     this.pips(this.el.air, 10);
-    this.damageFlash = 0;
     this.nameFlash = 0;
     this.toastTimer = 0;
   }
@@ -172,9 +171,28 @@ export class Hud {
   }
 
   onDamage() {
-    this.damageFlash = 10;
+    // The red vignette is wall-clock driven, not tick driven — there is no
+    // damageFlash counter to decrement (the field was write-only and is gone).
     this.el.vignette.style.opacity = '1';
     setTimeout(() => { this.el.vignette.style.opacity = '0'; }, 250);
+  }
+
+  /**
+   * 03 §23 — pickup feedback: pulse the hotbar slot the stack landed in.
+   * ItemEntity calls this through `?.` on every merge; the method did not exist,
+   * so the flash had been a silent no-op for the whole session.
+   */
+  flashPickup(stack) {
+    const p = this.game.player;
+    if (!stack || !p) return;
+    for (let i = 0; i < 9; i++) {
+      if (p.inventory[i]?.id !== stack.id) continue;
+      const d = this.slots[i];
+      d.classList.remove('picked');
+      void d.offsetWidth;              // restart the animation on a repeat pickup
+      d.classList.add('picked');
+      return;
+    }
   }
 
   onHotbarChange() {
@@ -230,6 +248,11 @@ export class Hud {
     this.el.hunger.style.display = vis;
     this.el.xpBar.style.display = vis;
     if (this.creative) this.el.air.style.display = 'none';
+    // The absorption row is a HEALTH row, so it follows the hearts: update()'s
+    // creative early-out never rewrites it, and it would otherwise stay frozen
+    // on whatever the last survival frame drew. `this.cache = {}` below re-renders
+    // it on the way back to survival.
+    if (this.creative) this.el.absorption.style.display = 'none';
     this.el.badge.style.display = this.creative ? 'block' : 'none';
     // The dirty cache would otherwise suppress the re-render on the way back:
     // update() compares against the value it last WROTE, which is still the
@@ -286,6 +309,12 @@ export class Hud {
     // 08 §11 — advance the shared glint frame at 4 Hz (every 5 ticks at 20 TPS).
     glintFrame.n = ((this.game.world?.time ?? 0) / 5) | 0;
 
+    // 09-POTIONS §6.1 — the effect stack is NOT one of the four rows AMENDS 03
+    // §23 hides in creative, and effects keep ticking there (Player.tick calls
+    // tickEffects unconditionally). Above the early-out, or the icons freeze on
+    // their last survival frame and never expire.
+    this.updateEffects(p);
+
     // 18 §4.3 — the survival rows are hidden in creative; skip their writes
     // entirely, or update() would immediately undo rebuild()'s display:none
     // (the air row in particular sets its own display every frame).
@@ -331,8 +360,6 @@ export class Hud {
           ? 'hue-rotate(90deg)' : v >= 1 ? 'none' : 'grayscale(1) brightness(0.4)';
       }
     }
-
-    this.updateEffects(p);
 
     // armor
     const ap = p.armorPoints();

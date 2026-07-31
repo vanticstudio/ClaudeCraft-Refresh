@@ -141,7 +141,14 @@ function originOf(x, y, z) { return fireOrigins.get(posKey(x, y, z)); }
  */
 export function placeFire(world, x, y, z, age = 0, origin) {
   if (y < 0 || y > 127) return false;
-  world.setBlock(x, y, z, B.FIRE, { state: Math.min(15, age) & STATE_NIBBLE });
+  // §6.4 — register ONLY if the write landed. setBlock returns false for a chunk
+  // that is resident but still REQUESTED, while getBlock reads AIR there, so
+  // §2.6 could call placeFire for a cell it cannot write: no fire appeared, but
+  // the phantom entry ate MAX_ACTIVE budget and only forgetFireInChunk could reap
+  // it. igniteAt propagated the bogus `true`, spending flint-and-steel durability
+  // for nothing. Every call site targets AIR or a fuel block, so setBlock's
+  // no-op return (same id AND same state) cannot fire here.
+  if (!world.setBlock(x, y, z, B.FIRE, { state: Math.min(15, age) & STATE_NIBBLE })) return false;
   fireOrigins.set(posKey(x, y, z), origin ?? { ox: x, oz: z });
   return true;
 }

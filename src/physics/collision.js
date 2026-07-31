@@ -7,13 +7,11 @@ const EPS = 1e-7;
 
 export { doorBox, FACING_DIR };
 
-// Local collision box for a cell, or null when non-collidable.
-export function getCellBox(id, state) {
-  const b = BLOCKS[id];
-  if (!b || !b.collidable) return null;
-  if (b.collisionBox === 'door') return doorBox(state);
-  return b.collisionBox || null;   // null = unit cube (UNIT_BOX semantics)
-}
+// NOTE: `getCellBox` used to live here as a shared cell-box lookup. It is gone
+// because it had no callers and could not gain one safely: it returns null both
+// for a non-collidable block AND for a collidable full cube, while collideAxis /
+// collidesAny below must distinguish those two cases (`continue` vs the unit
+// box). Folding it in as written would make every full cube non-collidable.
 
 function axisCoord(axis, x, y, z) { return axis === 0 ? x : axis === 1 ? y : z; }
 
@@ -64,22 +62,24 @@ export function moveEntity(world, entity, dx, dy, dz) {
   entity.setPosFromAABB(box);
   entity.onGround = dy < 0 && cdy !== dy;
   entity.hitWall = cdx !== dx || cdz !== dz;
-  entity.hitCeiling = dy > 0 && cdy !== dy;
   if (cdx !== dx) entity.vel.x = 0;
   if (cdy !== dy) entity.vel.y = 0;   // fall-damage hook reads pre-zero vel upstream
   if (cdz !== dz) entity.vel.z = 0;
   return { cdx, cdy, cdz };
 }
 
-// Sub-stepped move for fast entities (projectiles): ≤ 0.5 m per segment.
-export function moveEntitySubstepped(world, entity, dx, dy, dz) {
-  const dist = Math.max(Math.abs(dx), Math.abs(dy), Math.abs(dz));
-  const steps = Math.max(1, Math.ceil(dist / 0.5));
-  for (let i = 0; i < steps; i++) {
-    moveEntity(world, entity, dx / steps, dy / steps, dz / steps);
-    if (entity.hitWall || entity.onGround || entity.hitCeiling) break;
-  }
-}
+// 01 §12's `ceil(dist / 0.5)` projectile sub-step lived here as
+// `moveEntitySubstepped` and is removed: it never had a caller. Every projectile
+// advances with `pos += vel` and resolves collisions itself, but NOT uniformly:
+//   - Arrow, ThrownProjectile ('egg'|'snowball'|'ender_pearl') and ThrownPotion
+//     sweep the segment with `raycastBlocks`, which is exact rather than sampled
+//     and genuinely supersedes the AABB sub-step.
+//   - GhastFireball and WitherSkull (independent classes, NOT ThrownProjectile
+//     subclasses) point-sample `getBlock` at the destination only, so they can
+//     tunnel through a thin wall at high speed.
+//   - EyeOfEnder does no block collision at all — by design, it flies through
+//     terrain to the stronghold.
+// Logged in DEVIATIONS.md.
 
 // --- Cell queries used by movement code (03/05) ---
 

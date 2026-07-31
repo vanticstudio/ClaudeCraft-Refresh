@@ -10,8 +10,13 @@ const BLAZE_POWDER = idOf('blaze_powder');
 /** The result of applying `ingredientName` to one bottle stack, or null. Returns
  *  { id, potionId } — id changes only for the gunpowder/dragon_breath form swaps. */
 export function brewResult(bottle, ingredientName) {
-  if (!bottle || !bottle.tags?.potionId) return null;
-  const pid = bottle.tags.potionId;
+  if (!bottle || (bottle.id !== POTION && bottle.id !== SPLASH && bottle.id !== LINGERING)) return null;
+  // §12.1 — an UNTAGGED bottle IS a water bottle. Rejecting it made the whole
+  // brew graph unreachable in creative: the palette mints bare stacks (no tags),
+  // the Brewing tab hands them out and the stand's bottle slots accept them, so
+  // canBrew was permanently false. drinkPotion already defaults the same way.
+  // The id gate keeps tipped arrows (which also carry tags.potionId) out.
+  const pid = bottle.tags?.potionId ?? 'water';
   if (ingredientName === 'gunpowder') return bottle.id === POTION ? { id: SPLASH, potionId: pid } : null;
   if (ingredientName === 'dragon_breath') return bottle.id === SPLASH ? { id: LINGERING, potionId: pid } : null;
   const np = mix(pid, ingredientName);          // effect / redstone / glowstone / fermented / nether_wart

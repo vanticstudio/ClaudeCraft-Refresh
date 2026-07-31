@@ -1,7 +1,7 @@
 // Procedural 16×16 tile painters (01 §7, 06 §4/§8). Pure canvas-2d: no three.js,
 // no DOM at module level. Every painter: (ctx, x0, y0, rng) painting one tile at
 // (x0, y0); rng is pre-seeded per tile name so output is deterministic.
-import { mulberry32 } from '../math/rng.js';
+import { mulberry32, xmur3 } from '../math/rng.js';
 
 // ---------------------------------------------------------------- color utils
 function hexToRgb(hex) {
@@ -18,6 +18,10 @@ function scaleHex(hex, f) {
 function shadeHex(hex, f) {
   const [r, g, b] = scaleHex(hex, f);
   return css(r, g, b);
+}
+function rgbHex(r, g, b) {
+  const h = v => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0');
+  return '#' + h(r) + h(g) + h(b);
 }
 function lerpHex(h1, h2, t) {
   const a = hexToRgb(h1), b = hexToRgb(h2);
@@ -561,8 +565,37 @@ P.bell = (c, x, y, r) => {
   rect(c, x, y, 4, 10, 8, 2, '#f2c94c'); rect(c, x, y, 6, 12, 4, 2, '#c99a2a');  // rim + clapper
   rect(c, x, y, 7, 1, 2, 2, '#7a5a20');                    // hanger
 };
-P.composter_top = (c, x, y, r) => { planks(c, x, y, r, '#8a6a3a'); rect(c, x, y, 3, 3, 10, 10, '#4a3320'); noise(c, x, y, r, '#3a2a15', 3); };
+// 12-VILLAGES §12.2 — the composter's fill level 0–8 is VISIBLE, so both faces
+// are baked once per level (blocks.js tilesFor picks the variant from the state
+// nibble). Top: "open rim oak_planks + #3f5a20 compost fill square sized to
+// level 0–8". Side: "oak_planks frame + inner #5a4a2a compost, level-tinted
+// greener as fill rises". Level 8 (READY) is the greenest / fullest.
+const COMPOST_EMPTY = '#5a4a2a', COMPOST_FULL = '#3f5a20';
+// The noise() helper is a FULL-tile grain pass, so it has to run before the rim
+// is drawn or it erases it (the pre-level painters ran it last and rendered as a
+// flat dark square).
+P.composter_top = (c, x, y, r) => { noise(c, x, y, r, '#3a2a15', 3); planks(c, x, y, r, '#8a6a3a'); rect(c, x, y, 3, 3, 10, 10, '#4a3320'); };
 P.composter_side = (c, x, y, r) => { planks(c, x, y, r, '#8a6a3a'); rect(c, x, y, 0, 5, 16, 2, '#6b4f2a'); rect(c, x, y, 0, 11, 16, 2, '#6b4f2a'); };
+for (let lvl = 0; lvl <= 8; lvl++) {
+  const t = lvl / 8;
+  const [cr, cg, cb] = lerpHex(COMPOST_EMPTY, COMPOST_FULL, t);
+  const compost = rgbHex(cr, cg, cb), compostLo = shadeHex(compost, 0.82);
+  P['composter_top_' + lvl] = (c, x, y, r) => {
+    P.composter_top(c, x, y, r);
+    if (!lvl) return;
+    const s = 2 + Math.round(t * 8);              // 3..10 px square inside the 10px rim
+    const o = 8 - (s >> 1);
+    rect(c, x, y, o, o, s, s, compost);
+    for (let i = 0; i < s; i++) px(c, x, y, o + r() * s, o + r() * s, compostLo);
+  };
+  P['composter_side_' + lvl] = (c, x, y, r) => {
+    P.composter_side(c, x, y, r);
+    if (!lvl) return;
+    const h = Math.max(1, Math.round(t * 10));    // inner panel grows upward from the floor
+    rect(c, x, y, 3, 14 - h, 10, h, compost);
+    for (let i = 0; i < h; i++) px(c, x, y, 3 + r() * 10, 14 - h + r() * h, compostLo);
+  };
+}
 P.barrel_top = (c, x, y, r) => { planks(c, x, y, r, '#9a7846'); border(c, x, y, '#5a5a5a'); rect(c, x, y, 6, 6, 4, 4, '#3a2a15'); };
 P.barrel_side = (c, x, y, r) => { planks(c, x, y, r, '#8a6a3a'); rect(c, x, y, 0, 2, 16, 2, '#4a4a4a'); rect(c, x, y, 0, 12, 16, 2, '#4a4a4a'); };
 P.lectern_top = (c, x, y, r) => { planks(c, x, y, r, '#a76e35'); rect(c, x, y, 3, 4, 5, 8, '#e8e0c8'); rect(c, x, y, 8, 4, 5, 8, '#d8d0b8'); px(c, x, y, 7, 4, '#6b4f2a'); };
@@ -653,10 +686,40 @@ P.furnace_side = (c, x, y, r) => { noise(c, x, y, r, '#7f7f7f', 8); border(c, x,
 P.furnace_top = (c, x, y, r) => { noise(c, x, y, r, '#7f7f7f', 8); border(c, x, y, '#565656'); };
 
 // ============ 07-REDSTONE §14 textures ============
-// Wire tile: a grayscale dust line (power-tint applied per-cell by the mesher via
-// own-cell light in this build; §4.5's per-power atlas variants are simplified to
-// one tinted tile — see DEVIATIONS).
-P.dust_line_0 = (c, x, y, r) => { noise(c, x, y, r, '#b0b0b0', 12); rect(c, x, y, 0, 6, 16, 4, '#c02020'); };
+// Dust: two shapes (dot 6×6 centred, line 4 px wide full-width) × 16 power
+// variants, each the §14 grayscale `noise(#b0b0b0, 12)` multiplied by the §4.5
+// brightness ramp at BUILD time — the mesher just picks the variant by state
+// power (bits0–3), so a power change is a pure UV swap. Only the shape pixels
+// are painted; the rest of the tile stays transparent so the cutout alpha test
+// trims the mesher's sub-rect quads (an arm samples a 5×6 px window out of a
+// 4 px band, the surround must vanish). The band is a constant 4 px centred on
+// the tile's cross-axis with no directional motif, so any sub-window along its
+// length reads the same way round.
+const DUST_GRAY = '#b0b0b0';
+// §4.5 ramp for power p (f = p/15) folded into the base grey; grain() then
+// applies its per-pixel factor on top, which is the same as tinting afterwards.
+function dustHex(p) {
+  const f = p / 15;
+  const [g0] = hexToRgb(DUST_GRAY);
+  return rgbHex(g0 * (0.4 + 0.6 * f),
+                g0 * Math.max(0, 0.7 * f * f - 0.5),
+                g0 * Math.max(0, 0.6 * f * f - 0.7));
+}
+// §14 is ONE grayscale texture × 16 tints, so all 32 dust tiles must share a
+// single grain field: the per-tile-name rng the atlas hands in is deliberately
+// ignored (it would give every power its own noise, breaking the ramp's
+// monotonicity and making the centre dot mismatch the arms it butts against).
+const DUST_SEED = xmur3('dust')();
+function dustShape(c, x, y, p, sx, sy, sw, sh) {
+  c.save();
+  c.beginPath(); c.rect(x + sx, y + sy, sw, sh); c.clip();
+  noise(c, x, y, mulberry32(DUST_SEED), dustHex(p), 12);
+  c.restore();
+}
+for (let p = 0; p < 16; p++) {
+  P['dust_dot_' + p] = (c, x, y) => dustShape(c, x, y, p, 5, 5, 6, 6);
+  P['dust_line_' + p] = (c, x, y) => dustShape(c, x, y, p, 0, 6, 16, 4);
+}
 P.redstone_torch = (c, x, y) => {
   rect(c, x, y, 7, 6, 2, 10, '#6b4f2a');            // stick
   rect(c, x, y, 6, 3, 4, 3, '#ff3b3b'); rect(c, x, y, 6, 5, 4, 1, '#7a1010');   // lit tip
@@ -719,13 +782,53 @@ P.ladder = (c, x, y) => {
   for (const ry of [2, 7, 12]) rect(c, x, y, 2, ry, 12, 2, '#96713e');
 };
 P.snow = (c, x, y, r) => noise(c, x, y, r, '#f6fbfb', 3);
+// 06 §4 — ice. The 0.8 globalAlpha is load-bearing and deliberate: ice is the
+// only translucent full cube, and the water/sea floor must read through it.
+// Overdrawn texels composite to 0.96, which is exactly what makes a fissure
+// read as denser, whiter ice rather than a painted line.
+//
+// The recipe used to be fine noise plus two straight 6-px anti-diagonal runs of
+// #e8f4ff. Those put every tile's marks on the global anti-diagonals x+y ≡ 12
+// and ≡ 6 (mod 16), so a frozen ocean grew endless dashed diagonal lines
+// instead of cracks — the "a little off" look. Now: the same fine coherent
+// grain (deliberately fine — wide grain cells give the tile a soft corner-to-
+// corner gradient, which over a frozen ocean reads as a 1-block GRID), three
+// short seeded random-walk fissures that never line up tile-to-tile, and two
+// darker trapped bubbles for depth. Everything is inset 2 px so no mark touches
+// a tile edge and chains into its neighbour. Low contrast throughout: the sheet
+// should read as ice, not as a pattern.
+//
+// The three fissure seeds are STRATIFIED, not free: a frozen ocean is one 16×16
+// tile repeated on a 1-block grid, so any clustering in the tile repeats as a
+// conspicuous glyph. Free `3 + r()*10` starts put all three walks in one corner
+// (rendered and rejected). One seed per quadrant of a 2×2 grid, with the unused
+// quadrant chosen by the rng, spreads the marks and keeps the repeat reading as
+// texture. QUAD origins are inset so a 4–6 step walk stays inside 2..13.
+const ICE_QUAD = [[2, 2], [9, 2], [2, 9], [9, 9]];
 P.ice = (c, x, y, r) => {
   c.save(); c.globalAlpha = 0.8;
-  noise(c, x, y, r, '#9ecdfb', 5);
-  for (let i = 0; i < 6; i++) {
-    px(c, x, y, 3 + i, 9 - i, '#e8f4ff');
-    px(c, x, y, 8 + i, 14 - i, '#e8f4ff');
+  noise(c, x, y, r, '#9ecdfb', 4);
+  // 8-neighbour walk that turns by ±45° and REFLECTS off the inset bounds —
+  // clamping instead would let a walk slide along the bound and lay down a
+  // straight axis-aligned run, i.e. the same chaining defect in a new direction.
+  const D8 = [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]];
+  const skip = Math.floor(r() * 4);
+  for (let i = 0, q = 0; i < 3; i++, q++) {
+    if (q === skip) q++;
+    const [qx, qz] = ICE_QUAD[q];
+    let fx = qx + Math.floor(r() * 5), fy = qz + Math.floor(r() * 5);
+    let d = Math.floor(r() * 8);
+    const len = 4 + Math.floor(r() * 3);
+    for (let s = 0; s < len; s++) {
+      px(c, x, y, fx, fy, s === 0 ? '#dcedff' : '#cbe3fb');
+      if (r() < 0.4) d = (d + (r() < 0.5 ? 1 : 7)) & 7;
+      fx += D8[d][0]; fy += D8[d][1];
+      if (fx < 2 || fx > 13) { fx = Math.max(2, Math.min(13, fx)); d = (d + 4) & 7; }
+      if (fy < 2 || fy > 13) { fy = Math.max(2, Math.min(13, fy)); d = (d + 4) & 7; }
+    }
   }
+  px(c, x, y, 2 + r() * 12, 2 + r() * 12, '#82b5e7');
+  px(c, x, y, 2 + r() * 12, 2 + r() * 12, '#82b5e7');
   c.restore();
 };
 P.cactus_side = (c, x, y, r) => {

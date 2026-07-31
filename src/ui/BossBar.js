@@ -12,7 +12,11 @@ export class BossBar {
 
   add(id, { name, color }) {
     let b = this.bars.get(id);
-    if (b) { b.name = name; b.color = color; b.removing = false; return b; }
+    // Re-add of a bar mid-fade: clearing `removing` alone leaves the element on
+    // whatever opacity update() had already decremented it to (the Wither drops
+    // and re-adds its bar across the 128-block range edge), so the bar comes back
+    // permanently translucent and dims further on every crossing.
+    if (b) { b.name = name; b.color = color; b.removing = false; b.el.style.opacity = '1'; return b; }
     const el = document.createElement('div');
     el.className = 'boss-bar';
     el.innerHTML = `<div class="bb-name"></div><div class="bb-track"><div class="bb-fill"></div></div>`;

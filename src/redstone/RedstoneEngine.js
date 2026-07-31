@@ -13,7 +13,7 @@
 import { BLOCKS, B } from '../registry/blocks.js';
 import { FACE6_DIR, FACE6_OPP } from './dirs.js';
 import { conductive, dustInjection, obsFace } from './power.js';
-import { dustGraphNeighbors, dustOutputDirs } from './dust.js';
+import { dustGraphNeighbors } from './dust.js';
 
 const MAX_NET_CELLS = 1024;             // per-network BFS cap (§5.2)
 const MAX_NET_SOLVES_PER_TICK = 256;    // networks solved before carry-over (§5.2)
@@ -30,6 +30,7 @@ export class RedstoneEngine {
     this._solving = false;              // re-entrancy guard for solvePending
     this._tickSolves = 0;               // §5.2 budget accumulates across the tick
     this._tickCells = 0;
+    this._warnedTrunc = false;          // MAX_NET_CELLS warn: at most once per tick
     // 07 §5.5 / CLAUDE.md §6 — total solver time spent in the CURRENT tick, in
     // ms. Accumulated by solvePending (which runs from several entry points per
     // tick, not just drainAtTickStart) and published to the F3 overlay, where
@@ -41,6 +42,7 @@ export class RedstoneEngine {
   drainAtTickStart() {
     this._tickSolves = 0;               // §5.2 caps are PER-TICK, reset here
     this._tickCells = 0;
+    this._warnedTrunc = false;
     this.tickSolveMs = 0;
     if (this.carry.length) {
       for (const [x, y, z] of this.carry) this.queueNetwork(x, y, z);
@@ -104,13 +106,29 @@ export class RedstoneEngine {
    * a change at (x,y,z): the 6 face neighbours, plus (second-order) the 6 face
    * neighbours of each conductive face-neighbour (a powered block "reaches
    * through" one block, replacing vanilla's update shape without QC).
+   *
+   * The 6+36 raw pokes cover at most 25 distinct cells — the origin alone is a
+   * face neighbour of every conductive neighbour, so it was re-poked up to 6
+   * extra times and each duplicate re-ran a full isActivated scan. `seen` is
+   * LOCAL, not a shared field: fanOut is re-entrant (poke → neighborUpdate →
+   * checkSupport → popBlock → setBlock → onCellChanged → fanOut), and a nested
+   * call would otherwise clear the outer call's set.
+   *
+   * `skip` (optional) is a key set of dust cells NOT to re-seed — see poke().
    */
-  fanOut(x, y, z) {
+  fanOut(x, y, z, skip) {
+    const seen = new Set();
+    const once = (px, py, pz) => {
+      const k = keyOf(px, py, pz);
+      if (seen.has(k)) return;
+      seen.add(k);
+      this.poke(px, py, pz, skip);
+    };
     for (const [dx, dy, dz] of FACE6_DIR) {
       const nx = x + dx, ny = y + dy, nz = z + dz;
-      this.poke(nx, ny, nz);
+      once(nx, ny, nz);
       if (conductive(this.world, nx, ny, nz)) {
-        for (const [ex, ey, ez] of FACE6_DIR) this.poke(nx + ex, ny + ey, nz + ez);
+        for (const [ex, ey, ez] of FACE6_DIR) once(nx + ex, ny + ey, nz + ez);
       }
     }
   }
@@ -119,11 +137,26 @@ export class RedstoneEngine {
    * Re-poll one cell reached by the fan-out. A wire cell is queued for network
    * re-solve (so a change to an adjacent conductive block's strong power
    * re-propagates the dust); any other block runs its neighborUpdate reaction.
+   *
+   * `skip` holds the cells of the network currently being solved. Dust never
+   * feeds dust injection — §3.4-1 rule (a) runs with skipDust, and emitInto for
+   * a wire always returns s:0 so rule (b) is dust-independent — so re-seeding
+   * them from step 5 was a pure no-op re-solve per changed cell.
    */
-  poke(x, y, z) {
+  poke(x, y, z, skip) {
     if (y < 0 || y > 127) return;
     const id = this.world.getBlock(x, y, z);
-    if (id === B.REDSTONE_WIRE) { this.queueNetwork(x, y, z); return; }
+    if (id === B.REDSTONE_WIRE) {
+      // 07 §4.1 — dust needs a solid support, and this branch returns before the
+      // generic neighborUpdate below ever runs. Without the explicit call an
+      // already-floating cell (an older save, or a support broken by an edit
+      // that only fans out) could never self-heal. The hook returns true when it
+      // popped, in which case the cell is gone and there is nothing to re-solve.
+      const st = this.world.getState(x, y, z);
+      if (BLOCKS[id]?.neighborUpdate?.(this.world, x, y, z, st)) return;
+      if (!skip || !skip.has(keyOf(x, y, z))) this.queueNetwork(x, y, z);
+      return;
+    }
     BLOCKS[id]?.neighborUpdate?.(this.world, x, y, z, this.world.getState(x, y, z));
   }
 
@@ -190,18 +223,30 @@ export class RedstoneEngine {
     const stack = [[sx, sy, sz]];
     index.set(keyOf(sx, sy, sz), 0);
     cells.push([sx, sy, sz]);
+    let truncated = false;
     while (stack.length) {
       const [x, y, z] = stack.pop();
       for (const [nx, ny, nz] of dustGraphNeighbors(world, x, y, z)) {
         const k = keyOf(nx, ny, nz);
         if (index.has(k)) continue;
         if (world.getBlock(nx, ny, nz) !== B.REDSTONE_WIRE) continue;
-        if (cells.length >= MAX_NET_CELLS) { console.warn('[redstone] network > 1024 cells; truncated'); break; }
+        if (cells.length >= MAX_NET_CELLS) { truncated = true; break; }
         index.set(k, cells.length);
         cells.push([nx, ny, nz]);
         stack.push([nx, ny, nz]);
       }
+      if (truncated) break;                          // `break` above left only the inner loop
     }
+    // CLAUDE.md §6 — the F3 overlay and the startup banner are the only allowed
+    // output. Warning inside the neighbour loop printed once per frontier cell.
+    if (truncated && !this._warnedTrunc) {
+      this._warnedTrunc = true;
+      console.warn('[redstone] network > ' + MAX_NET_CELLS + ' cells at ' + sx + ',' + sy + ',' + sz + '; truncated');
+    }
+    // §5.2 — one solve is a fixpoint for EVERY seed inside this network, so drop
+    // the rest now. seedAround queues up to 15 cells per change, almost always
+    // all in the same network; without this each ran its own full BFS+injection.
+    for (const k of index.keys()) this.pending.delete(k);
 
     // 2. injection per cell + 3. max-decay BFS (bucket 15..1)
     const n = cells.length;
@@ -241,13 +286,15 @@ export class RedstoneEngine {
     // 5. notify targets of every changed dust cell (block below, pointed cells,
     // adjacent components). Observers are handled by World.setState → onStateChanged
     // above. May queue further networks → same pass.
+    // fanOut's first ring is FACE6_DIR, which already contains [0,-1,0] (the
+    // block below, a weak target of the dust) and all four horizontals (every
+    // cell dustOutputDirs can name) — the two extra poke passes that used to
+    // live here were a strict subset. `index` stops the fan-out re-seeding the
+    // very network we just solved, which cost one redundant full solve per
+    // changed cell and starved the per-tick budget.
     for (const i of changed) {
       const [x, y, z] = cells[i];
-      this.fanOut(x, y, z);
-      // the block directly below is a weak target of the dust
-      this.poke(x, y - 1, z);
-      // cells the dust points into
-      for (const [dx, , dz] of dustOutputDirs(world, x, y, z)) this.poke(x + dx, y, z + dz);
+      this.fanOut(x, y, z, index);
     }
     return n;
   }

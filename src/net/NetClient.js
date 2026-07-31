@@ -3,7 +3,7 @@
 // renders everything else from host snapshots. Clients never own world data.
 import { STATE, CHUNK_CELLS, MS_PER_TICK, JOIN_RADIUS } from '../constants.js';
 import {
-  MSG, PROTO_VERSION, RELAY_VERSION, BTN,
+  MSG, PROTO_VERSION, RELAY_VERSION, BTN, EFLAG, PROFESSION_LIST,
   encodeJson, decodeJson, encodeInput, decodeSnapshot, encodeBlockEdit,
   decodeBlockSet, decodeChunkData, encodePing, decodePong,
 } from './protocol.js';
@@ -38,6 +38,7 @@ export class NetClient {
     this.lastPingAt = 0;
     this.onError = null;               // (reason) set by netMenus
     this.stats = { in: 0, out: 0, inBytes: 0, outBytes: 0, snapSize: 0, corrections: 0 };
+    this._deathTimers = new Set();     // §3.3 pending death-anim removals
     this._statWindow = 0;
   }
 
@@ -48,9 +49,14 @@ export class NetClient {
     ws.binaryType = 'arraybuffer';
     this.ws = ws;
     ws.onopen = () => this._sendControl({ t: 'join', code: this.code, v: RELAY_VERSION });
+    // 14 §16 — a proxy error page or a truncated frame must not throw out of the
+    // socket handler and leave the connection half-configured. The guard covers
+    // the Uint8Array construction too; _onData keeps its own inner try.
     ws.onmessage = ev => {
-      if (typeof ev.data === 'string') this._onControl(JSON.parse(ev.data));
-      else this._onData(new Uint8Array(ev.data));
+      try {
+        if (typeof ev.data === 'string') this._onControl(JSON.parse(ev.data));
+        else this._onData(new Uint8Array(ev.data));
+      } catch (e) { console.warn('[net] bad relay frame', e); }
     };
     ws.onclose = () => { if (this.phase !== 'closed') this._fail('lost'); };
     ws.onerror = () => {};
@@ -70,6 +76,12 @@ export class NetClient {
 
   _clearHandshake() { clearTimeout(this._hsTimer); this._hsTimer = null; }
 
+  /** §3.3 — drop every pending death-anim removal (see _onEntityDespawn). */
+  _clearDeathTimers() {
+    for (const t of this._deathTimers) clearTimeout(t);
+    this._deathTimers.clear();
+  }
+
   _sendControl(obj) { try { this.ws.send(JSON.stringify(obj)); } catch {} }
   _send(u8) { try { this.ws.send(u8); this.stats.out++; this.stats.outBytes += u8.length; } catch {} }
   sendJson(obj) { this._send(encodeJson(obj)); }
@@ -78,6 +90,7 @@ export class NetClient {
     if (this.phase === 'closed') return;
     this.phase = 'closed';
     this._clearHandshake();
+    this._clearDeathTimers();
     try { this.ws?.close(); } catch {}
     this.onError?.(reason);
   }
@@ -85,6 +98,7 @@ export class NetClient {
   disconnect() {
     this.phase = 'closed';
     this._clearHandshake();
+    this._clearDeathTimers();
     try { this.ws?.close(); } catch {}
   }
 
@@ -129,7 +143,7 @@ export class NetClient {
       case 'playerList': this._onPlayerList(m); break;
       case 'equip': this._onEquip(m); break;
       case 'hurt': this._onHurt(m); break;
-      case 'sound': g.net?.playRemoteSound?.(m); this._playSound(m); break;
+      case 'sound': this._playSound(m); break;
       case 'chat': g.ui?.chat?.addLine(m.from, m.text); break;
       case 'timeSync': this._onTimeSync(m); break;
       case 'sleepStatus': g.ui?.chat?.setSleepStatus?.(m.sleeping, m.total); break;
@@ -148,7 +162,13 @@ export class NetClient {
     this.phase = 'welcomed';
     this.welcome = m;
     for (const p of m.players || []) this.players.set(p.playerId, { ...p });
-    this.game.startClientWorld(m, this);
+    // 14 §2.2 — a throw in world construction (a malformed `welcome.you` reaching
+    // Player.deserialize) used to be swallowed: startClientWorld was `async`, so
+    // the rejection was unobserved and the handshake carried on binding a
+    // Predictor to a half-built player, surfacing 15 s later as a bogus 'timeout'.
+    // The method is synchronous now, so this guard actually catches it.
+    try { this.game.startClientWorld(m, this); }
+    catch (err) { console.error('[net] client world init failed', err); this._fail('worldinit'); return; }
     this.predictor = new Predictor(this.game.player, (pl, fr) => this.game.tickClientPlayer(pl, fr));
     this.phase = 'streaming';
     this._armHandshake();
@@ -238,7 +258,6 @@ export class NetClient {
   sendDropItem(stack) { this.sendJson({ t: 'dropItem', stack: !!stack }); }
   sendChat(text) { this.sendJson({ t: 'chat', text }); }
   sendRespawn() { this.sendJson({ t: 'respawn' }); }
-  sendContainerOpen(x, y, z) { this.sendJson({ t: 'useBlock', x, y, z, face: 1, hotbarSlot: this.game.player.selectedSlot }); }
   sendContainerClick(payload) { this.sendJson({ t: 'containerClick', ...payload }); }
   sendContainerClose(windowId) { this.sendJson({ t: 'containerClose', windowId }); }
 
@@ -273,19 +292,29 @@ export class NetClient {
     const typeName = ETYPE_REV[e.type];
     if (!typeName) return;
     const pup = this.game.createPuppet(typeName, e, this.staticData.get(e.id));
-    if (pup) { pup.netId = e.id; this.puppets.set(e.id, pup); this.game.entities.add(pup); }
+    // §4.4 — mark EVERY puppet, players included (Game.createPuppet's RemotePlayer
+    // branch returns before its own isPuppet assignment). updateRender uses the flag
+    // to skip the fixed-timestep lerp: renderTick below already wrote the final
+    // interpolated position, and re-lerping it with the tick residual modulates
+    // apparent speed ~4:1 at 20 Hz — the teleport-stutter §Acceptance forbids.
+    if (pup) { pup.netId = e.id; pup.isPuppet = true; this.puppets.set(e.id, pup); this.game.entities.add(pup); }
   }
 
   _removePuppet(id) {
     const pup = this.puppets.get(id);
-    if (pup) { this.game.entities.remove(pup); this.puppets.delete(id); }
+    // entities is null after disposeWorld — a late death-anim timer must not deref it.
+    if (pup) { this.game.entities?.remove(pup); this.puppets.delete(id); }
     this.interp.remove(id);
     this.staticData.delete(id);
   }
 
   // per-frame: advance interpolation, drive puppets (called from Game.render)
+  // §4.4 — on a CLIENT this is the ONLY pass that touches puppets: Game.tick short-
+  // circuits into clientTick(), which never calls entities.tick(), so nothing that
+  // Entity.baseTick / Entity.tickTimers normally does for them happens anywhere else.
   renderTick(frameDeltaMs) {
     this.interp.advance(frameDeltaMs);
+    const dt = Math.min(4, frameDeltaMs / MS_PER_TICK);      // ticks elapsed this frame
     for (const [id, pup] of this.puppets) {
       const s = this.interp.sample(id);
       if (!s) continue;
@@ -293,11 +322,85 @@ export class NetClient {
       pup.prevYaw = pup.yaw;
       pup.pos.x = s.x; pup.pos.y = s.y; pup.pos.z = s.z;
       pup.yaw = s.yaw; pup.pitch = s.pitch;
+      // Entity.baseTick's every-4-ticks light sample. Without it lightScalar keeps its
+      // constructor value 1 and applyLightScalar renders every mob and remote player
+      // full-bright in an unlit cave.
+      pup._lightAcc = (pup._lightAcc ?? 0) + dt;
+      if (pup._lightAcc >= 4) { pup._lightAcc = 0; pup.sampleLight?.(); }
+      // Entity.tickTimers' hurt decay. The authoritative HURT flag rewrites hurtTime
+      // just below, but the `hurt` event sets 10 with nothing behind it — without this
+      // one punch left a puppet red-tinted for the rest of the session.
+      if (pup.hurtTime > 0) pup.hurtTime = Math.max(0, pup.hurtTime - dt);
       if (pup.applyFlags) pup.applyFlags(s.flags, s.stateByte);
+      else this._applyPuppetState(pup, s.flags, s.stateByte, dt);
       pup.health = s.health;
       pup.stateByte = s.stateByte;
     }
     if (this.predictor) this.predictor.decayOffset();
+  }
+
+  // §4.4 — flag/stateByte decode for every puppet that is NOT a RemotePlayer (mobs,
+  // items, projectiles): those classes carry no applyFlags of their own, so the whole
+  // snapshot flag byte and stateByte used to be decoded and then thrown away.
+  _applyPuppetState(pup, flags, stateByte, dt) {
+    pup.onGround = (flags & EFLAG.ON_GROUND) !== 0;
+    pup.sprinting = (flags & EFLAG.SPRINTING) !== 0;
+    pup.sneaking = (flags & EFLAG.SNEAKING) !== 0;
+    pup.fireTicks = (flags & EFLAG.BURNING) ? Math.max(pup.fireTicks ?? 0, 1) : 0;
+    pup.swinging = (flags & EFLAG.SWINGING) !== 0;
+    pup.gliding = (flags & EFLAG.GLIDING) !== 0;
+    pup.hurtTime = (flags & EFLAG.HURT) ? 10 : 0;
+    const wasDead = pup.dead;
+    pup.dead = (flags & EFLAG.DEAD) !== 0;
+    // 05 §16.3 keel-over: deathTime is advanced by Mob.tick host-side, which a puppet
+    // never runs — drive it here so Mob.updateRender's fall-over actually plays out.
+    if (pup.dead) pup.deathTime = wasDead ? (pup.deathTime ?? 0) + dt : 0;
+    // §4.4 limb swing: walkCycle/swingAmount are only advanced in Mob.tick, so without
+    // this every mob slides across the ground with frozen legs. Same shape as Mob's
+    // travel step (walkCycle += hSpeed*4, swingAmount smoothed toward min(1,hSpeed*8)),
+    // rebased from per-tick onto this frame's interpolated displacement.
+    if (pup.walkCycle !== undefined) {
+      const step = Math.hypot(pup.pos.x - pup.prevPos.x, pup.pos.z - pup.prevPos.z);
+      pup.prevWalkCycle = pup.walkCycle;
+      pup.walkCycle += step * 4;
+      const k = 1 - Math.pow(0.9, dt);
+      pup.swingAmount += (Math.min(1, (step / Math.max(1e-6, dt)) * 8) - pup.swingAmount) * k;
+    }
+    // per-type stateByte (§3.4). A visual field change needs a mesh rebuild, which
+    // EntityManager.updateRender performs from `needsMeshRebuild`.
+    switch (pup.type) {
+      case 'creeper': pup.swell = stateByte; break;
+      // bit0 sheared; the wool parts toggle visibility in place (no rebuild). The
+      // dye colour is a 24-bit woolTint that does not fit the stateByte and never
+      // changes after spawn, so it rides entitySpawn.static instead (§3.2).
+      case 'sheep':
+        pup.sheared = (stateByte & 1) !== 0;
+        pup.updateWoolVisibility?.();   // no-op until parts exist, hence every frame
+        break;
+      case 'villager': case 'zombie_villager': {
+        const prof = PROFESSION_LIST[stateByte & 0x0f] ?? 'none', baby = (stateByte & 0x10) !== 0;
+        if (pup.profession !== prof) pup.profession = prof;      // trade/robe data only
+        if (pup.isBaby !== baby) { pup.isBaby = baby; pup.needsMeshRebuild = true; }
+        break;
+      }
+      case 'item': {
+        // render-count bucket 1–4 → a representative count on ItemEntity.buildMesh's
+        // own cluster thresholds, so a host-side stack merge re-clusters the puppet.
+        if (pup.stack) {
+          const want = stateByte >= 4 ? 33 : stateByte >= 3 ? 17 : stateByte >= 2 ? 2 : 1;
+          const c = pup.stack.count;
+          const have = c >= 33 ? 33 : c >= 17 ? 17 : c >= 2 ? 2 : 1;
+          if (have !== want) { pup.stack.count = want; pup.needsMeshRebuild = true; }
+        }
+        break;
+      }
+      default: {
+        if (pup.isBaby === undefined) break;
+        const baby = (stateByte & 1) !== 0;
+        if (pup.isBaby !== baby) { pup.isBaby = baby; pup.needsMeshRebuild = true; }
+        break;
+      }
+    }
   }
 
   // ---------------------------------------------------------------- world state msgs
@@ -320,13 +423,36 @@ export class NetClient {
     if (m.armor) m.armor.forEach((s, i) => { p.armor[i] = s || null; });
     if (m.offhand !== undefined) p.offhand = m.offhand || null;
     if (m.selectedSlot !== undefined) p.selectedSlot = m.selectedSlot;
-    if (m.effects) { const { applyEffectsData } = this.game._effectsApi || {}; applyEffectsData?.(p, m.effects); }
+    // §5 — playerState is an "authoritative overwrite of client copy", so effects
+    // REPLACE rather than merge: ids the host dropped (respawn clearEffects, milk)
+    // must go, or the client keeps predicting Speed/Slowness and drawing the HUD
+    // until the stale durations expire. `!== undefined` (not truthiness) so an empty
+    // `[]` still clears, while NetHost's _invSig dedupe — which deletes the key when
+    // unchanged — correctly leaves the local copy alone.
+    if (m.effects !== undefined) { const { applyEffectsData } = this.game._effectsApi || {}; applyEffectsData?.(p, m.effects, true); }
     if (m.dead && this.game.state !== STATE.DEAD) { document.exitPointerLock?.(); this.game.setState(STATE.DEAD); }
     if (!m.dead && this.game.state === STATE.DEAD) { /* handled by respawn/forceMove */ }
   }
 
   _onEntitySpawn(m) { this.staticData.set(m.id, m.static || {}); }
-  _onEntityDespawn(m) { this._removePuppet(m.id); }
+  // §3.3 — reason 'died' plays the 05 §16.3 death anim BEFORE removal. Only puppets
+  // that own an anim (Mob.deathAnimTicks) get the grace period; everything else, and
+  // reasons 'range'/'removed', goes immediately as before.
+  _onEntityDespawn(m) {
+    const pup = this.puppets.get(m.id);
+    if (m.reason === 'died' && pup && pup.deathAnimTicks) {
+      pup.dead = true;
+      if (!(pup.deathTime > 0)) pup.deathTime = 0;
+      // The handle is tracked so teardown can cancel it: an untracked timer
+      // fired against a disposed game (Save & Quit inside the ~1 s anim) threw
+      // out of a bare timer callback, outside frame()'s guard entirely.
+      const t = setTimeout(() => { this._deathTimers.delete(t); this._removePuppet(m.id); },
+        pup.deathAnimTicks * MS_PER_TICK);
+      this._deathTimers.add(t);
+      return;
+    }
+    this._removePuppet(m.id);
+  }
 
   _onPlayerJoin(m) {
     this.players.set(m.playerId, { name: m.name, slot: m.slot, hue: m.hue, entityId: m.entityId, dim: this.game.world.activeDim });
@@ -365,8 +491,12 @@ export class NetClient {
   _onBossBar(m) {
     const bb = this.game.ui?.bossBar;
     if (!bb) return;
-    if (m.remove) bb.remove(m.id);
-    else { bb.add(m.id, { name: m.name, color: m.style }); bb.set(m.id, m.hpFrac); }
+    // 14 §12 — the host emits add (id/name/style), set (id/hpFrac) and remove as
+    // SEPARATE frames. Treating every non-remove frame as an add re-wrote the
+    // bar's name to `undefined` on each hp update.
+    if (m.remove) { bb.remove(m.id); return; }
+    if (m.name !== undefined) bb.add(m.id, { name: m.name, color: m.style });
+    if (m.hpFrac !== undefined) bb.set(m.id, m.hpFrac);
   }
   _onDimChange(m) {
     this.game.clientDimChange(m);
@@ -392,6 +522,10 @@ export class NetClient {
     const now = performance.now();
     const rtt = now - t0;
     this.rtt = this.rtt ? this.rtt * 0.8 + rtt * 0.2 : rtt;
+    // §7.1 — relay the measurement back so the host's playerList carries a real
+    // rttMs for the Tab overlay (it has no timing of its own; the pong is fired and
+    // forgotten). 1 Hz, same cadence as the ping. Ignored by pre-rttReport hosts.
+    this.sendJson({ t: 'rttReport', ms: Math.round(this.rtt) });
   }
 
   _playSound(m) {

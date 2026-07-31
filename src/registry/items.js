@@ -491,6 +491,44 @@ export const SMELTING = new Map([
   [B.STONE_BRICKS, { out: B.CRACKED_STONE_BRICKS, xp: 0.1 }],
 ]);
 
+// 12-VILLAGES §7.6/§7.7 — the furnace FAMILY. All three reuse 06 §11's block
+// entity, UI and fuel; they differ only in cook time and input filter. It lives
+// beside SMELTING (not in Game.js) because the UI, the shift-click routers and
+// the headless net twin all need the same table and none of them may import the
+// Game module. `unlit`/`lit` are B KEYS so the id-swap (06 §5.5) stays in Game.
+export const FURNACE_KINDS = {
+  furnace:       { cook: 200, accepts: null,   unlit: 'FURNACE',       lit: 'FURNACE_LIT' },
+  blast_furnace: { cook: 100, accepts: 'ore',  unlit: 'BLAST_FURNACE', lit: 'BLAST_FURNACE_LIT' },
+  smoker:        { cook: 100, accepts: 'food', unlit: 'SMOKER',        lit: 'SMOKER_LIT' },
+};
+
+// §7.6 "ore/metal smelt class" / §7.7 "food smelt class". The name→class map is
+// built on FIRST CALL, not at module scope, so it cannot run before this module's
+// own ITEMS table is complete; unknown names are simply absent (idOf throws).
+let SMELT_CLASS = null;
+export function smeltClass(id) {
+  if (!SMELT_CLASS) {
+    SMELT_CLASS = new Map();
+    const put = (names, cls) => {
+      for (const n of names) { try { SMELT_CLASS.set(idOf(n), cls); } catch { /* not in this build */ } }
+    };
+    put(['raw_iron', 'raw_gold', 'iron_ore', 'gold_ore', 'ancient_debris',
+      'nether_gold_ore', 'nether_quartz_ore'], 'ore');
+    put(['porkchop', 'beef', 'chicken', 'mutton', 'potato'], 'food');
+  }
+  return SMELT_CLASS.get(id) ?? 'misc';
+}
+
+// §7.6/§7.7 — the ONE furnace-input gate. tickFurnace, both shift-click routers
+// (ui/containers.js shiftTargets + Game.applyNetContainerClick) and the input
+// slot's canPut all resolve through this, so a stack can never be parked in a
+// slot whose variant will never process it. `profile` is a FURNACE_KINDS row;
+// undefined (a pre-v1.2 record) falls back to the unfiltered plain furnace.
+export function furnaceAccepts(profile, itemId) {
+  const p = profile ?? FURNACE_KINDS.furnace;
+  return SMELTING.has(itemId) && (!p.accepts || smeltClass(itemId) === p.accepts);
+}
+
 // ========================= FUEL (06 §11.3) =========================
 export function fuelValue(itemId) {
   return ITEMS.get(itemId)?.fuel ?? 0;

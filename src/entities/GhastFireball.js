@@ -9,8 +9,18 @@ import { LivingEntity } from './Entity.js';
 import { BLOCKS } from '../registry/blocks.js';
 import { makeAtlasMaterial } from './ItemEntity.js';
 import { emitSound, at } from '../audio/engine.js';
+import { placeFire } from '../world/fire.js';
 
 const SPEED = 0.95;
+
+// 01 §17.2 — shared 0.6³ box (models.js boxGeo's contract): a per-instance
+// BoxGeometry was never disposed, so ghast volleys leaked GL buffers. `shared`
+// opts it out of EntityManager's disposal sweep.
+let GEO = null;
+function fireballGeo() {
+  if (!GEO) { GEO = new THREE.BoxGeometry(0.6, 0.6, 0.6); GEO.userData.shared = true; }
+  return GEO;
+}
 
 export class GhastFireball extends LivingEntity {
   constructor(world, x, y, z, dx, dy, dz, owner) {
@@ -21,7 +31,6 @@ export class GhastFireball extends LivingEntity {
     const len = Math.hypot(dx, dy, dz) || 1;
     this.vel.x = dx / len * SPEED; this.vel.y = dy / len * SPEED; this.vel.z = dz / len * SPEED;
     this.owner = owner;              // the ghast, or the deflector after a deflect
-    this.deflectedByPlayer = false;
     this.life = 200;
     this.takesFallDamage = false;
     this.noGravity = true;
@@ -37,7 +46,6 @@ export class GhastFireball extends LivingEntity {
     const len = Math.hypot(look.x, look.y, look.z) || 1;
     this.vel.x = look.x / len * SPEED; this.vel.y = look.y / len * SPEED; this.vel.z = look.z / len * SPEED;
     this.owner = deflector;
-    this.deflectedByPlayer = deflector === this.world.game?.player;
     emitSound('entity.ghast.shoot', at(this.pos.x, this.pos.y, this.pos.z));
     return false;                    // fireball takes no damage
   }
@@ -69,13 +77,19 @@ export class GhastFireball extends LivingEntity {
   explodeAt(x, y, z, direct) {
     const g = this.world.game;
     g?.explode?.(x, y, z, 1);                  // §7.3 power-1 explosion
+    // §7.3 — "ignites a fire at impact — the fireball's signature". 15 §4.4 makes
+    // the placeFire() call mandatory so the origin registers with fire's engine;
+    // placeFire deliberately does NOT pre-check canSurvive (an unsupported flame
+    // dies on its own next tick), so the impact cell needs no support test.
+    const bx = Math.floor(x), by = Math.floor(y), bz = Math.floor(z);
+    if (this.world.getBlock(bx, by, bz) === 0) placeFire(this.world, bx, by, bz, 0);
     if (direct?.setOnFire) direct.setOnFire(100);
     else if (direct) direct.fireTicks = Math.max(direct.fireTicks || 0, 100);
   }
 
   buildMesh() {
     const group = new THREE.Group();
-    const geo = new THREE.BoxGeometry(0.6, 0.6, 0.6);
+    const geo = fireballGeo();
     const mat = makeAtlasMaterial();
     mat.userData?.baseColor?.setRGB(1.0, 0.5, 0.1);
     group.add(new THREE.Mesh(geo, mat));

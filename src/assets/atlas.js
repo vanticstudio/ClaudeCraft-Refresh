@@ -39,8 +39,11 @@ const BLOCK_TILES = [
   'enchanting_table_top', 'enchanting_table_side',
   'anvil_top_0', 'anvil_top_1', 'anvil_top_2', 'anvil_side',
   'grindstone_side', 'grindstone_tread',
-  // 07-REDSTONE §14
-  'dust_line_0', 'redstone_torch', 'redstone_torch_off', 'lever', 'stone_button', 'wooden_button',
+  // 07-REDSTONE §14 — dust: 16 power-tinted variants of each of the two shapes
+  // (§4.5 ramp baked in at paint time; the mesher picks the variant by power).
+  ...Array.from({ length: 16 }, (_, p) => 'dust_dot_' + p),
+  ...Array.from({ length: 16 }, (_, p) => 'dust_line_' + p),
+  'redstone_torch', 'redstone_torch_off', 'lever', 'stone_button', 'wooden_button',
   'repeater_top', 'comparator_top', 'smooth_stone_side', 'smooth_stone_bottom',
   'piston_side', 'piston_face', 'piston_face_sticky', 'piston_inner',
   'observer_side', 'observer_face', 'observer_back',
@@ -61,6 +64,9 @@ const BLOCK_TILES = [
   'brown_mushroom', 'red_mushroom', 'brewing_stand',
   // 12-VILLAGES §7 — village blocks
   'dirt_path_top', 'bell', 'composter_top', 'composter_side',
+  // 12-VILLAGES §12.2 — one baked variant per fill level 0–8 (blocks.js tilesFor)
+  ...Array.from({ length: 9 }, (_, l) => 'composter_top_' + l),
+  ...Array.from({ length: 9 }, (_, l) => 'composter_side_' + l),
   'barrel_top', 'barrel_side', 'lectern_top', 'lectern_side',
   'blast_furnace_top', 'blast_furnace_side', 'blast_furnace_front', 'blast_furnace_front_lit',
   'smoker_top', 'smoker_side', 'smoker_front', 'smoker_front_lit',
@@ -80,6 +86,12 @@ const DESTROY_TILES = Array.from({ length: 10 }, (_, i) => 'destroy_' + i);
 const ITEM_TILES = Object.keys(PAINTERS).filter(n => n.startsWith('item_')).sort();
 
 export const TILE_NAMES = ['missing', ...BLOCK_TILES, ...DESTROY_TILES, ...ITEM_TILES];
+
+// 07-REDSTONE §4.5 — power (0..15) → atlas tile for each dust shape. Fixed by
+// TILE_NAMES order at module load, so the mesher can resolve a variant without
+// the runtime TILE map (it only carries tileUV) and without a per-quad lookup.
+export const DUST_DOT_TILE = Uint16Array.from({ length: 16 }, (_, p) => TILE_NAMES.indexOf('dust_dot_' + p));
+export const DUST_LINE_TILE = Uint16Array.from({ length: 16 }, (_, p) => TILE_NAMES.indexOf('dust_line_' + p));
 
 function paintMissing(ctx, x0, y0) {
   ctx.fillStyle = '#f800f8';

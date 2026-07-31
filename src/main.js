@@ -23,6 +23,36 @@ import { NetClient } from './net/NetClient.js';
 import { NetContainer } from './ui/netContainer.js';
 import { getLocalPlayerId } from './net/identity.js';
 
+// 01 §2 — the startup failure surface. `boot()` was invoked bare with nothing
+// awaiting or catching it, so a blacklisted WebGL context, a rejecting
+// save.open() or a null 2d context out of buildAtlas() all produced a blank page
+// with nothing on screen and nothing in the console. DOM only — no asset, no dep.
+function fatal(err, phase) {
+  console.error('[boot]', phase, err);
+  document.body.dataset.fatal = '1';
+  const host = document.getElementById('screens') || document.body;
+  const box = document.createElement('div');
+  box.className = 'fatal-screen';
+  // Styled inline: a fatal may be a CSS/import failure, so this must not depend
+  // on ui/style.css having loaded.
+  box.style.cssText = 'position:fixed;inset:0;z-index:9999;display:flex;flex-direction:column;' +
+    'align-items:center;justify-content:center;gap:12px;padding:24px;background:#101014;' +
+    'color:#e8e8ee;font:14px/1.5 monospace;text-align:center';
+  const h = document.createElement('h1');
+  h.textContent = 'ClaudeCraft could not start';
+  h.style.cssText = 'font-size:22px;margin:0';
+  const pre = document.createElement('pre');
+  pre.textContent = String(err?.message ?? err);
+  pre.style.cssText = 'max-width:min(90vw,720px);max-height:40vh;overflow:auto;white-space:pre-wrap;' +
+    'margin:0;padding:10px;background:#000;border:1px solid #333;text-align:left';
+  const btn = document.createElement('button');
+  btn.textContent = 'Reload';
+  btn.style.cssText = 'padding:8px 20px;font:inherit;cursor:pointer';
+  btn.onclick = () => location.reload();
+  box.append(h, pre, btn);
+  host.appendChild(box);
+}
+
 async function boot() {
   const canvas = document.getElementById('game-canvas');
   const overlayEl = document.getElementById('overlay');
@@ -61,6 +91,9 @@ async function boot() {
   const containers = new Containers(game, screensEl);
   const chat = new Chat(game, overlayEl);
   const netContainer = new NetContainer(game, screensEl);   // 14 §6 — client chest UI
+  // 01 §16 — SaveManager degrades to an unsaved session (db null) rather than
+  // failing boot when storage is blocked; say so once instead of silently.
+  if (save.unavailable) hud.toast('Storage unavailable — this session will not be saved');
 
   const startWorld = async (seed, meta) => {
     menus.show('loading');
@@ -68,9 +101,20 @@ async function boot() {
       await game.startWorld(seed, meta);
     } catch (err) {
       console.error('world start failed', err);
+      // disposeWorld is double-dispose safe (Game.js §17-SHIP 1.6) and terminates
+      // the terrain workers; without it a failed start left two live Workers and
+      // the whole chunk map pinned for the rest of the session.
+      game.disposeWorld();
+      hud.toast('Could not start that world');
       game.setState(STATE.TITLE);
     }
   };
+
+  // 01 §16.2 / 14 §9 — quit-to-title is a MULTI-SECOND async teardown for a host
+  // (the shutdown countdown below), so it needs re-entrancy state that outlives
+  // one hook call. `quitting` locks out Resume and a second Quit for the whole
+  // window; `quitForced` latches a failed write so the player is never trapped.
+  let quitting = false, quitForced = false;
 
   const menus = new Menus(game, screensEl, {
     onOptions: opts => {
@@ -98,23 +142,79 @@ async function boot() {
       menus.setHasSave(false);
     },
     onResume: async () => {
+      // A quit is already running: its host-shutdown wait leaves this sheet on
+      // screen for 3.2 s, and resuming inside that window put the player back in
+      // a world the parked onQuit then disposed out from under them.
+      if (quitting) return;
       audio.unlock();                 // must land inside the gesture, before the await
       const ok = await input.requestLock();
       if (ok !== false) game.setState(STATE.PLAYING);
       else menus.el.pause.querySelector('#btn-resume').textContent = 'Click to resume';
     },
     onQuit: async () => {
-      await save.saveAll(game);
-      game.disposeWorld();
-      game.setState(STATE.TITLE);
-      menus.setHasSave(save.hasWorld());
+      // Re-entry guard: both the pause sheet and the death screen bind here, and
+      // the host branch below parks for 3.2 s with the buttons still clickable. A
+      // second click would fire a second hostShutdown broadcast and a second
+      // timer against an already-disposed world.
+      if (quitting) return;
+      quitting = true;
+      const btnQuit = menus.el.pause.querySelector('#btn-quit');
+      const quitLabel = btnQuit.textContent;
+      try {
+        // 01 §16.2 — saveAll resolves FALSE on an aborted/failed transaction. The
+        // flags it restores on the dirty chunks are meaningless once disposeWorld
+        // drops world.chunks, so ignoring the result silently discarded the whole
+        // session. Test `=== false` specifically: the no-op cases (client / no db /
+        // overlapping save) resolve undefined and must not block the quit.
+        const ok = await save.saveAll(game);
+        if (ok === false && !quitForced) {
+          // A write failure is normally PERMANENT (quota exhausted, storage
+          // evicted, connection closed by a versionchange), so an unconditional
+          // `return` made the title screen — and therefore New World and Join —
+          // unreachable for the rest of the page's life. The session data is
+          // already lost; refusing to quit does not recover it. Latch instead.
+          quitForced = true;
+          hud.toast('Save failed — click Save & Quit again to leave without saving');
+          return;
+        }
+        if (ok === false) hud.toast('Save failed — leaving without saving');
+        // 14 §9 — a HOST must tear its session down here. hostShutdown() had ZERO
+        // call sites: the relay socket stayed open (so no hostGone ever fired) and
+        // Game.tick early-returns once world is null, so every client hung on a
+        // frozen world forever with no countdown. Nulling game.net is what stops a
+        // stale NetHost from ticking the NEXT world against a destroyed World.
+        if (game.net?.isHost) {
+          game.net.hostShutdown();
+          // The sheet stays up through the countdown, so say what it is waiting
+          // on and make the dead buttons look dead.
+          btnQuit.textContent = 'Shutting down session…';
+          btnQuit.disabled = true;
+          await new Promise(r => setTimeout(r, 3200));
+          await save.saveAll(game);          // catch anything the countdown ticked
+        }
+        game.net?.stop?.();
+        game.net?.disconnect?.();
+        game.net = null;
+        game.disposeWorld();
+        game.setState(STATE.TITLE);
+        menus.setHasSave(save.hasWorld());
+        quitForced = false;
+      } finally {
+        btnQuit.textContent = quitLabel;
+        btnQuit.disabled = false;
+        quitting = false;
+      }
     },
     onRespawn: () => game.respawnPlayer(),
   });
 
   // Theme music (16-AUDIO §4A / 19-MAIN-MENU §4). E1 now owns the context and
   // the music bus, so the standalone fallback graph retires here.
-  const themeMusic = createThemeMusic({ context: audio.ctx, musicBus: audio.buses.music });
+  // `audio.ready` is false when AudioEngine.boot bailed (no Web Audio at all).
+  // Passing `{ context: null, musicBus: undefined }` made ThemeMusic take the
+  // owns-context path, and its unlock() then threw a TypeError out of an async
+  // start() on the very first PRESS START. `{}` makes the intent explicit.
+  const themeMusic = createThemeMusic(audio.ready ? { context: audio.ctx, musicBus: audio.buses.music } : {});
   audio.themeMusic = themeMusic;
   menus.attachMusic(themeMusic);
   menus.setHasSave(save.hasWorld());
@@ -245,16 +345,46 @@ async function boot() {
 
   // background/close saves (01 §16.2)
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden && game.state === STATE.PLAYING) {
-      game.setState(STATE.PAUSED);
-    }
+    if (!document.hidden) return;
+    // 01 §15.2/§16.2 — "visibilitychange → hidden" is an UNCONDITIONAL save
+    // trigger. setState covers the PLAYING case (its PLAYING→PAUSED edge saves);
+    // every OTHER live state — PLAYING_UI with a chest open, DEAD, CONNECTING, a
+    // host ticking while PAUSED — saved nothing at all, and rAF stops in a hidden
+    // tab so the 600-tick autosave could not fire later either. saveAll already
+    // early-returns for clients and for a missing db/world.
+    if (game.state === STATE.PLAYING) game.setState(STATE.PAUSED);
+    else if (game.world) save.saveAll(game);
   });
   window.addEventListener('pagehide', () => {
     if (game.world) save.saveAll(game);
+  });
+
+  // 01 §1 — three reinstalls its own GL state on webglcontextrestored, so the app
+  // survives a GPU switch or GPU-process crash — but nothing here reacted, so
+  // Game.frame kept running the FULL simulation against a frozen picture for 1–5
+  // seconds: mobs attack, hunger drains, fall damage lands, the player can die
+  // without ever seeing it. Pause instead; the Resume button already handles the
+  // way back, so no new state is involved.
+  canvas.addEventListener('webglcontextlost', () => {
+    if (game.state === STATE.PLAYING || game.state === STATE.PLAYING_UI) game.setState(STATE.PAUSED);
+    hud.toast('Graphics context lost — reconnecting');
+  });
+  canvas.addEventListener('webglcontextrestored', () => {
+    // The atlas is PAINTED, not loaded, so force one re-upload — atlas.animate()
+    // only repaints on a 5-tick boundary and the GPU copy can otherwise stay
+    // stale — and make the streamer re-evaluate its request list.
+    atlas.texture.needsUpdate = true;
+    if (game.chunkManager) game.chunkManager.lastPlayerChunk = null;
+    hud.toast('Graphics context restored');
   });
 
   game.setState(STATE.TITLE);
   game.start();
 }
 
-boot();
+// These two are ERROR paths, not the console spam the house rules forbid: without
+// them a rejected promise anywhere in the UI or net layer is completely silent.
+window.addEventListener('unhandledrejection', e => console.error('[unhandled]', e.reason));
+window.addEventListener('error', e => console.error('[error]', e.error ?? e.message));
+
+boot().catch(err => fatal(err, 'boot'));

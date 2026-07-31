@@ -106,7 +106,13 @@ export class ThemeMusic {
   /** Idempotent; call from every gesture handler (16 §1.1 `unlock`). */
   unlock() {
     if (!this.ctx) {
-      this.ctx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 'interactive' });
+      // main.js hands us `{}` when audio.ready is false, which puts us on the
+      // owns-context path — on a browser with NO Web Audio at all that threw a
+      // TypeError out of the async start() on the first PRESS START. Emptying
+      // `tracks` makes `available` false; every caller already null-checks.
+      const Ctor = window.AudioContext || window.webkitAudioContext;
+      if (!Ctor) { this.tracks = []; return; }
+      this.ctx = new Ctor({ latencyHint: 'interactive' });
     }
     if (!this.musicBus) this._buildFallbackGraph();
     if (!this.themeGain) {

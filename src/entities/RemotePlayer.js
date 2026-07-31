@@ -148,11 +148,12 @@ export class RemotePlayer extends LivingEntity {
 
   updateRender(alpha) {
     if (!this.object3d) return;
-    const x = lerp(this.prevPos.x, this.pos.x, alpha);
-    const y = lerp(this.prevPos.y, this.pos.y, alpha);
-    const z = lerp(this.prevPos.z, this.pos.z, alpha);
+    const a = this.isPuppet ? 1 : alpha;   // 14 §4.4 — NetClient.renderTick already produced the final render position
+    const x = lerp(this.prevPos.x, this.pos.x, a);
+    const y = lerp(this.prevPos.y, this.pos.y, a);
+    const z = lerp(this.prevPos.z, this.pos.z, a);
     this.object3d.position.set(x, y, z);
-    this.object3d.rotation.y = lerpAngle(this.prevYaw, this.yaw, alpha);
+    this.object3d.rotation.y = lerpAngle(this.prevYaw, this.yaw, a);
     const hSpeed = Math.hypot(this.pos.x - this.prevPos.x, this.pos.z - this.prevPos.z);
     this.walkPhase += hSpeed * 14 + (hSpeed > 0.001 ? 0 : 0);
     if (this.swinging) this.punchPhase += 0.9; else this.punchPhase = 0;

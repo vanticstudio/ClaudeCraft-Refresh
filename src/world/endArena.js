@@ -1,10 +1,12 @@
 // 11-END §5.5/§5.6 + §6.6 — main-thread End helpers: the fixed obsidian arrival
 // platform and the arena export consumed by 13-BOSSES. The dragon fight itself
 // (crystals, AI, egg, gateways activation) is 13's; this file owns the statics.
+import * as THREE from 'three';
 import { BLOCKS, B } from '../registry/blocks.js';
 import { endPillars, endGatewayPositions } from './gen/endShared.js';
 import { endSurfaceAt } from './gen/endSurface.js';
 import { hashString, mix32 } from '../math/rng.js';
+import { emitSound, at } from '../audio/engine.js';
 
 // §6.4 — the exit portal ("end fountain"), centered (0,0), rim + column at Y 63.
 export const EXIT_Y = 63;
@@ -38,7 +40,58 @@ export function spawnGateway(game, worldSeed, n) {
   if (n < 0 || n >= positions.length) return null;
   const { x: gx, z: gz } = positions[n];
   placeGatewayShell(game.world, gx, 75, gz);
+  showBeam(game, gx, 75, gz, 200);   // §11.1 — spawn beam, 200 t
   return { x: gx, y: 75, z: gz };
+}
+
+// ---------------------------------------------------------------------------
+// §11.1 beam — a 2-block-wide additive magenta column (#D67FFF) through the
+// gateway, full world height (the spec's "top+bottom"): 200 t on spawn, 40 t on
+// every use, with the `gateway.beam` event of §16. The handles live in a module
+// map, NOT in dimMeta — that round-trips through the save and must stay plain
+// data. Each column also retires ITSELF from its render callback (Beacon's §9.6
+// idiom), so a beam still lit when the player leaves the End cannot outlive the
+// frame budget it was given even though tickGateways stops running.
+// ---------------------------------------------------------------------------
+const BEAM = { color: '#D67FFF', width: 2, height: 128, alpha: 0.45 };
+const BEAMS = new Map();               // "x,y,z" -> { key, mesh, expire }
+
+function showBeam(game, x, y, z, ticks) {
+  emitSound('gateway.beam', at(x + 0.5, y + 0.5, z + 0.5));
+  const scene = game?.scene;
+  if (!scene) return;
+  const key = x + ',' + y + ',' + z;
+  const expire = performance.now() + ticks * 50;   // 20 ticks/s
+  const existing = BEAMS.get(key);
+  if (existing) { if (expire > existing.expire) existing.expire = expire; return; }
+  const mesh = new THREE.Mesh(
+    new THREE.BoxGeometry(BEAM.width, BEAM.height, BEAM.width),
+    new THREE.MeshBasicMaterial({
+      color: BEAM.color, transparent: true, opacity: BEAM.alpha,
+      blending: THREE.AdditiveBlending, depthWrite: false,
+      side: THREE.DoubleSide, fog: false,
+    }),
+  );
+  mesh.position.set(x + 0.5, BEAM.height / 2, z + 0.5);
+  mesh.matrixAutoUpdate = false;
+  mesh.updateMatrix();
+  mesh.frustumCulled = false;          // the self-retire runs from onBeforeRender
+  const handle = { key, mesh, expire };
+  mesh.onBeforeRender = () => { if (performance.now() >= handle.expire) retireBeam(handle); };
+  scene.add(mesh);
+  BEAMS.set(key, handle);
+}
+
+function retireBeam(h) {
+  BEAMS.delete(h.key);
+  h.mesh.parent?.remove(h.mesh);
+  h.mesh.geometry.dispose();
+  h.mesh.material.dispose();
+}
+
+/** §11.1 — drop every live beam (dimension change / world teardown). */
+export function disposeGatewayBeams() {
+  for (const h of [...BEAMS.values()]) retireBeam(h);
 }
 
 // §11.2 — the same 12-bedrock structure is reused for the far-side return gateway.
@@ -97,7 +150,17 @@ export function buildObsidianPlatform(game) {
         const id = w.getBlock(x, y, z);
         if (id !== 0) {
           const blk = BLOCKS[id];
-          const drops = blk.drops ? blk.drops.call(blk, { toolClass: null, toolTier: null, rng: () => 0.5, fortune: 0, state: 0 }) : [];
+          // §5.6 — "pop any non-air block as its item drop (base break rules, NO
+          // TOOL GATE)". toolClass/toolTier null failed harvestOK for every
+          // harvest-gated block (obsidian, stone, all ores), so player builds in
+          // this volume were deleted with nothing dropped. Satisfy the gate only
+          // where one exists — passing blk.tool unconditionally would make leaves
+          // (tool 'shears', tier null) drop leaf blocks instead of saplings — and
+          // pass the REAL state, since state 0 made both halves of a door/bed drop.
+          const drops = blk.drops ? blk.drops.call(blk, {
+            toolClass: blk.tier == null ? null : blk.tool, toolTier: 99,
+            rng: () => 0.5, fortune: 0, state: w.getState(x, y, z),
+          }) : [];
           for (const d of drops) game.spawnItemByName?.(d.name, d.count, x + 0.5, y + 0.5, z + 0.5);
           w.setBlock(x, y, z, B.AIR, { byPlayer: true });
         }
@@ -125,6 +188,12 @@ const CHUNK_SAMPLES = [[4, 4], [4, 12], [12, 4], [12, 12]];
 
 export function tickGateways(game, worldSeed) {
   const w = game.world;
+  // §11.1 — beams expire on the tick clock too, so a paused/hidden renderer
+  // (onBeforeRender never fires) still lets them go.
+  if (BEAMS.size) {
+    const now = performance.now();
+    for (const h of [...BEAMS.values()]) if (now >= h.expire) retireBeam(h);
+  }
   if (w.activeDim !== 2) return;
   game.dimMeta = game.dimMeta ?? {};
   const meta = (game.dimMeta[2] = game.dimMeta[2] ?? {});
@@ -192,6 +261,7 @@ function enterGateway(game, worldSeed, store, traveler, cell) {
   // resolveArrival snaps onto the real landing point once the far chunks exist.
   pending.hold = { x: partner.x + 0.5, y: partner.y + 2, z: partner.z + 0.5 };
   store.pending = pending;
+  showBeam(game, cell.x, cell.y, cell.z, 40);   // §11.1 — use beam, 40 t
   placeTraveler(traveler, pending.hold.x, pending.hold.y, pending.hold.z);
 }
 
@@ -210,13 +280,20 @@ function resolveArrival(game, store, traveler) {
     for (let dx = -2; dx <= 2; dx++) for (let dz = -2; dz <= 2; dz++)
       w.setBlock(pf.x + dx, pf.y, pf.z + dz, B.END_STONE, { byPlayer: true });
   }
-  if (store.pending.build) {
+  const built = store.pending.build != null;
+  if (built) {
     placeGatewayShell(w, g.x, g.y, g.z);
     const be = game.getBlockEntity?.(g.x, g.y, g.z);
     if (be?.data) be.data.partner = findPartner(store, g);
   }
+  // §11.1 — the far side is either spawning (200 t) or being used (40 t).
+  showBeam(game, g.x, g.y, g.z, built ? 200 : 40);
   const land = gatewayLanding(w, g);
   placeTraveler(traveler, land.x, land.y, land.z);
+  // §16 — `gateway.travel` fires on the REAL landing snap only. placeTraveler is
+  // also called every tick from the hold branch above and from the provisional
+  // drop in enterGateway, so emitting inside it would spam.
+  emitSound('gateway.travel', null);
   store.pending = null;
 }
 

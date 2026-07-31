@@ -97,9 +97,6 @@ export class Player extends LivingEntity {
     this._walkPhase = 0;
     this._punchPhase = 0;
 
-    // distances for exhaustion, updated in movement
-    this._moveDist = 0;
-
     // --- 16-AUDIO state (§3.2 / §3.3) ---
     this.stepAccum = 0;                // horizontal distance since the last step
     this.swimAccum = 0;                // ditto for swim-splashes
@@ -185,7 +182,7 @@ export class Player extends LivingEntity {
   setGameMode(mode) {
     if (this.gameMode === mode) return;
     this.gameMode = mode;
-    emitSound('ui.gamemode.switch', null, mode === GameMode.CREATIVE ? 1 : 0.5);
+    this._selfSound('ui.gamemode.switch', mode === GameMode.CREATIVE ? 1 : 0.5);
     if (mode === GameMode.CREATIVE) {
       this.health = 20;
       this.foodLevel = 20; this.saturation = 20; this.exhaustion = 0;
@@ -227,7 +224,7 @@ export class Player extends LivingEntity {
       this.setStackIn(hand, null);
       // Most callers ignore this return value, so the emit lives here rather
       // than at the six call sites.
-      emitSound('player.item_break', null);
+      this._selfSound('player.item_break');
       return true;
     }
     return false;
@@ -279,7 +276,7 @@ export class Player extends LivingEntity {
     s.damage = (s.damage ?? 0) + n;
     if (s.damage >= (item?.durability ?? 1)) {
       this.armor[i] = null;
-      emitSound('player.item_break', null);   // §3.3 covers armor, not just tools
+      this._selfSound('player.item_break');   // §3.3 covers armor, not just tools
     }
   }
 
@@ -328,7 +325,7 @@ export class Player extends LivingEntity {
       const repair = Math.min(value * 2, damageOf(item));
       setRemaining(item, remaining(item) + repair);
       value -= Math.ceil(repair / 2);
-      emitSound('mending.repair', null);
+      this._selfSound('mending.repair');
     }
     this.addXp(value);
   }
@@ -343,7 +340,7 @@ export class Player extends LivingEntity {
     }
     // One chime per grant, not one per level: deserialize() replays the whole
     // ladder through here on every world load, and a big orb can cross two levels.
-    if (this.xpLevel > before && !this._silentXp) emitSound('player.levelup', null);
+    if (this.xpLevel > before && !this._silentXp) this._selfSound('player.levelup');
   }
 
   // -------------------------------------------------- exhaustion / hunger (06 §12)
@@ -457,13 +454,28 @@ export class Player extends LivingEntity {
     this.applyLightScalar();
   }
 
+  /**
+   * 14 §12 — personal sounds ("play locally, never wired"). They are emitted
+   * with a null position, which engine.js treats as unpanned, un-culled and
+   * priority PLAYER — correct for your own player, catastrophic for the host's
+   * proxies of every connected client (their footsteps/hurt/death would play
+   * full volume inside the host's head). isNetPlayer is set only on those
+   * host-side proxies (Game.createNetPlayer). Deliberately NOT converted to a
+   * positional emit: block.step.* carries replicate:true and would be
+   * re-broadcast to every client, including the owner who already plays it.
+   */
+  _selfSound(id, pitch = 1, gain = 1) {
+    if (this.isNetPlayer) return;
+    emitSound(id, null, pitch, gain);
+  }
+
   // §3.2: the under-feet cell, skipped silently for the classes with no verb.
   emitStep(gainMult) {
     const id = this.world.getBlock(
       Math.floor(this.pos.x), Math.floor(this.pos.y - 0.5), Math.floor(this.pos.z));
     const cls = matOf(id);
     if (!cls) return;
-    emitSound(`block.step.${cls}`, null, 1, gainMult);
+    this._selfSound(`block.step.${cls}`, 1, gainMult);
   }
 
   tick(input) {
@@ -477,7 +489,7 @@ export class Player extends LivingEntity {
     if (this.jumpCooldown > 0) this.jumpCooldown--;
     if (this.xpPickupCooldown > 0) this.xpPickupCooldown--;
     // §3.3: burp fires 10 ticks after the swallow, always.
-    if (this.burpTimer > 0 && --this.burpTimer === 0) emitSound('player.eat.burp', null);
+    if (this.burpTimer > 0 && --this.burpTimer === 0) this._selfSound('player.eat.burp');
     // §3.3: orbStreak resets after 40 ticks without a pickup.
     if (this.orbStreakTimer > 0 && --this.orbStreakTimer === 0) this.orbStreak = 0;
     if (this.hurtTilt > 0) this.hurtTilt = Math.max(0, this.hurtTilt - 0.8);
@@ -503,7 +515,14 @@ export class Player extends LivingEntity {
       this.pendingGameMode = this.creative ? GameMode.SURVIVAL : GameMode.CREATIVE;
     }
     if (this.pendingGameMode !== null) {
-      this.setGameMode(this.pendingGameMode);
+      // 14 §4.2 — game mode is HOST-assigned. NetHost._frameFromInput refuses to
+      // map the F4 bit for exactly this reason, but the local key edge (and 18's
+      // settings checkbox, which sets the same field) bypassed that guard and
+      // self-granted Creative on a client: creative instant-break sends block
+      // edits the host applies unvalidated. The host corrects via playerState
+      // every 5 ticks, which is far too late. Host-side proxies never see the
+      // edge, so gating the single application point covers both entry paths.
+      if (!this.world.game?.net?.isClient) this.setGameMode(this.pendingGameMode);
       this.pendingGameMode = null;
     }
 
@@ -515,17 +534,10 @@ export class Player extends LivingEntity {
     this.updateSneak(input);
     this.updateSprint(input);
 
-    // 5. medium
-    // inWater still holds last tick's value until updateMedium() overwrites it —
-    // the only previous-medium state there is, and vel.y is still the pre-move
-    // velocity, which is exactly §3.3's `vy` for the entry test.
-    const wasInWater = this.inWater;
+    // 5. medium — the PRE-move sample (still needed after a respawn/portal
+    // teleport, and read by the movement branch itself). tick() re-samples again
+    // after the move; §3.3's splash test lives there, on the post-move flags.
     this.updateMedium();
-    if (this.inWater && !wasInWater && this.vel.y < -0.3) {
-      // gain scales 0.3-0.8 with entry speed (§3.3)
-      const g = Math.min(0.8, 0.3 + Math.abs(this.vel.y) * 0.5);
-      emitSound('player.splash', null, 1, g);
-    }
     const eye = { x: this.pos.x, y: this.pos.y + this.eyeHeight, z: this.pos.z };
     const eyeBlock = this.world.getBlock(Math.floor(eye.x), Math.floor(eye.y), Math.floor(eye.z));
     // AMENDS 03 §10 / 15 §13.2 — eyes inside a waterlogged cell submerge too
@@ -545,11 +557,36 @@ export class Player extends LivingEntity {
     else if (this.inWater) this.waterMove(input);
     else this.landMove(input);
 
+    // 06 §12.1 — sprinting costs 0.1 exhaustion per metre travelled on the
+    // ground. Charged here because prevPos is this tick's start position and
+    // move() is the only writer of pos in the tick; the water/lava branches
+    // already clear `sprinting`, so waterMove's 0.01/m cannot double-count.
+    if (this.sprinting && this.onGround && !this.flying) {
+      this.addExhaustion(0.1 * Math.hypot(this.pos.x - this.prevPos.x, this.pos.z - this.prevPos.z));
+    }
+
     // 6b. flight ground-cancel (18 §2.4, Java behavior). Gated on a DOWNWARD
     // move, per §2.4's own wording ("onGround on a downward move"): the tick a
     // double-tap ENABLES flight from a standing start, onGround is still true,
     // and an ungated test would cancel flight before it ever began.
     if (this.flying && this.onGround && this.pos.y < y0) this.flying = false;
+
+    // 6c. AMENDS 03 §12.1/§12.2 — re-sample the medium on the POST-move box, so
+    // the fall-damage and contact tests below see where the player actually
+    // ended up: §12.2's "any water contact (AABB overlap) → fallDistance = 0"
+    // has to hold for a fast fall that crosses the surface and hits the floor
+    // inside one tick (vel.y ≤ −1 skips the water cell entirely otherwise), and
+    // lava/fire contact damage would lag a tick on entry.
+    // §3.3's splash rides along here: velYBefore is the entry speed (this.vel.y
+    // has been zeroed by the landing collision), and wasInWater is the pre-move
+    // sample taken at step 5.
+    const wasInWater = this.inWater;
+    this.updateMedium();
+    if (this.inWater && !wasInWater && velYBefore < -0.3) {
+      // gain scales 0.3-0.8 with entry speed (§3.3)
+      const g = Math.min(0.8, 0.3 + Math.abs(velYBefore) * 0.5);
+      this._selfSound('player.splash', 1, g);
+    }
 
     // 7. fall damage
     // trackFall() zeroes fallDistance unconditionally on the landing tick, so the
@@ -573,9 +610,9 @@ export class Player extends LivingEntity {
       const dmg = Math.ceil(fdBefore - 3 - effectLevel(this, EFFECT.JUMP_BOOST));
       if (dmg > 0) {
         // player.hurt suppresses source 'fall' so this doesn't double up
-        emitSound('player.fall.big', null, 1, (0.6 + 0.1 * Math.min(dmg, 10)) / 0.6);
+        this._selfSound('player.fall.big', 1, (0.6 + 0.1 * Math.min(dmg, 10)) / 0.6);
       } else if (fdBefore >= 0.5) {
-        emitSound('player.fall.small', null);
+        this._selfSound('player.fall.small');
       }
       // §3.2: landing from a fall > 0.5 also emits one step at gain x1.5
       if (fdBefore > 0.5) this.emitStep(1.5);
@@ -610,7 +647,7 @@ export class Player extends LivingEntity {
       this.swimAccum += hSpeed;
       if (this.swimAccum >= 1.8) {                  // §3.2 swim-step
         this.swimAccum -= 1.8;
-        emitSound('player.splash', null, 1, 0.35);
+        this._selfSound('player.splash', 1, 0.35);
       }
     }
 
@@ -631,8 +668,13 @@ export class Player extends LivingEntity {
     this.fovScale += (targetFov - this.fovScale) * 0.5;
 
     // 10-NETHER §3.4 — the portal transfer timer (standing in a portal for 80 t
-    // changes dimension). Only runs in PLAYING (skipped mid-load).
-    if (this.world.game?.state === 'PLAYING') tickPortal(this.world.game);
+    // changes dimension). Only runs in PLAYING (skipped mid-load) and only from
+    // the LOCAL player's tick: tickPortal is a per-GAME pass over game.player,
+    // but on a host every connected client's proxy Player ticks through here too
+    // (NetHost.tickRemotePlayers), so an ungated call ran it N+1 times per tick —
+    // §3.4's 80-tick timer (and portalCooldown) drained N+1× too fast.
+    const game = this.world.game;
+    if (game?.state === 'PLAYING' && game.player === this) tickPortal(game);
   }
 
   // -------------------------------------------------- movement branches
@@ -669,6 +711,12 @@ export class Player extends LivingEntity {
   landMove(input) {
     const { strafe, forward } = this.moveInputs(input);
     const slip = this.groundSlip();
+    // 03 §1 — friction uses the PRE-move onGround flag: Java's travel() computes
+    // f1 = onGround ? friction×0.91 : 0.91 BEFORE move() overwrites the flag.
+    // Reading it after the move gives air friction on the takeoff tick and ground
+    // friction on the landing tick, which inflates §1's emergent sprint-jump
+    // average (0.356 b/t) by 23%. Flat ground is unaffected either way.
+    const grounded = this.onGround;
     const mult = this.sprinting ? 1.3 : 1.0;
     // 09-POTIONS AMENDS 03 §5.3 — Speed/Slowness scale ground move only; air accel
     // is Java-unaffected. effMove = (1+0.2·L_speed)(1−0.15·L_slowness), floor 0.
@@ -699,9 +747,6 @@ export class Player extends LivingEntity {
     if (this.onLadder) {
       this.vel.x = Math.min(0.15, Math.max(-0.15, this.vel.x));
       this.vel.z = Math.min(0.15, Math.max(-0.15, this.vel.z));
-      if (input.strafe !== 0 || input.forward !== 0 || input.jump) {
-        this.vel.y = Math.max(this.vel.y, 0.2);
-      }
       if (this.sneaking) this.vel.y = Math.max(this.vel.y, 0);
       this.vel.y = Math.max(this.vel.y, -0.15);
       this.fallDistance = 0;
@@ -710,7 +755,15 @@ export class Player extends LivingEntity {
     const [dx, dz] = this.sneakEdgeClamp(this.vel.x, this.vel.z);
     this.move(dx, this.vel.y, dz);
 
-    const friction = this.onGround ? slip * 0.91 : 0.91;
+    // 03 §1/§24 — the climb impulse is a plain assignment on the POST-move
+    // velocity (Java parity: move() then `vec3 = new Vec3(x, 0.2, z)`), so the
+    // 0.2 is never itself a displacement: gravity+drag below turn it into the
+    // 0.1176 b/t = 2.35 m/s that becomes next tick's displacement. Applied
+    // pre-move it climbed at a flat 0.2 b/t = 4.0 m/s. §9's other four ladder
+    // rules stay pre-move, exactly as written.
+    if (this.onLadder && (input.strafe !== 0 || input.forward !== 0 || input.jump)) this.vel.y = 0.2;
+
+    const friction = grounded ? slip * 0.91 : 0.91;
     this.vel.x *= friction; this.vel.z *= friction;
     // 09-POTIONS §3.8 Levitation replaces gravity; §3.6/AMENDS 03 §6.1 Slow Falling
     // softens it to 0.01 while descending. Drag ×0.98 unchanged.
@@ -785,7 +838,7 @@ export class Player extends LivingEntity {
       this.gliding = true;
       this.glideTicks = 0;
       this.sprinting = false;                            // §7.2 deploy clears sprint
-      emitSound('elytra.deploy', null);
+      this._selfSound('elytra.deploy');
     }
   }
 
@@ -829,8 +882,14 @@ export class Player extends LivingEntity {
     this.glideTicks++;                                   // §10.1 durability: 1 per second
     if (this.glideTicks % 20 === 0) {
       const chest = this.armor[1], def = chest && ITEMS.get(chest.id);
-      if (def?.elytra) {
-        chest.damage = (chest.damage ?? 0) + 1;
+      if (def?.elytra && !this.creative) {
+        // 08 §5.7 — "gate every single durability point at every decrement site".
+        // This is the one site that does not route through damageIn/
+        // damageArmorSlot (§10.1's "stops but never breaks" forbids the latter,
+        // which nulls the slot), so the Unbreaking roll is applied inline.
+        const spend = unbreakingArmorPoints(1, getEnchantLvl(chest, ENCH.UNBREAKING),
+          this.world?.rng ?? Math.random);
+        chest.damage = (chest.damage ?? 0) + spend;
         if (chest.damage >= def.durability - 1) { chest.damage = def.durability - 1; this.gliding = false; }  // tattered at 1 (never breaks)
       }
     }
@@ -875,7 +934,10 @@ export class Player extends LivingEntity {
       && this.foodLevel > 6
       && !this.sneaking
       && !this.usingItem
-      && !this.inWater && !this.inLava;
+      // 18 §2.3/§9 — "a creative player flying in water or lava neither sinks
+      // nor slows": flightMove's speed is ×2 while sprinting, so the fluid clause
+      // must not reach a flying player (updateMedium has no flight exemption).
+      && (this.flying || (!this.inWater && !this.inLava));
   }
 
   updateSprint(input) {
@@ -899,14 +961,13 @@ export class Player extends LivingEntity {
       const stop = input.forward * 0.98 < 0.8
         || this.hitWall
         || this.foodLevel <= 6
-        || this.inWater || this.inLava
+        || (!this.flying && (this.inWater || this.inLava))   // 18 §2.3 — see canSprint
         || this.usingItem;
       if (stop) this.sprinting = false;
     }
-    if (this.sprinting && this.onGround) {
-      const d = Math.hypot(this.pos.x - this.prevPos.x, this.pos.z - this.prevPos.z);
-      this.addExhaustion(0.1 * d);
-    }
+    // (06 §12.1's 0.1/m sprint drain is charged in tick(), AFTER the movement
+    // branch: updateSprint runs before the move, where pos still equals prevPos
+    // — the distance measured here was always exactly 0.)
   }
 
   stopSprint() { this.sprinting = false; }
@@ -1047,17 +1108,24 @@ export class Player extends LivingEntity {
     // §3.3 — post-i-frame, post-armor. 'fall' is excluded: the landing already
     // emits player.fall.big for exactly this hit.
     if (dmg > 0 && source !== 'fall') {
-      if (source === 'fire' || source === 'burn' || source === 'lava') emitSound('player.hurt.fire', null);
-      else if (source === 'drown') emitSound('player.hurt.drown', null);
-      else emitSound('player.hurt', null);
+      if (source === 'fire' || source === 'burn' || source === 'lava') this._selfSound('player.hurt.fire');
+      else if (source === 'drown') this._selfSound('player.hurt.drown');
+      else this._selfSound('player.hurt');
     }
-    audio.duck();                    // §4.3: music steps aside while you panic
+    if (!this.isNetPlayer) audio.duck();   // §4.3: music steps aside while YOU panic
     this.world.game?.onPlayerHurt?.(dmg, source);
   }
 
   onDeath() {
     const game = this.world.game;
-    emitSound('player.death', null);
+    this._selfSound('player.death');
+    // 06 §14.1 — the craft grid / transient enchant-anvil-grindstone inputs /
+    // cursor return to the inventory FIRST, so §13's drop loop below covers them
+    // too. Closing on state change instead spilled them back into an inventory
+    // that had already been emptied — a keep-inventory bypass. Local player only:
+    // a remote player's death must not close the HOST's own screen. close(true)
+    // is silent and re-entrant (it early-returns once kind is null).
+    if (game?.player === this) game.ui?.containers?.close?.(true);
     // drop everything (03 §20.5)
     for (let i = 0; i < 36; i++) {
       if (this.inventory[i]) { game?.dropStackAt(this.inventory[i], this.pos.x, this.pos.y + 0.6, this.pos.z); this.inventory[i] = null; }
@@ -1103,13 +1171,20 @@ export class Player extends LivingEntity {
     // tags?}. cloneStack deep-copies tags and preserves unknown keys, so a 09+
     // key survives a round-trip through a build that predates its owner.
     const packStacks = arr => arr.map(s => cloneStack(s));
+    // 01 §16 — the WRITE side of the non-finite quarantine. A NaN player position
+    // was written into meta.players, after which Continue is a black screen
+    // forever with no way back short of clearing site data.
+    const fin = (v, d) => (Number.isFinite(v) ? v : d);
     return {
-      pos: [this.pos.x, this.pos.y, this.pos.z],
-      vel: [this.vel.x, this.vel.y, this.vel.z],
-      yaw: this.yaw, pitch: this.pitch,
+      pos: [fin(this.pos.x, 0), fin(this.pos.y, 80), fin(this.pos.z, 0)],
+      vel: [fin(this.vel.x, 0), fin(this.vel.y, 0), fin(this.vel.z, 0)],
+      yaw: fin(this.yaw, 0), pitch: fin(this.pitch, 0),
       dimension: this.dim,        // 10-NETHER §2.4 — restore the active dim on load
-      health: this.health,
-      hunger: this.foodLevel, saturation: this.saturation, exhaustion: this.exhaustion,
+      health: fin(this.health, 20),
+      // 01 §16 — `dead` must round-trip: Game's LOADING gate branches on it, but
+      // without persistence a death-screen save reloaded as health-0-but-alive.
+      dead: this.dead,
+      hunger: fin(this.foodLevel, 20), saturation: this.saturation, exhaustion: this.exhaustion,
       effects: serializeEffects(this), absorption: this.absorption,   // 09-POTIONS §16
       // 08 §13 — `xp` is CURRENT total points (spend-sensitive); `xpEarnedTotal`
       // is the lifetime Score counter (§3.2). Before E4 this field wrote
@@ -1120,7 +1195,7 @@ export class Player extends LivingEntity {
       xp: currentXp(this),
       xpEarnedTotal: this.xpTotal,
       enchantSeed: this.enchantSeed,
-      air: this.air, fireTicks: this.fireTicks, fallDistance: this.fallDistance,
+      air: fin(this.air, 300), fireTicks: this.fireTicks, fallDistance: this.fallDistance,
       gameMode: this.gameMode,
       inventory: packStacks(this.inventory),
       armor: packStacks(this.armor),
@@ -1135,6 +1210,9 @@ export class Player extends LivingEntity {
     this.dim = rec.dimension ?? 0;        // 10-NETHER §2.4 — Game.startWorld reads this
     this.pitch = rec.pitch ?? 0;
     this.health = rec.health ?? 20;
+    // The `?? (health <= 0)` fallback repairs already-written 0-HP saves;
+    // respawn() clears the flag.
+    this.dead = rec.dead ?? (this.health <= 0);
     this.foodLevel = rec.hunger ?? 20;
     this.saturation = rec.saturation ?? 5;
     this.exhaustion = rec.exhaustion ?? 0;

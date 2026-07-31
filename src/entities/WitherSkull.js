@@ -12,6 +12,15 @@ import { EFFECT, addEffect } from '../status/effects.js';
 import { emitSound, at } from '../audio/engine.js';
 import { makeAtlasMaterial } from './ItemEntity.js';
 
+// 01 §17.2 — shared skull box (models.js boxGeo's contract): the wither fires
+// continuously and a per-instance BoxGeometry is never freed (three releases GL
+// buffers only on dispose()). `shared` opts it out of EntityManager's sweep.
+let GEO = null;
+function skullGeo() {
+  if (!GEO) { GEO = new THREE.BoxGeometry(0.3125, 0.3125, 0.3125); GEO.userData.shared = true; }
+  return GEO;
+}
+
 export class WitherSkull extends Entity {
   constructor(world, x, y, z, dx, dy, dz, owner, opts = {}) {
     super(world, x, y, z);
@@ -62,16 +71,22 @@ export class WitherSkull extends Entity {
     const g = this.world.game;
     const { x, y, z } = this.pos;
     emitSound('mob.wither.shoot', at(x, y, z));
+    // §8.7 — "the wither is immune to its own skulls' damage". The direct-hit
+    // path above already excludes the owner; opts.source excludes it from the
+    // BLAST too, which otherwise fed §8.5's own hover overshoot back into
+    // beforeHurt (blueCounter += 3, breakCounter = 20 — the wither mining a hole
+    // under itself as a side effect of its own shot).
+    const opts = { source: this.owner };
     if (this.blue) {
       // blast-0: shatters obsidian (orchestrator adds explodeBlast0)
-      (g.explodeBlast0 ?? g.explode).call(g, x, y, z, 1);
+      (g.explodeBlast0 ?? g.explode).call(g, x, y, z, 1, opts);
     } else {
-      g.explode(x, y, z, 1);
+      g.explode(x, y, z, 1, opts);
     }
   }
 
   buildMesh() {
-    const m = new THREE.Mesh(new THREE.BoxGeometry(0.3125, 0.3125, 0.3125), makeAtlasMaterial());
+    const m = new THREE.Mesh(skullGeo(), makeAtlasMaterial());
     m.material.userData?.baseColor?.setRGB(
       this.blue ? 0.35 : 0.15, this.blue ? 0.55 : 0.12, this.blue ? 0.55 : 0.12);
     const grp = new THREE.Group(); grp.add(m); return grp;

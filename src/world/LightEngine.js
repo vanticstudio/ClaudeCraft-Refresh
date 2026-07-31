@@ -8,6 +8,9 @@ import { ChunkState } from './Chunk.js';
 const SKY = 0, BLOCK = 1;
 const DIRS = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
 const DOWN = 3;   // index into DIRS
+// 01 §17 "GC hitches" — module-scope constant, never an inline literal inside the
+// 16×16 column loop below (that allocated 5 arrays per column, 1280 per chunk).
+const H4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
 
 // Flat int32 ring queue, 4 lanes per node (x, y, z, level)
 class Queue4 {
@@ -64,6 +67,36 @@ export class LightEngine {
     this.unlightQ = [new Queue4(), new Queue4()];
     this.dirtied = new Set();                       // chunk keys touched
     this.node = new Int32Array(4);                  // pop scratch
+    // 01 §10.3 safety valve — ONE shared budget per edit. `guard` used to be a
+    // local of each loop, so a single onBlockChanged could legally drain
+    // removeLight(100k) + 3× propagate(400k) + removeLight(100k) = 1.4M nodes,
+    // 14× the spec's abort threshold.
+    this.budgetOn = false;
+    this.nodeBudget = 0;
+    this.panicked = false;
+    this._panic = [0, 0, 0];                        // cell that blew the budget
+  }
+
+  // 01 §10.3 — "abort, zero both light arrays of the 3×3 neighborhood, and
+  // re-run initialLight on them spread over the next 9 ticks (one chunk per
+  // tick)". Dropping the 3×3 back to GENERATED IS that re-run request:
+  // ChunkManager.promote() already budgets 2 chunks/tick and gates on a
+  // GENERATED 3×3. Bug-net, not a feature — logged when hit.
+  lightPanic() {
+    this.panicked = true;
+    console.warn('[light] node budget exhausted at', this._panic.join(','), '— relighting 3x3');
+    this.propQ[SKY].clear(); this.propQ[BLOCK].clear();
+    this.unlightQ[SKY].clear(); this.unlightQ[BLOCK].clear();
+    const cx = this._panic[0] >> 4, cz = this._panic[2] >> 4;
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dz = -1; dz <= 1; dz++) {
+        const c = this.world.chunks.get(chunkKey(cx + dx, cz + dz));
+        if (!c || c.state < ChunkState.GENERATED || !c.skyLight) continue;
+        c.skyLight.fill(0); c.blockLight.fill(0);
+        c.state = ChunkState.GENERATED;
+        this.dirtied.add(c.key);
+      }
+    }
   }
 
   // ---- raw cell access (drops writes into missing / ungenerated chunks) ----
@@ -119,17 +152,22 @@ export class LightEngine {
 
   markDirty(c, x, z) {
     this.dirtied.add(c.key);
-    // border cells also dirty the adjacent chunk (mesh AO/light sampling)
+    // 01 §4.5 — border cells dirty the face-adjacent chunk, and a CORNER cell
+    // dirties the DIAGONAL too: the mesher's -X face at local (0,y,0) tangent-
+    // samples bz-1, i.e. cell (15,y,15) of chunk (cx-1,cz-1), so that chunk's
+    // border vertex is stale without this.
     const lx = x & 15, lz = z & 15;
-    if (lx === 0) this.dirtied.add(chunkKey(c.cx - 1, c.cz));
-    else if (lx === 15) this.dirtied.add(chunkKey(c.cx + 1, c.cz));
-    if (lz === 0) this.dirtied.add(chunkKey(c.cx, c.cz - 1));
-    else if (lz === 15) this.dirtied.add(chunkKey(c.cx, c.cz + 1));
+    const ox = lx === 0 ? -1 : (lx === 15 ? 1 : 0);
+    const oz = lz === 0 ? -1 : (lz === 15 ? 1 : 0);
+    if (ox) this.dirtied.add(chunkKey(c.cx + ox, c.cz));
+    if (oz) this.dirtied.add(chunkKey(c.cx, c.cz + oz));
+    if (ox && oz) this.dirtied.add(chunkKey(c.cx + ox, c.cz + oz));
   }
 
   // ---- propagation (04 §9.2) ----
 
   propagate(channel) {
+    if (this.panicked) return;                      // 01 §10.3 — edit abandoned
     const q = this.propQ[channel];
     const n = this.node;
     let guard = 0;
@@ -152,19 +190,33 @@ export class LightEngine {
           if (this.setLight(channel, nx, ny, nz, newL)) q.push(nx, ny, nz, newL);
         }
       }
-      if (++guard > LIGHT_NODE_BUDGET * 4) { console.warn('[light] propagate guard hit'); q.clear(); break; }
+      // Budgeted (a block edit): one shared allowance per edit, §10.3's repair on
+      // exhaustion. Unbudgeted (initialLight): the original per-call guard, which
+      // must stay generous — a fresh cave chunk legitimately drains six figures.
+      if (this.budgetOn) {
+        if (--this.nodeBudget <= 0) { this._panic[0] = x; this._panic[1] = y; this._panic[2] = z; this.lightPanic(); break; }
+      } else if (++guard > LIGHT_NODE_BUDGET * 4) {
+        console.warn('[light] propagate guard hit'); q.clear(); break;
+      }
     }
   }
 
   // ---- removal (04 §9.3, two-queue unlight) ----
 
   removeLight(channel, x, y, z) {
+    if (this.panicked) return;                      // 01 §10.3 — edit abandoned
     const old = this.light(channel, x, y, z);
     this.setLight(channel, x, y, z, 0);
     const uq = this.unlightQ[channel];
     const pq = this.propQ[channel];
     uq.push(x, y, z, old);
     const n = this.node;
+    // 04 §16 — stored light carries no provenance, so an EMITTER cell holding a
+    // value below the removed source's is indistinguishable from descended light
+    // and gets zeroed here (a lit furnace beside a broken torch went permanently
+    // dark). Collect them and re-seed after the tear-down, so the `nL < L`
+    // cascade itself is unaffected.
+    const relight = [];
     let guard = 0;
     while (uq.length > 0) {
       uq.pop(n);
@@ -178,12 +230,35 @@ export class LightEngine {
         const descended = nL < L ||
           (channel === SKY && d === DOWN && L === 15 && nL === 15);
         if (descended) {
-          if (this.setLight(channel, nx, ny, nz, 0)) uq.push(nx, ny, nz, nL);
+          if (this.setLight(channel, nx, ny, nz, 0)) {
+            uq.push(nx, ny, nz, nL);
+            if (channel === BLOCK) {
+              const c = this.chunkAt(nx, nz);
+              if (c) {
+                const i = (ny << 8) | ((nz & 15) << 4) | (nx & 15);
+                const b = BLOCKS[c.blocks[i]];
+                // 07 §6.4 — a redstone torch's emission rides its state bit.
+                const em = b.emissionFor ? b.emissionFor(c.states[i]) : b.emission;
+                if (em > 0) relight.push(nx, ny, nz, em);
+              }
+            }
+          }
         } else {
           pq.push(nx, ny, nz, nL);   // independent light: refill frontier
         }
       }
-      if (++guard > LIGHT_NODE_BUDGET) { console.warn('[light] remove guard hit'); uq.clear(); break; }
+      if (this.budgetOn) {
+        if (--this.nodeBudget <= 0) { this._panic[0] = qx; this._panic[1] = qy; this._panic[2] = qz; this.lightPanic(); break; }
+      } else if (++guard > LIGHT_NODE_BUDGET) {
+        console.warn('[light] remove guard hit'); uq.clear(); break;
+      }
+    }
+    if (!this.panicked) {
+      for (let k = 0; k < relight.length; k += 4) {
+        if (this.setLight(BLOCK, relight[k], relight[k + 1], relight[k + 2], relight[k + 3])) {
+          pq.push(relight[k], relight[k + 1], relight[k + 2], relight[k + 3]);
+        }
+      }
     }
     this.propagate(channel);
   }
@@ -192,6 +267,10 @@ export class LightEngine {
 
   initialLight(chunk) {
     this.dirtied.clear();
+    // Unbudgeted: §10.3's 100k valve is scoped to "a single onBlockChanged".
+    // A fresh cave chunk legitimately drains six figures, and demoting its own
+    // 3×3 back to GENERATED here would loop promote() forever.
+    this.budgetOn = false; this.panicked = false;
     const { cx, cz } = chunk;
     const baseX = cx * 16, baseZ = cz * 16;
     const sky = chunk.skyLight, blocks = chunk.blocks, hm = chunk.heightMap;
@@ -208,17 +287,25 @@ export class LightEngine {
           for (let y = MAX_Y; y >= H; y--) sky[(y << 8) | (z << 4) | x] = 15;
         }
       }
-      // 2. sky frontier: cells that can bleed sideways into somewhere darker
+      // 2. sky frontier: cells that can bleed sideways into somewhere darker AND
+      //    the column's own lowest sky-15 cell.
+      //    The own-cell seed is not optional (04 §16's "3 blocks of water reads 12
+      //    beneath" acceptance case): step 1 only WRITES 15, it enqueues nothing,
+      //    and propagate() expands popped nodes only. Water terminates the
+      //    heightmap on both sides, so an open ocean column has hMax === H, the
+      //    old `y < hMax` loop pushed nothing, and rule 2/3's DOWN step never
+      //    fired — every generated or reloaded body of water read skyLight 0.
       for (let z = 0; z < 16; z++) {
         for (let x = 0; x < 16; x++) {
           const H = hm[(z << 4) | x];
           const wx = baseX + x, wz = baseZ + z;
           let hMax = H;
-          for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          for (const [dx, dz] of H4) {
             const nH = this.world.heightTop(wx + dx, wz + dz);
             if (nH > hMax) hMax = nH;
           }
-          for (let y = H; y < hMax; y++) pqSky.push(wx, y, wz, 15);
+          const yTop = hMax > H ? hMax : H + 1;
+          for (let y = H; y < yTop; y++) pqSky.push(wx, y, wz, 15);
         }
       }
     }
@@ -277,6 +364,8 @@ export class LightEngine {
     const newO = (newState & WATERLOGGED) ? Math.max(newB.opacity, 1) : newB.opacity;
     const chunk = this.chunkAt(x, z);
     if (!chunk) return this.dirtied;
+    // 01 §10.3 — one 100k-node allowance for the WHOLE edit (both channels).
+    this.budgetOn = true; this.nodeBudget = LIGHT_NODE_BUDGET; this.panicked = false;
     const col = ((z & 15) << 4) | (x & 15);
     const oldH = chunk.heightMap[col];
 
@@ -334,11 +423,8 @@ export class LightEngine {
       this.propagate(SKY);
     }
 
+    this.budgetOn = false; this.panicked = false;
     return this.dirtied;
-  }
-
-  getLight(x, y, z) {
-    return { sky: this.light(SKY, x, y, z), block: this.light(BLOCK, x, y, z) };
   }
 
   /**
@@ -348,6 +434,8 @@ export class LightEngine {
    */
   setBlockEmission(x, y, z, oldEmit, newEmit) {
     this.dirtied.clear();
+    // 01 §10.3 — same shared per-edit allowance as onBlockChanged.
+    this.budgetOn = true; this.nodeBudget = LIGHT_NODE_BUDGET; this.panicked = false;
     if (oldEmit > 0 || (this.opacity(x, y, z) > 0 && this.light(BLOCK, x, y, z) > 0)) {
       this.removeLight(BLOCK, x, y, z);
     }
@@ -356,6 +444,7 @@ export class LightEngine {
       this.propQ[BLOCK].push(x, y, z, newEmit);
     }
     this.propagate(BLOCK);
+    this.budgetOn = false; this.panicked = false;
     return this.dirtied;
   }
 }

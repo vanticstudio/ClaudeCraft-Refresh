@@ -167,10 +167,28 @@ export function mobTexture(name) {
 
 // ---------------------------------------------------------------- parts
 
+// 01 §13 — box geometry is shared by dimensions. Every model builder runs per mob
+// INSTANCE, and EntityManager.remove disposes materials only, so a fresh
+// BoxGeometry per part leaked its GL buffers on every spawn/despawn cycle. No
+// code in src/entities reads or mutates a part's `.geometry` (the per-part offset
+// lives on the Mesh transform), so one cache entry per size is safe. `shared`
+// marks it off-limits to any future geometry.dispose() sweep.
+const geoCache = new Map();
+function boxGeo(w, h, d) {
+  const k = w + '|' + h + '|' + d;
+  let g = geoCache.get(k);
+  if (!g) {
+    g = new THREE.BoxGeometry(w / 16, h / 16, d / 16);
+    g.userData.shared = true;
+    geoCache.set(k, g);
+  }
+  return g;
+}
+
 // Box part: dims in px; pivot = rotation origin in px (model space, y up from
 // feet); offset = box center relative to pivot, in px.
 export function part(texName, w, h, d, pivot, offset, faceTexName = null) {
-  const geo = new THREE.BoxGeometry(w / 16, h / 16, d / 16);
+  const geo = boxGeo(w, h, d);
   const mats = [];
   const side = new THREE.MeshLambertMaterial({ map: mobTexture(texName) });
   side.userData.baseColor = new THREE.Color(1, 1, 1);
@@ -278,12 +296,21 @@ export function cowModel() {
     { bodyW: 12, bodyH: 10, bodyL: 18, bodyY: 16, headS: 8, headD: 6, headY: 20, legH: 11, legW: 4 });
   const udder = part('pig_skin', 4, 2, 6, [0, 11, -4], [0, 0, 0]);
   m.group.add(udder);
+  // 05 §16.1 "2 horns 1×3×1". Parented to the head so they track head yaw/pitch:
+  // the head pivot is [0,20,9] and its 8×8×6 box is centred at head-local
+  // (0,0,3) spanning y16–24, so local y 5.5 puts the horns at y24–27.
+  // sheep_skin's tan reads as bone — no new texture.
+  for (const sx of [-3, 3]) m.parts.head.add(part('sheep_skin', 1, 3, 1, [sx, 5.5, 3], [0, 0, 0]));
   return m;
 }
 
 export function pigModel() {
   const m = quadrupedModel('pig_skin', 'pig_face',
     { bodyW: 10, bodyH: 8, bodyL: 16, bodyY: 10, headS: 8, headD: 8, headY: 12, legH: 6, legW: 4 });
+  // 05 §16.1 "snout 4×3×1", protruding from the head's +Z face (head-local box
+  // centre (0,0,4) spanning head-local z0–8, so the face plane is z=8). pig_skin,
+  // not pig_face — a face texture would squash a whole face onto the 4×3×1 box.
+  m.parts.head.add(part('pig_skin', 4, 3, 1, [0, -1, 8.5], [0, 0, 0]));
   return m;
 }
 

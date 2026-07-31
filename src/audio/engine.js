@@ -74,6 +74,7 @@ export class AudioEngine {
     this.ambience = null;
     this.unknown = new Set();
     this.duckUntil = 0;
+    this.paused = false;                // §1.1 deliberate suspend (pause / tab hidden)
     this.themeMusic = null;             // §4A layer, wired by main.js
     this._tickCount = 0;
     this.debug = { voices: 0, drops: 0, state: 'none', budgetMs: 0 };
@@ -89,6 +90,14 @@ export class AudioEngine {
     this.ctx.onstatechange = () => {
       // Safari's nonstandard 'interrupted' is treated as suspended (§1.1)
       this.debug.state = this.ctx.state;
+      // §1.1 — emitSound hard-drops every sound while the context is not
+      // running, so an iOS phone-call interruption or an OS audio-device change
+      // silenced the whole game PERMANENTLY. Self-heal, but never fight
+      // onPause's deliberate suspend (`this.paused`) or a hidden tab.
+      const s = this.debug.state;
+      if ((s === 'suspended' || s === 'interrupted') && !this.paused && !document.hidden) {
+        this.ctx.resume().then(() => this.onResume()).catch(() => {});
+      }
     };
     // AMENDS 01 §15.2 wants onPause on "PAUSED incl. visibilitychange → hidden",
     // but main.js's visibilitychange only calls setState when state === PLAYING —
@@ -141,12 +150,17 @@ export class AudioEngine {
   // ---------------------------------------------------------------- lifecycle (§1.1)
 
   // Idempotent + cheap: call from EVERY gesture handler, don't track "first click".
+  // §1.1 asks callers not to track state, so the ENGINE tracks the one state a
+  // gesture must not undo: every pause-menu button unlocks before its click
+  // sound, and without this guard the first one resumes the context we
+  // deliberately suspended — the tab keeps burning CPU for the whole pause.
   unlock() {
-    if (!this.ctx) return;
+    if (!this.ctx || this.paused) return;
     if (this.ctx.state !== 'running') this.ctx.resume().catch(() => {});
   }
 
   onPause() {
+    this.paused = true;
     if (!this.ctx || this.ctx.state !== 'running') return;
     const now = this.ctx.currentTime;
     this.masterGain.gain.setTargetAtTime(0, now, 0.02);   // 80 ms fade, tau 0.02
@@ -157,6 +171,7 @@ export class AudioEngine {
   }
 
   onResume() {
+    this.paused = false;
     if (!this.ctx) return;
     clearTimeout(this._suspendTimer);
     const restore = () => {

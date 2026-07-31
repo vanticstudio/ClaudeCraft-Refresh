@@ -33,7 +33,6 @@ export class Entity {
     this.width = 0.5; this.height = 0.5;
     this.onGround = false;
     this.hitWall = false;
-    this.hitCeiling = false;
     this.inWater = false;
     this.inLava = false;
     this.onLadder = false;
@@ -46,7 +45,6 @@ export class Entity {
     this.object3d = null;
     this.lightScalar = 1;
     this.chunkKey = null;                     // spatial index registration
-    this.gravityBlocked = false;              // frozen outside SIM radius
     this.blockAgainstUnloaded = false;        // player only
     this.persistent = false;
   }
@@ -107,12 +105,13 @@ export class Entity {
 
   updateRender(alpha) {
     if (!this.object3d) return;
+    const a = this.isPuppet ? 1 : alpha;   // 14 §4.4 — NetClient.renderTick already wrote the interpolated position; do not re-lerp it
     this.object3d.position.set(
-      lerp(this.prevPos.x, this.pos.x, alpha),
-      lerp(this.prevPos.y, this.pos.y, alpha),
-      lerp(this.prevPos.z, this.pos.z, alpha),
+      lerp(this.prevPos.x, this.pos.x, a),
+      lerp(this.prevPos.y, this.pos.y, a),
+      lerp(this.prevPos.z, this.pos.z, a),
     );
-    this.object3d.rotation.y = lerpAngle(this.prevYaw, this.yaw, alpha);
+    this.object3d.rotation.y = lerpAngle(this.prevYaw, this.yaw, a);
     this.applyLightScalar();
   }
 
@@ -140,10 +139,14 @@ export class Entity {
     };
   }
 
+  // 01 §16 — reject a non-finite record AT THE BOUNDARY rather than installing it
+  // and persisting it forever: a NaN position propagates through collision into
+  // the chunk key and blacks the world out on every subsequent load.
   deserialize(rec) {
-    if (rec.pos) this.setPos(rec.pos[0], rec.pos[1], rec.pos[2]);
-    if (rec.vel) { this.vel.x = rec.vel[0]; this.vel.y = rec.vel[1]; this.vel.z = rec.vel[2]; }
-    if (rec.yaw !== undefined) this.yaw = rec.yaw;
+    const fin3 = a => Array.isArray(a) && a.length === 3 && a.every(Number.isFinite);
+    if (fin3(rec.pos)) this.setPos(rec.pos[0], rec.pos[1], rec.pos[2]);
+    if (fin3(rec.vel)) { this.vel.x = rec.vel[0]; this.vel.y = rec.vel[1]; this.vel.z = rec.vel[2]; }
+    if (Number.isFinite(rec.yaw)) this.yaw = rec.yaw;
   }
 }
 

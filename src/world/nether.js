@@ -49,8 +49,13 @@ export function tickSpawner(game, be, x, y, z) {
     const tx = x + (game.world.rng() * 2 - 1) * d.spawnRange;
     const ty = y + (Math.floor(game.world.rng() * 3) - 1);
     const tz = z + (game.world.rng() * 2 - 1) * d.spawnRange;
-    if (validSpawnCell(game, Math.floor(tx), Math.floor(ty), Math.floor(tz))) {
-      game.spawnMobAt(d.mobType, tx + 0.5, ty, tz + 0.5, {});
+    // §6.2 validates floor(tx) and spawns AT that cell. tx/tz are floats, so the
+    // old `tx + 0.5` pushed the spawn centre into the NEXT cell whenever
+    // frac(tx) >= 0.5 — a blaze validated at cell 54 materialised at 55.2, inside
+    // the fortress bricks (spawnMobAt has no clearance check of its own).
+    const cx = Math.floor(tx), cy = Math.floor(ty), cz = Math.floor(tz);
+    if (validSpawnCell(game, cx, cy, cz)) {
+      game.spawnMobAt(d.mobType, cx + 0.5, cy, cz + 0.5, {});
       spawnedAny = true;
     }
   }

@@ -334,8 +334,17 @@ export class World {
     if (id === B.AIR) return false;
     const blk = BLOCKS[id];
     const state = this.getState(x, y, z);
+    // AMENDS registry §3 — popBlock is the ENVIRONMENTAL pop (support loss,
+    // flood, piston shove, falling-block landing), NOT a mining attempt, and its
+    // callers pass no tool. defBlock now wraps every `tier != null` row in the
+    // harvest gate, so a bare popBlock silently destroyed e.g. a stone pressure
+    // plate or a brewing stand with no drop at all. Satisfy the gate where one
+    // exists — passing blk.tool unconditionally would make a leaf block drop
+    // itself instead of a sapling — exactly as endArena's platform clear does.
+    const tc = toolClass ?? (blk.tier == null ? null : blk.tool);
+    const tt = toolTier ?? 99;
     const drops = blk.drops
-      ? blk.drops({ state, toolClass, toolTier, rng: this.rng })
+      ? blk.drops({ state, toolClass: tc, toolTier: tt, rng: this.rng })
       : [];
     const cleared = this.clearedCell(x, y, z);
     this.setBlock(x, y, z, cleared.id, { state: cleared.state });

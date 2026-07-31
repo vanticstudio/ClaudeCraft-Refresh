@@ -75,8 +75,10 @@ export class Arrow extends Entity {
     }
     sweep.expand(0.3, 0.3, 0.3);
     let target = null, bestD = Infinity;
+    // 13-BOSSES §3 — `e.damageable` admits the non-living end crystal, which any
+    // damage instance (including a 1-damage arrow) must detonate.
     for (const e of this.world.getEntitiesInBox(sweep, e =>
-        e instanceof LivingEntity && !e.dead && (this.age > 5 || e !== this.owner))) {
+        (e instanceof LivingEntity || e.damageable) && !e.dead && (this.age > 5 || e !== this.owner))) {
       const d = Math.hypot(e.pos.x - this.pos.x, e.pos.y - this.pos.y, e.pos.z - this.pos.z);
       if (d < bestD) { bestD = d; target = e; }
     }
@@ -93,6 +95,11 @@ export class Arrow extends Entity {
         this.vel.y = -this.vel.y * 0.3 + j();
         this.vel.z = -this.vel.z * 0.3 + j();
         this.stuck = false; this.owner = null;
+        // blockHit was traced along the PRE-deflection velocity and is almost
+        // always non-null (raycastBlocks caps t at `speed`), so without this the
+        // stick branch below would teleport the bounced arrow into the block
+        // BEHIND the deflector and lodge it there — the bounce never happened.
+        blockHit = null;
       } else {
         // 08 §5.9 Power — base 2 becomes 2 + 0.5L + 0.5 (§5.1); the crit bonus
         // then applies to the BOOSTED value (Java order). L=0 keeps the base ×2
@@ -112,10 +119,12 @@ export class Arrow extends Entity {
           target.vel.y += 0.1;
           target.vel.z += nz * 0.6 * this.punchLvl;
         }
-        // §5.9 Flame — 100 ticks (5 s) on an entity hit.
-        if (this.flame && !target.dead) target.setOnFire(100);
+        // §5.9 Flame — 100 ticks (5 s) on an entity hit. Optional-call and the
+        // LivingEntity gate below: the target may be a non-living end crystal
+        // (13 §3), which has neither setOnFire nor an effects map.
+        if (this.flame && !target.dead) target.setOnFire?.(100);
         // 09-POTIONS §15.4 — tipped arrow on-hit: full instant, or base ÷ 8 duration.
-        if (this.potionId) {
+        if (this.potionId && target instanceof LivingEntity) {
           const P = POTIONS[this.potionId];
           if (P?.effect) {
             if (P.instant) applyInstant(target, P.effect, P.amp, 1.0, this.owner);
@@ -161,15 +170,23 @@ export class Arrow extends Entity {
   }
 
   tryPickup() {
-    const player = this.world.game?.player;
-    if (!player || player.dead) return;
-    if (player.getAABB().expand(0.5, 0.25, 0.5).intersects(this.getAABB())) {
+    const game = this.world.game;
+    if (!game) return;
+    // 14 AMENDS 05 §11 — pickup is host-authoritative over the WHOLE roster, like
+    // ItemEntity.tryPickup: a client's own bow shots run through NetHost's remote
+    // use-channel, so reading only game.player left every joined player's stuck
+    // arrows uncollectible until the 1200-tick despawn.
+    const players = (game.players && game.players.length) ? game.players : (game.player ? [game.player] : []);
+    const box = this.getAABB();
+    for (const player of players) {
+      if (!player || player.dead) continue;
+      if (!player.getAABB().expand(0.5, 0.25, 0.5).intersects(box)) continue;
       // 09-POTIONS §15 — a tipped arrow returns tipped_arrow carrying its potionId.
       const stack = this.potionId
         ? { id: idOf('tipped_arrow'), count: 1, tags: { potionId: this.potionId } }
         : { id: idOf('arrow'), count: 1 };
       const leftover = player.give(stack);
-      if (leftover === 0) { this.dead = true; this.notifyStuckBlock(); }
+      if (leftover === 0) { this.dead = true; this.notifyStuckBlock(); return; }
     }
   }
 

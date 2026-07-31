@@ -1,11 +1,20 @@
 // Culled-face chunk mesher with per-vertex AO + smooth light (01 §8).
 // Runs on the main thread against a 3×3 LIT neighborhood (01 §8.6).
 import * as THREE from 'three';
-import { BLOCKS, B, WATERLOGGED, STATE_NIBBLE } from '../registry/blocks.js';
+import { BLOCKS, B, WATERLOGGED, STATE_NIBBLE, WALL_DIR } from '../registry/blocks.js';
 import {
   FACE_NORMALS, FACE_CORNERS, FACE_UVS, FACE_TANGENTS, FACE_SHADE, AO_CURVE,
 } from './faceTables.js';
 import { doorBox } from '../registry/blocks.js';
+// 07-REDSTONE §4.5 — the 16 power-tinted dust tile variants, and the ONE
+// connection-graph implementation (§4.2). The mesher never re-derives the graph:
+// shape and logic must agree by construction.
+import { DUST_DOT_TILE, DUST_LINE_TILE } from '../assets/atlas.js';
+import { dustConnections, CONN } from '../redstone/dust.js';
+// 07-REDSTONE §2 — ATTACH 0-5 → the vector from a component TO its support.
+// redstone_torch encodes ATTACH in bits0-2 (§13.3), NOT 06 §3's torch nibble.
+// FACE6_DIR is the piston/piston_head extension direction (§13.3 rows 79-81).
+import { ATTACH_DIR, FACE6_DIR } from '../redstone/dirs.js';
 import { MAX_Y, chunkKey } from '../constants.js';
 import { ChunkState } from '../world/Chunk.js';
 
@@ -79,14 +88,28 @@ export class ChunkMesher {
     this.hood = new Array(9);
     this.minY = 0;
     this.maxY = 0;
+    // 07-REDSTONE §4.2 — a World-shaped view of the captured 3×3 hood, so
+    // dustConnections() can run inside the mesher unchanged. Coordinates are the
+    // mesher's hood-local ones (centre chunk 0..15, neighbours −1 / 16), which is
+    // exactly what blockAt/stateAt already take. Allocated once, not per cell.
+    this.hoodWorld = {
+      getBlock: (x, y, z) => this.blockAt(x, y, z),
+      getState: (x, y, z) => this.stateAt(x, y, z),
+    };
   }
 
-  // 9 chunks, index (dcx+1)*3 + (dcz+1); all must be ≥ LIT (01 §8.6)
+  // 9 chunks, index (dcx+1)*3 + (dcz+1); all must be ≥ LIT (01 §8.6).
+  // AMENDS 01 §8.6 — one exemption, matching ChunkManager.hoodAtLeast: a FAILED
+  // neighbour (state −1) counts as satisfied. markChunkFailed() installs empty
+  // blocks/states/skyLight/blockLight on every FAILED chunk, so the hood
+  // accessors are safe; without this the two predicates disagree and the 8
+  // neighbours of a FAILED chunk can NEVER mesh — 01 §9's intended 1×1 hole
+  // becomes a permanent invisible-but-solid 3×3 one.
   captureHood(world, chunk) {
     for (let dx = -1; dx <= 1; dx++) {
       for (let dz = -1; dz <= 1; dz++) {
         const c = world.chunks.get(chunkKey(chunk.cx + dx, chunk.cz + dz));
-        if (!c || c.state < ChunkState.LIT) return false;
+        if (!c || (c.state < ChunkState.LIT && !(c.state === ChunkState.FAILED && c.blocks))) return false;
         this.hood[(dx + 1) * 3 + (dz + 1)] = c;
       }
     }
@@ -100,6 +123,8 @@ export class ChunkMesher {
     if (wy > MAX_Y) return B.AIR;
     return this.chunkOf(wx, wz).blocks[(wy << 8) | ((wz & 15) << 4) | (wx & 15)];
   }
+  // 01 §8.6 / 15 §12.4 — part of the hood contract; no in-file caller today
+  // (hoodWorld.getState routes through it for dustConnections).
   stateAt(wx, wy, wz) {
     if (wy < 0 || wy > MAX_Y) return 0;
     return this.chunkOf(wx, wz).states[(wy << 8) | ((wz & 15) << 4) | (wx & 15)];
@@ -108,6 +133,19 @@ export class ChunkMesher {
     if (wy < 0) return true;
     if (wy > MAX_Y) return false;
     return BLOCKS[this.chunkOf(wx, wz).blocks[(wy << 8) | ((wz & 15) << 4) | (wx & 15)]].opaque;
+  }
+  // AMENDS 01 §8.1 — occlusion is a RENDER property, not a light one. Only a
+  // full-cube render seals a neighbour's flush face; farmland (15/16) and
+  // soul_sand (14/16) are opacity-15 light blockers but SHORT boxes, so culling
+  // against them leaves a see-through slit at the boundary. The registry owns
+  // the flag (defBlock derives it like `conductive`); until it does, fall back
+  // to `opaque` so this is a no-op. AO/smooth-light keep using opaqueAt, where
+  // treating them as solid is correct.
+  occludesAt(wx, wy, wz) {
+    if (wy < 0) return true;
+    if (wy > MAX_Y) return false;
+    const b = BLOCKS[this.chunkOf(wx, wz).blocks[(wy << 8) | ((wz & 15) << 4) | (wx & 15)]];
+    return b.occludes ?? b.opaque;
   }
   skyAt(wx, wy, wz) {
     if (wy < 0) return 0;
@@ -174,15 +212,30 @@ export class ChunkMesher {
           this.emitBox(x, y, z, blk, st, [2 / 16, 0, 6 / 16, 4 / 16, 7 / 16, 8 / 16], true);
           this.emitBox(x, y, z, blk, st, [12 / 16, 0, 6 / 16, 14 / 16, 7 / 16, 8 / 16], true);
           break;
-        // 07-REDSTONE §13.2 — approximate custom shapes (orientation is cosmetic;
-        // the logic reads state, not the mesh). See DEVIATIONS.
-        case 'wire': this.emitBox(x, y, z, blk, st, [0, 0, 0, 1, 1 / 64, 1], false); break;
-        case 'lever': this.emitBox(x, y, z, blk, st, [5 / 16, 0, 5 / 16, 11 / 16, 6 / 16, 11 / 16], false); break;
-        case 'button': this.emitBox(x, y, z, blk, st, [5 / 16, 0, 6 / 16, 11 / 16, 2 / 16, 10 / 16], false); break;
+        // 12-VILLAGES §12.1 — composter: 14/16 hollow box (floor + four walls).
+        case 'composter':
+          this.emitBox(x, y, z, blk, st, [0, 0, 0, 1, 2 / 16, 1], true);
+          this.emitBox(x, y, z, blk, st, [0, 2 / 16, 0, 2 / 16, 1, 1], true);
+          this.emitBox(x, y, z, blk, st, [14 / 16, 2 / 16, 0, 1, 1, 1], true);
+          this.emitBox(x, y, z, blk, st, [2 / 16, 2 / 16, 0, 14 / 16, 1, 2 / 16], true);
+          this.emitBox(x, y, z, blk, st, [2 / 16, 2 / 16, 14 / 16, 14 / 16, 1, 1], true);
+          break;
+        // §12.1 — lectern: 12/16 base + slant desk (approximated as a raised box).
+        case 'lectern':
+          this.emitBox(x, y, z, blk, st, [0, 0, 0, 1, 12 / 16, 1], true);
+          this.emitBox(x, y, z, blk, st, [1 / 16, 12 / 16, 1 / 16, 15 / 16, 1, 15 / 16], true);
+          break;
+        // 07-REDSTONE §4.5 — dust is a composed flat figure, not a box.
+        case 'wire': this.emitDust(x, y, z, st); break;
+        // 07-REDSTONE §13.2 — approximate custom shapes; the base plate/box is
+        // rotated ONTO the attach face (§13.3 ATTACH 0-5 in bits0-2). The lever's
+        // stick cross-quads and tilt are still skipped. See DEVIATIONS.
+        case 'lever': this.emitBox(x, y, z, blk, st, this.attachBox(st, [5 / 16, 0, 5 / 16, 11 / 16, 6 / 16, 11 / 16]), false); break;
+        case 'button': this.emitBox(x, y, z, blk, st, this.attachBox(st, [5 / 16, 0, 6 / 16, 11 / 16, 2 / 16, 10 / 16]), false); break;
         case 'plate': this.emitBox(x, y, z, blk, st, [1 / 16, 0, 1 / 16, 15 / 16, 1 / 16, 15 / 16], false); break;
         case 'repeater':
         case 'comparator': this.emitBox(x, y, z, blk, st, [0, 0, 0, 1, 2 / 16, 1], false); break;
-        case 'piston_head': this.emitBox(x, y, z, blk, st, [0, 0, 0, 1, 1, 1], true); break;
+        case 'piston_head': this.emitPistonHead(x, y, z, blk, st); break;
         case 'hopper': this.emitBox(x, y, z, blk, st, [0, 0, 0, 1, 1, 1], true); break;
         // 10-NETHER §1.1 — Nether custom shapes. soul_sand's Shape column is
         // "custom: 14/16 top box", so the render box matches its collisionBox.
@@ -235,8 +288,24 @@ export class ChunkMesher {
     const builder = builders[blk.bucket] || builders.opaque;
     for (let f = 0; f < 6; f++) {
       const n = FACE_NORMALS[f];
-      const nId = this.blockAt(x + n[0], y + n[1], z + n[2]);
-      if (!this.faceVisible(blk, nId)) continue;
+      const nx = x + n[0], ny = y + n[1], nz = z + n[2];
+      // 04 §12.5 / 15 §12.3 — ice is a translucent CUBE in the same bucket as
+      // the water it froze from, so a frozen ocean cell used to emit TWO quads:
+      // the ice top at y+1 and the ice bottom at y, one block apart. That bucket
+      // is transparent + depthWrite:false + DoubleSide and is never sorted per
+      // triangle, so for a viewer above, the far (dark, FACE_SHADE 0.5) bottom
+      // blends OVER the near bright top across most of a cell — but in the
+      // parallax sliver at each block edge the bottom quad belongs to a
+      // NEIGHBOURING cell emitted earlier, so there the order is accidentally
+      // right. That is the bright lattice on block boundaries whose width grows
+      // with view obliquity. Nothing is lost by dropping the DOWN face: the
+      // water below already suppresses its own top face (`capped`, emitLiquid /
+      // emitWaterlogged), and DoubleSide still shows the top face from beneath.
+      // DOWN only — the side faces are COPLANAR with the water's, not parallel,
+      // so they do not lattice, and culling them would open a see-through band
+      // along the sheet edge where the open water's surface sits at 0.875.
+      if (f === 3 && builder === builders.water && this.isWaterCell(nx, ny, nz)) continue;
+      if (!this.faceVisible(blk, this.blockAt(nx, ny, nz))) continue;
       this.emitCubeFace(builder, x, y, z, f, this.tileFor(blk, st, f));
     }
   }
@@ -244,7 +313,7 @@ export class ChunkMesher {
   faceVisible(a, bId) {
     if (bId === B.AIR) return true;
     const b = BLOCKS[bId];
-    if (b.opaque) return false;
+    if (b.occludes ?? b.opaque) return false;   // see occludesAt (AMENDS §8.1)
     if (a.id === bId) return a.renderSameIdFaces;
     return true;
   }
@@ -256,7 +325,7 @@ export class ChunkMesher {
    */
   waterFaceVisible(wx, wy, wz) {
     if (this.isWaterCell(wx, wy, wz)) return false;
-    return !BLOCKS[this.blockAt(wx, wy, wz)].opaque;
+    return !this.occludesAt(wx, wy, wz);
   }
 
   emitCubeFace(builder, x, y, z, f, tile) {
@@ -324,12 +393,22 @@ export class ChunkMesher {
     const sameFluid = (wx, wy, wz) => water
       ? this.isWaterCell(wx, wy, wz)
       : BLOCKS[this.blockAt(wx, wy, wz)].fluid === blk.fluid;
-    const h = sameFluid(x, y + 1, z) ? 1 : 0.875;
+    // 04 §12.5 — the freeze loop replaces the TOP water block of a cold lake
+    // with ice, a full cube in the SAME translucent bucket (ice is opacity 1,
+    // not water, so neither sameFluid nor occludesAt catches it). Cap the
+    // surface at y+1 and drop its top face, or the water floats 1/8 below the
+    // ice with a see-through band between them and a doubled blend from above.
+    const capped = water && this.blockAt(x, y + 1, z) === B.ICE;
+    const h = (capped || sameFluid(x, y + 1, z)) ? 1 : 0.875;
     for (let f = 0; f < 6; f++) {
+      // with h = 1 the top face is coplanar with the ice's bottom face: z-fight.
+      if (f === 2 && capped) continue;
       const n = FACE_NORMALS[f];
       const nx = x + n[0], ny = y + n[1], nz = z + n[2];
-      if (sameFluid(nx, ny, nz)) continue;    // same-fluid faces never render
-      if (BLOCKS[this.blockAt(nx, ny, nz)].opaque) continue;
+      // §12.3 lives in ONE place: water routes through waterFaceVisible (which
+      // folds in the same-fluid test); lava keeps the plain id/opaque test.
+      if (water) { if (!this.waterFaceVisible(nx, ny, nz)) continue; }
+      else if (sameFluid(nx, ny, nz) || this.occludesAt(nx, ny, nz)) continue;
       this.emitFlatFace(builder, x, y, z, f, blk.tileIndex[f], h,
         this.skyAt(nx, ny, nz), this.blockLightAt(nx, ny, nz),
         Math.round((blk.fluidAlpha ?? 1) * 255));
@@ -351,10 +430,16 @@ export class ChunkMesher {
     const water = BLOCKS[B.WATER];
     const alpha = Math.round((water.fluidAlpha ?? 1) * 255);
     const aboveWater = this.isWaterCell(x, y + 1, z);
-    const sideTop = aboveWater ? 1.0 : 0.875;
+    // 04 §12.5 — the same cap emitLiquid applies: ice above is a full cube in
+    // THIS bucket and now culls its down face toward a water cell, so raise the
+    // surface to the cell boundary and drop the top face here too. Without it a
+    // waterlogged cell under ice would show a 1/8 see-through band, and with it
+    // there is exactly one translucent layer at the boundary instead of two.
+    const capped = this.blockAt(x, y + 1, z) === B.ICE;
+    const sideTop = (capped || aboveWater) ? 1.0 : 0.875;
 
     // top face at the standard lowered source surface, only if nothing above
-    if (!aboveWater) {
+    if (!aboveWater && !capped) {
       this.emitFlatFace(builder, x, y, z, 2, water.tileIndex[2], 0.875,
         this.skyAt(x, y + 1, z), this.blockLightAt(x, y + 1, z), alpha);
     }
@@ -362,13 +447,12 @@ export class ChunkMesher {
     for (const f of [0, 1, 4, 5]) {
       const n = FACE_NORMALS[f];
       const nx = x + n[0], ny = y + n[1], nz = z + n[2];
-      if (this.isWaterCell(nx, ny, nz)) continue;
-      if (BLOCKS[this.blockAt(nx, ny, nz)].opaque) continue;
+      if (!this.waterFaceVisible(nx, ny, nz)) continue;   // §12.3, the one helper
       this.emitFlatFace(builder, x, y, z, f, water.tileIndex[f], sideTop,
         this.skyAt(nx, ny, nz), this.blockLightAt(nx, ny, nz), alpha);
     }
     // bottom
-    if (!this.isWaterCell(x, y - 1, z) && !BLOCKS[this.blockAt(x, y - 1, z)].opaque) {
+    if (this.waterFaceVisible(x, y - 1, z)) {
       this.emitFlatFace(builder, x, y, z, 3, water.tileIndex[3], 1,
         this.skyAt(x, y - 1, z), this.blockLightAt(x, y - 1, z), alpha);
     }
@@ -441,16 +525,45 @@ export class ChunkMesher {
     this.trackY(y, y + 1);
   }
 
-  // Torch: 2/16 box; wall states offset toward the supporting block
-  // (state 1..4 = facing +Z/−Z/+X/−X, support on the opposite side).
+  // Torch: 2/16 box; wall states offset toward the supporting block.
+  // The two torch ids encode their orientation DIFFERENTLY, so the raw state
+  // byte must never be compared directly:
+  //   06 §3 torch (38): nibble 1-4 = the direction the torch FACES, support at
+  //     pos − WALL_DIR[nibble].
+  //   07 §13.3 redstone_torch (71): bits0-2 = ATTACH (support direction) and
+  //     bit3 = lit, so a lit wall torch is 9-12 — it used to match no branch and
+  //     snap to the cell centre on every toggle, while an unlit one offset with
+  //     the wrong (WALL_DIR) mapping.
   emitTorch(x, y, z, blk, st) {
-    let ox = 0, oy = 0, oz = 0;
-    if (st === 1) { oz = -0.30; oy = 3 / 16; }
-    else if (st === 2) { oz = 0.30; oy = 3 / 16; }
-    else if (st === 3) { ox = -0.30; oy = 3 / 16; }
-    else if (st === 4) { ox = 0.30; oy = 3 / 16; }
+    let dx = 0, dz = 0;
+    if (blk.id === B.REDSTONE_TORCH) {
+      const a = st & 0x07;
+      if (a >= 1 && a <= 4) { const d = ATTACH_DIR[a]; dx = d[0]; dz = d[2]; }
+    } else {
+      const d = WALL_DIR[st & STATE_NIBBLE];
+      if (d) { dx = -d[0]; dz = -d[2]; }
+    }
+    const ox = dx * 0.30, oz = dz * 0.30, oy = (dx || dz) ? 3 / 16 : 0;
     const b = [7 / 16 + ox, oy, 7 / 16 + oz, 9 / 16 + ox, 10 / 16 + oy, 9 / 16 + oz];
     this.emitBox(x, y, z, blk, st, b, false);
+  }
+
+  // 07-REDSTONE §13.2 — lever/button boxes sit ON their attach face, not on the
+  // cell floor; §13.3 puts ATTACH 0-5 in bits0-2 (written by redstonePlaceState,
+  // read by checkSupport). `b` is the floor form: its Y interval is the mount
+  // thickness, so map that onto the attach axis and the two broad axes onto the
+  // remaining pair. Wall states used to leave the box lying on the floor with a
+  // visible gap between it and the wall it is electrically attached to.
+  attachBox(st, b) {
+    const [x0, y0, z0, x1, y1, z1] = b;
+    switch (st & 0x07) {
+      case 1: return [x0, z0, y0, x1, z1, y1];               // support −Z (north wall)
+      case 2: return [1 - y1, x0, z0, 1 - y0, x1, z1];       // support +X (east wall)
+      case 3: return [x0, z0, 1 - y1, x1, z1, 1 - y0];       // support +Z (south wall)
+      case 4: return [y0, x0, z0, y1, x1, z1];               // support −X (west wall)
+      case 5: return [x0, 1 - y1, z0, x1, 1 - y0, z1];       // ceiling
+      default: return b;                                     // 0 floor
+    }
   }
 
   emitLadder(x, y, z, blk, st0) {
@@ -468,6 +581,144 @@ export class ChunkMesher {
     else if (st === 3) this.emitSpriteQuad(bld, tile, [x + e, y, z], [x + e, y, z + 1], [x + e, y + 1, z + 1], [x + e, y + 1, z], r, g);
     else this.emitSpriteQuad(bld, tile, [x + 1 - e, y, z], [x + 1 - e, y, z + 1], [x + 1 - e, y + 1, z + 1], [x + 1 - e, y + 1, z], r, g);
     this.trackY(y, y + 1);
+  }
+
+  // ------------------------------------------------------------ 07-REDSTONE §4.5 dust
+
+  /**
+   * §4.5 — redstone dust. Not a box: a flat figure at y + 1/64 in the cutout
+   * bucket, composed of a centred 6×6 px `dust_dot` quad plus one 5×6 px
+   * `dust_line` arm per rendered direction, in the power-tinted variant picked
+   * by state bits0–3 (§13.3). The registry's single `dust_line_0` tile is
+   * bypassed on purpose — tilesFor() is keyed on (nibble, face) and can only
+   * name ONE tile per face, while a dust cell needs both dot and line.
+   * Unlit by AO/shade (§4.5): AO = 1.0, shade = 1.0, so vCol.b = 255 and the
+   * cell's own sky/block light is the only modulation. Never culled.
+   * §4.2 shape rule, kept identical to dustOutputDirs(): 0 connections render as
+   * a CROSS, exactly 1 as a straight LINE along that axis, else the connected
+   * arms. The graph itself comes from dustConnections() — never re-derived here.
+   */
+  emitDust(x, y, z, st) {
+    const p = st & 0x0f;                      // §13.3 power, bits0–3
+    const dot = DUST_DOT_TILE[p], line = DUST_LINE_TILE[p];
+    const [sky, bl] = this.ownLight(x, y, z);
+    const r = Math.round(sky * 17), g = Math.round(bl * 17);
+    const bld = builders.cutout;
+    const yy = y + 1 / 64;
+    const lo = 5 / 16, hi = 11 / 16;           // the centre dot's 6 px footprint
+
+    const conns = dustConnections(this.hoodWorld, x, y, z);
+    const on = [conns[0] !== CONN.NONE, conns[1] !== CONN.NONE,
+                conns[2] !== CONN.NONE, conns[3] !== CONN.NONE];
+    const count = on[0] + on[1] + on[2] + on[3];
+    let arms;
+    if (count === 0) arms = [true, true, true, true];             // cross
+    else if (count === 1) {                                        // straight line
+      const i = on[0] ? 0 : on[1] ? 1 : on[2] ? 2 : 3;
+      arms = [false, false, false, false];
+      arms[i] = true; arms[(i + 2) & 3] = true;                    // same axis, both ways
+    } else arms = on;
+
+    // centre dot: tile px 5..11 over the cell's centre 6 px, u→X, v→Z.
+    this.emitDustQuad(bld, dot, x + lo, z + lo, x + hi, z + hi, yy, 5, 5, 11, 11, false, r, g);
+    // arms in HFACE order N(−Z), E(+X), S(+Z), W(−X). The line tile's 4 px band
+    // runs along its u axis, so the ±Z arms sample it with u/v SWAPPED — the line
+    // must run along the arm, not across it. Each arm takes the tile half on its
+    // own side (px 0..5 for −X/−Z, px 11..16 for +X/+Z); the band is featureless
+    // along its length so the halves are interchangeable.
+    if (arms[0]) this.emitDustQuad(bld, line, x + lo, z, x + hi, z + lo, yy, 0, 5, 5, 11, true, r, g);
+    if (arms[1]) this.emitDustQuad(bld, line, x + hi, z + lo, x + 1, z + hi, yy, 11, 5, 16, 11, false, r, g);
+    if (arms[2]) this.emitDustQuad(bld, line, x + lo, z + hi, x + hi, z + 1, yy, 11, 5, 16, 11, true, r, g);
+    if (arms[3]) this.emitDustQuad(bld, line, x, z + lo, x + lo, z + hi, yy, 0, 5, 5, 11, false, r, g);
+    this.trackY(y, y + 1 / 64);
+
+    // §4.5 — an UP_SLOPE additionally climbs the neighbour block's facing side.
+    for (let i = 0; i < 4; i++) {
+      if (conns[i] === CONN.UP_SLOPE) this.emitDustRiser(bld, x, y, z, i, line, r, g);
+    }
+  }
+
+  /**
+   * §4.5 — one flat dust quad at height `yy` covering [x0,x1]×[z0,z1], textured
+   * from the tile-local pixel rect (px0,py0)–(px1,py1). UVs are built from the
+   * tile index directly rather than lerped inside this.tileUV, whose rect is
+   * already half-texel inset (0.5..15.5) — lerping it would squeeze the window.
+   * The same half-texel convention is applied to the sub-rect here.
+   * `swap` maps the tile's u axis to world Z instead of world X.
+   * Winding follows FACE_CORNERS[+Y]: (x0,z1),(x1,z1),(x1,z0),(x0,z0).
+   */
+  emitDustQuad(bld, tile, x0, z0, x1, z1, yy, px0, py0, px1, py1, swap, r, g) {
+    bld.ensure(4, 6);
+    const cx = (tile & 31) * 16, cy = (tile >> 5) * 16;
+    const u0 = (cx + px0 + 0.5) / 512, u1 = (cx + px1 - 0.5) / 512;
+    const v0 = (cy + py0 + 0.5) / 512, v1 = (cy + py1 - 0.5) / 512;
+    const a = bld.vertex(x0, yy, z1, 0, 1, 0, swap ? u1 : u0, swap ? v0 : v1, r, g, 255);
+    const b = bld.vertex(x1, yy, z1, 0, 1, 0, u1, v1, r, g, 255);
+    const c = bld.vertex(x1, yy, z0, 0, 1, 0, swap ? u0 : u1, swap ? v1 : v0, r, g, 255);
+    const d = bld.vertex(x0, yy, z0, 0, 1, 0, u0, v0, r, g, 255);
+    bld.quad(a, b, c, d, false);
+  }
+
+  /**
+   * §4.5 — the UP_SLOPE riser: a full 16×16 `dust_line` quad flat against the
+   * side of the neighbour block the dust climbs, offset 1/64 out of that face so
+   * it never z-fights. `hf` is the HFACE the dust connects along (0 N, 1 E, 2 S,
+   * 3 W). u→Y and v→the horizontal axis, so the band runs vertically — along the
+   * climb. Own-cell light, AO/shade 1.0, as the flat part.
+   */
+  emitDustRiser(bld, x, y, z, hf, tile, r, g) {
+    bld.ensure(4, 6);
+    const uvr = this.tileUV, t4 = tile * 4;
+    const u0 = uvr[t4], v0 = uvr[t4 + 1], u1 = uvr[t4 + 2], v1 = uvr[t4 + 3];
+    const e = 1 / 64, y1 = y + 1;
+    let a, b, c, d;
+    if (hf === 1) {          // E: the neighbour's −X face
+      const px = x + 1 - e;
+      a = bld.vertex(px, y, z + 1, -1, 0, 0, u0, v1, r, g, 255);
+      b = bld.vertex(px, y1, z + 1, -1, 0, 0, u1, v1, r, g, 255);
+      c = bld.vertex(px, y1, z, -1, 0, 0, u1, v0, r, g, 255);
+      d = bld.vertex(px, y, z, -1, 0, 0, u0, v0, r, g, 255);
+    } else if (hf === 3) {   // W: the neighbour's +X face
+      const px = x + e;
+      a = bld.vertex(px, y, z, 1, 0, 0, u0, v0, r, g, 255);
+      b = bld.vertex(px, y1, z, 1, 0, 0, u1, v0, r, g, 255);
+      c = bld.vertex(px, y1, z + 1, 1, 0, 0, u1, v1, r, g, 255);
+      d = bld.vertex(px, y, z + 1, 1, 0, 0, u0, v1, r, g, 255);
+    } else if (hf === 2) {   // S: the neighbour's −Z face
+      const pz = z + 1 - e;
+      a = bld.vertex(x + 1, y, pz, 0, 0, -1, u0, v1, r, g, 255);
+      b = bld.vertex(x, y, pz, 0, 0, -1, u0, v0, r, g, 255);
+      c = bld.vertex(x, y1, pz, 0, 0, -1, u1, v0, r, g, 255);
+      d = bld.vertex(x + 1, y1, pz, 0, 0, -1, u1, v1, r, g, 255);
+    } else {                 // N: the neighbour's +Z face
+      const pz = z + e;
+      a = bld.vertex(x, y, pz, 0, 0, 1, u0, v0, r, g, 255);
+      b = bld.vertex(x + 1, y, pz, 0, 0, 1, u0, v1, r, g, 255);
+      c = bld.vertex(x + 1, y1, pz, 0, 0, 1, u1, v1, r, g, 255);
+      d = bld.vertex(x, y1, pz, 0, 0, 1, u1, v0, r, g, 255);
+    }
+    bld.quad(a, b, c, d, false);
+    this.trackY(y, y1);
+  }
+
+  // 07-REDSTONE §13.2 row 81 — the head is a 4/16 plate on the EXTENSION side
+  // plus a 4×4 px arm running back to the base, NOT a full cube. §13.3: bits0-2
+  // FACE6 (PistonMover.headStateFor copies the base's), bit3 sticky. The block's
+  // tilesFor is face-blind, so the plate wears the (sticky) face tile on every
+  // side; the arm overrides it with the piston's own side tile (§14 recipe).
+  // The arm stops 2/16 inside the plate: reaching the plate's outer plane would
+  // put two coplanar quads on it (the cutout material is DoubleSide) and
+  // z-fight. Its base-side end IS flush, so it is emitted with cull = true and
+  // the flush test drops it against the piston base.
+  emitPistonHead(x, y, z, blk, st) {
+    const d = FACE6_DIR[st & 0x07];
+    const axis = d[0] ? 0 : d[1] ? 1 : 2;
+    const plate = [0, 0, 0, 1, 1, 1];
+    const arm = [6 / 16, 6 / 16, 6 / 16, 10 / 16, 10 / 16, 10 / 16];
+    if (d[axis] > 0) { plate[axis] = 12 / 16; arm[axis] = 0; arm[axis + 3] = 14 / 16; }
+    else { plate[axis + 3] = 4 / 16; arm[axis] = 2 / 16; arm[axis + 3] = 1; }
+    this.emitBox(x, y, z, blk, st, plate, true);
+    this.emitBox(x, y, z, blk, st, arm, true, { tile: BLOCKS[B.PISTON].tileIndex[0] });
   }
 
   emitCactus(x, y, z, blk, st) {
@@ -553,9 +804,9 @@ export class ChunkMesher {
       this.emitBox(x, y, z, blk, st, [6 / 16, 0, 6 / 16, 10 / 16, 1, 10 / 16], false);
       const ky = f === 0 ? 0 : 15 / 16;
       this.emitBox(x, y, z, blk, st, [5 / 16, ky, 5 / 16, 11 / 16, ky + 1 / 16, 11 / 16], false);
-    } else if (f === 2 || f === 3) {   // along Z
+    } else if (f === 2 || f === 4) {   // §2.2 enum 2 = N(-Z), 4 = S(+Z) — along Z
       this.emitBox(x, y, z, blk, st, [6 / 16, 6 / 16, 0, 10 / 16, 10 / 16, 1], false);
-    } else {   // along X
+    } else {   // 3 = E(+X), 5 = W(-X) — along X
       this.emitBox(x, y, z, blk, st, [0, 6 / 16, 6 / 16, 1, 10 / 16, 10 / 16], false);
     }
   }
@@ -608,7 +859,11 @@ export class ChunkMesher {
   // 13-BOSSES §2.2 — beacon: 2px obsidian base (cutout) + full glass shell +
   // floating emissive core (both translucent via the water builder).
   emitBeacon(x, y, z, blk, st) {
-    this.emitBox(x, y, z, blk, st, [0, 0, 0, 1, 2 / 16, 1], false);   // obsidian base slab (beacon_base = face 3)
+    // 13 §2.2 — ALL six faces of the 2px plinth are the obsidian base tile.
+    // beacon's tilesFor is written for the 16³ shell (face 2 = core, 3 = base,
+    // else shell), so without the override the plinth wore the emissive core on
+    // top and glass on its sides, and the obsidian tile appeared nowhere.
+    this.emitBox(x, y, z, blk, st, [0, 0, 0, 1, 2 / 16, 1], false, { tile: this.tileFor(blk, st, 3) });
     const [sky, bl] = this.ownLight(x, y, z);
     this.emitWaterCube(x, y, z, this.tileFor(blk, st, 4), sky, bl);   // glass shell (beacon_shell, side faces)
     // floating 10³ emissive core
@@ -665,7 +920,14 @@ export class ChunkMesher {
 
   // Generic box emitter: flat own-cell light, directional shade, cropped UVs.
   emitBox(x, y, z, blk, st, box, cull, opts = {}) {
-    const [sky, bl] = this.ownLight(x, y, z);
+    // 01 §8.4 — custom shapes light from their OWN cell. farmland (55) and
+    // soul_sand (119) are the only opacity-15 box shapes (06 §3 / 10 §1.1 both
+    // give Opac = O), and 04 §9.2's BFS never writes light into an opacity-15
+    // cell, so ownLight reads 0/0 and they render at the ambient floor. Both are
+    // top-boxes whose visible faces open upward: sample the cell above instead.
+    const [sky, bl] = blk.opacity >= 15
+      ? [this.skyAt(x, y + 1, z), this.blockLightAt(x, y + 1, z)]
+      : this.ownLight(x, y, z);
     const r = Math.round(sky * 17), g = Math.round(bl * 17);
     const bld = builders.cutout;
     const [x0, y0, z0, x1, y1, z1] = box;
@@ -678,12 +940,15 @@ export class ChunkMesher {
                       (f === 2 && y1 === 1) || (f === 3 && y0 === 0) ||
                       (f === 4 && z1 === 1) || (f === 5 && z0 === 0);
         if (flush) {
+          // occludesAt, not opaqueAt (AMENDS 01 §8.1): farmland (15/16) and
+          // soul_sand (14/16) block light but do not seal the cell, so a flush
+          // face against them must still be drawn or the boundary slits open.
           const n = FACE_NORMALS[f];
-          if (this.opaqueAt(x + n[0], y + n[1], z + n[2])) continue;
+          if (this.occludesAt(x + n[0], y + n[1], z + n[2])) continue;
         }
       }
       const n = FACE_NORMALS[f];
-      const tile = this.tileFor(blk, st, f);
+      const tile = opts.tile ?? this.tileFor(blk, st, f);
       const uvr = this.tileUV, t4 = tile * 4;
       const U0 = uvr[t4], V0 = uvr[t4 + 1], U1 = uvr[t4 + 2], V1 = uvr[t4 + 3];
       // crop intervals in tile space per face

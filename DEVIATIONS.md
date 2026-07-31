@@ -4,6 +4,588 @@ Deviations and ambiguity rulings. (The base-spec `.md` files were removed from
 the working tree during repo cleanup; the pre-UPDATE deviation log for the
 initial build lives in git history — `git show 8441ac9:DEVIATIONS.md`.)
 
+## TUNING — worldgen variety/structure density + ice rendering (2026-07-31)
+
+Two independent changes, verified together. Gates: `npm run smoke` 8/8, `npm run
+build` clean. Determinism re-verified from scratch: 3636 chunk-hash checks
+(blocks+states+heightMap+biomes+spawns+villageMeta) over 4 seeds — same chunk
+twice, fresh generator instances, six different visit orders (row/column-major,
+reversed, radial, two seeded shuffles), and one long-lived generator thrashed
+with 10k heightAt/biomeAt probes between passes — 0 failures. Overworld gen
+measured FASTER after the tuning: 2.99 -> 1.95 ms/chunk warm, 3.23 -> 2.22
+cold over 256 chunks (fewer dense-forest chunks; trees are re-simulated 9x).
+
+### 02-WORLD-GENERATION deviations (all in `src/world/gen/`)
+
+The shipped constants missed §15's own acceptance gate: measured land fraction
+was 51.2% against §15's stated 55-75%, rivers were 0.11% of columns, and 6 of 11
+biomes were effectively unreachable near spawn. These are re-tunings toward the
+spec's stated acceptance criteria, not away from them.
+
+- **`noise.js` climate gain (DEVIATES from §4.3).** New `CLIMATE_GAIN = 1.7` +
+  clamp applied to temp/humid at the single tv/hv lattice read site in
+  `columnData`. §6.2's threshold table is unchanged; only its inputs are
+  rescaled. §10.6's snow threshold (-0.45) is unchanged but now fires far more
+  often. **Coupled constant, must never drift:** altitude cooling `0.008 ->
+  0.0136` in BOTH `biomes.js` `selectBiome` and `features.js`'s snow pass.
+- **`noise.js` layer table (DEVIATES from §4.3).** temp `1/1600 -> 1/1000`,
+  humid `1/1300 -> 1/850`. Makes §15's "all 11 biomes within a 2,048-block
+  radius" easier, not harder.
+- **`noise.js` `SPLINE_H` (DEVIATES from §5.1, all 8 knots).**
+  `[46,48,54,62,66,69,72,74] -> [44,47,56,64,68,72,76,80]`. Shifts §5.3's
+  expected height ranges. Land fraction 51.2% -> 60.7%, i.e. INTO §15's window.
+- **`noise.js` height composition (DEVIATES from §5.2, shifts §5.3's rows).**
+  flatness `clamp01(0.5*(e+1)) -> smoothstep(-0.42, 0.42, e)`; hillAmp
+  `lerp(16,3) -> lerp(20,2.5)`; hills scaled by `lerp(0.35, 1, landMask)` instead
+  of `landMask`; seabed `r*2.5 -> r*7`; mtnMask knees `0.18/0.55 -> 0.10/0.42`
+  and `-0.35/0.35 -> -0.35/0.20`; mtn `m*52 -> clamp01((m-0.28)/0.62)*56`.
+  **§5.2's landMask comment ("kill relief at coast/ocean") no longer holds** —
+  coastal relief is ATTENUATED to 35%, not killed.
+- **`noise.js` river width (SPEC-CONFORMANCE CORRECTION, not a deviation in
+  intent).** riv knees `0.025/0.06 -> 0.004/0.011`. The literal constants in
+  §5.2's code block change, but this RESTORES §5.4's stated "width ~4-10 blocks",
+  which the shipped constants failed to produce (measured median band width 40,
+  max 195).
+- **`biomes.js` selection order (DEVIATES from §6.2).** The RIVER test now runs
+  BEFORE the OCEAN test, with an added `c > -0.05` guard. §6.2 calls the
+  ocean-first order canonical, so **any re-derivation of `biomeAt` must match the
+  new order.** Reason: the river carve targets a bed of 57-59, so every channel
+  fell into `height <= 59` and typed as OCEAN.
+- **`biomes.js` beach test (DEVIATES from §6.2).** `height <= 64 && c < 0.05 ->
+  height <= 63 && c < 0.02`. §15's acceptance line ("sand columns ring every
+  ocean/land boundary where height 60-64 and c < 0.05") must be re-read as 60-63
+  / c < 0.02; the sand ring itself survives via §7.2's submerged override
+  (56 <= height < 63).
+- **`features.js` plant pass (DEVIATES from §10.5 and from §10.3's centre-column
+  convention as applied to plants).** Plant decisions are now per COLUMN, not per
+  chunk-centre column; trees deliberately stay centre-column. Clumping alone adds
+  no draws, but deriving grass/flower attempt counts from `gMax` over the chunk
+  DOES change the draw COUNT on biome-border chunks, which shifts the downstream
+  cave-mushroom draws in the plant stream. Still fully deterministic (`gMax` is a
+  pure function of `colD`, the gate is a stateless `posHash`), but **the plant
+  stream is not byte-identical to pre-tuning on border chunks.**
+- **`features.js` ground cover (DEVIATES from §10.5).** Uniform `pick (x,z)`
+  scatter replaced by 3 chunk-local patch centres, and flower species is per
+  PATCH rather than per block. Known limitation: patches are chunk-local, so a
+  meadow never spans a chunk border.
+- **`caves.js` ravine probability (DEVIATES from §8.3).** `0.02 -> 0.03`
+  (1 in 50 -> 1 in 33). Measured cost 2.017 -> 2.065 ms/chunk over 600 chunks;
+  0.045 measured at 2.186 and deliberately NOT taken.
+
+### 12-VILLAGES §2.1 deviations (`village.js`)
+
+- **Spawn roll `0.40 -> 0.55` and up to `ANCHOR_TRIES = 3` anchor candidates
+  instead of one.** §2.1's pseudocode pins `if (rng() >= 0.40) return null;` and
+  draws exactly one anchor. Every retry draw is taken strictly AFTER the roll and
+  always as a PAIR of `rngInt(rng, ANCHOR_SPREAD)`, so §2.1's pinned "two int
+  draws, THEN the roll" prefix is byte-identical. Precedent in-tree: `endCity.js`
+  already retries off the same region stream. **§2.1's own density claim is
+  wrong:** its "~50% of land" estimate overstates the gate, which passed only
+  ~25% of rolled regions.
+- **Biome gate widened to include FOREST(4) and BIRCH_FOREST(5).** DEVIATES from
+  §2.1's "ids 3/6/7/8" and from §5, whose palette table has exactly four columns
+  — forest and birch_forest villages render with the PLAINS palette
+  (`paletteFor` falls through). SNOWY_TUNDRA stays out; §5 excludes it.
+- **Anchor sub-box `offset 4 -> 6`, `spread 24 -> 20` (REQUIRED companion to the
+  density raise).** DEVIATES from §2.1's literal `Vx*32 + 4 + rngInt(rng, 24)`.
+  Min separation `REGION - SPREAD + 1` goes 9 chunks/144 blocks -> 13 chunks/208
+  blocks, against a max village diameter of `2 * (within() 70 + butcher pen 5) =
+  150 blocks`. **The spec is self-inconsistent before any change:** §2.1's comment
+  claims a >=8-chunk gap, the construction yields 9 chunks = 144 blocks, and §2.2
+  simultaneously permits a ~144-150-block diameter. INVARIANT: `OFF + SPREAD <=
+  REGION` (6 + 20 = 26 <= 32). The +/-5 chunk scan window in `stampVillages` is
+  deliberately UNCHANGED — reach is a function of `within()`/centre only, never
+  of REGION/OFF/SPREAD.
+
+  Measured over 5 seeds x 400 regions each (640x640 chunks per seed, counted from
+  the real `stampVillages` `villageMeta`, which is emitted exactly once per
+  village on its anchor chunk): density **0.0970 -> 0.3985 villages/region**, mean
+  spacing `sqrt(area/n)` **1650 -> 812 blocks** (4.1x density, 2.0x closer). For
+  seed 3078138489 specifically: 37 -> 166 villages, 1683 -> 795 blocks. **No
+  overlap:** minimum anchor-to-anchor distance over all 797 post-change villages
+  is 210 blocks, above the 150-block max diameter; zero pairs under 208 blocks on
+  any seed. Village SIZE is unaffected (median 6 beds before and after).
+
+### 10-NETHER / 11-END structure density
+
+- **`nether.js` (DEVIATES from 10-NETHER §5.1).** Fortress `REGION 27 -> 22`,
+  jitter `20 -> 16` (now a named `JITTER`). §5.1 pins "region = 27x27 chunks
+  (432x432 blocks)" and a "20-chunk sub-box". Both literals must move together:
+  **INVARIANT `JITTER <= REGION`** is what keeps the +/-1 region scan sound, and
+  the shipped 20 would violate it at REGION 22. New spacing 432 -> 352 blocks.
+- **`endCity.js` (DEVIATES from 11-END §12.1).** Spawn roll `0.25 -> 0.45`, vs
+  §12.1's 25% and its "~1 city per 5-8 regions of island belt". Measured spacing
+  654 -> 484 blocks. This file already carries the TRIES=16 mass-gate entry; this
+  extends it. The scan-window narrowing (+/-6 -> +/-2 chunks) needs no entry —
+  §12 does not pin it and it was verified output-identical over 3200 chunks.
+- **`endShared.js` (DEVIATES from 11-END §4.2).** Stronghold distance band
+  `1200-2000 -> 800-1600`. **THE 3-DRAW INVARIANT is shared with `stronghold.js`'s
+  `rng(); rng(); rng();` mirror before `buildPlan`** — adding or removing a draw in
+  `strongholdXZ` silently reshuffles the entire stronghold plan (piece types,
+  library/altar placement, portal socket). Only numeric constants moved, so the
+  count stays at 3. Clearance: 800 - RADIUS 96 = 704 blocks vs `findWorldSpawn`'s
+  256-block search.
+
+### 04 §12.5 / 15 §12.3 — ice renders as one translucent layer (`ChunkMesher.js`)
+
+Ice is a translucent full CUBE in the same `water` bucket as the water it froze
+from. That bucket is `transparent: true, depthWrite: false, side: DoubleSide`
+(`materials.js:77-81`) and is never sorted per triangle, and `emitCube` walks
+f = 0..5 so +Y (`FACE_SHADE` 1.0) is always emitted before -Y (0.5). A frozen
+ocean column therefore blended three parallel translucent quads in reversed
+depth order from above, which is the bright lattice on block boundaries.
+
+Measured headlessly against a synthetic frozen ocean (3x3 lit hood, water 41-63,
+ice at 63), reading the water-bucket geometry directly. **Before:** horizontal
+quads over one column at `y=62.875 +Y`, `y=63.000 -Y`, `y=64.000 +Y` — three
+layers, and the 1/8 gap between 62.875 and 63.0 was a real see-through band.
+**After:** exactly one, `y=64.000 +Y`.
+
+- `emitCube` gains one guard before `faceVisible`:
+  `if (f === 3 && builder === builders.water && this.isWaterCell(nx, ny, nz)) continue;`
+  Gated on the BUCKET, not on `blk.id === B.ICE`, because the mechanism is "the
+  neighbour's translucent geometry lands in the same unsorted bucket". Ice is the
+  only `shape: 'cube'` block in the `water` bucket today (the others are water,
+  lava, end_portal, end_gateway). DOWN only: the side faces are COPLANAR with the
+  water's, not parallel, so they cannot lattice, and culling them would open a
+  see-through slit at the sheet perimeter where open water sits at h = 0.875.
+- `emitWaterlogged` mirrors `emitLiquid`'s `capped` rule (`blockAt(x, y+1, z) ===
+  B.ICE` -> `sideTop` 1.0 and skip the top face). Required by the guard above.
+- **Three sites hardcode `=== B.ICE`** (`emitLiquid`, `emitWaterlogged`, and the
+  bucket guard in `emitCube` generalises). If packed/blue ice is ever added, all
+  three must be brought into agreement.
+- **Known residual (NOT fixed).** This fixes the reported class only. Any
+  translucent full cube whose top AND bottom faces are both visible still
+  double-blends out of order — e.g. a player-placed ice block floating in air, or
+  ice on land over a cave. Verified still correct: an ice block in air keeps its
+  bottom face. A general fix needs per-triangle back-to-front sorting of the water
+  bucket, which still cannot order ACROSS chunk meshes.
+- **Visible change from below.** Viewed from underwater, a frozen surface now
+  shows the ice TOP face (`FACE_SHADE` 1.0) through `DoubleSide` instead of the
+  bottom face (0.5), so the underside of a frozen ocean reads brighter.
+
+### 06 §4 — ice tile recipe (`tilePainters.js`)
+
+With the double blend gone the sheet reads as one flat plane whose only variation
+is the tile, and the old recipe's two ruler-straight 6-px anti-diagonal runs of
+`#e8f4ff` became the dominant feature: they sit on `x+y = 12` and `= 6 (mod 16)`,
+so a frozen ocean grew endless dashed diagonals. Replaced with the same fine
+coherent grain (amp 5 -> 4), three short seeded random-walk fissures (8-neighbour
+walk, +/-45 degree turns, len 4-6, inset 2 px, REFLECTING off the inset bound),
+and two darker `#82b5e7` trapped bubbles. Crack-vs-base luma delta drops from ~44
+to ~27-38. Still 100% procedural, 16x16, only the file's own helpers, and the
+atlas seeds one `mulberry32` per tile NAME, so the changed draw count cannot
+perturb any other tile.
+
+Recipes rendered and rejected, recorded so they are not reintroduced: wide grain
+cells (cellX 7 / cellY 5) give the tile a corner-to-corner gradient that tiles
+into a visible 1-block GRID; a CLAMPED walk slides along the inset bound and lays
+down a straight axis-aligned run, the same chaining defect rotated; and FREE
+`3 + r()*10` fissure starts put all three walks in one corner, which repeats as a
+conspicuous glyph on the 1-block grid. The starts are therefore STRATIFIED — one
+per quadrant of a 2x2 grid, with the unused quadrant chosen by the rng. Measured
+on the wrapped tile, longest run of bright texels along an axis or diagonal:
+before H1 V1 diag+1 **diag-6**; after H2 V3 diag+3 diag-1.
+
+### Still open after this pass
+
+- **`public/menu/` ships real asset files, violating the ZERO-asset-files
+  constraint** — 5 button PNGs, 3 logo PNGs, 2 background PNGs and 2 `.woff2`
+  fonts, referenced from `menus.js:43-60` and `title.css:11,20,54,242` and copied
+  into `dist/menu/`. This is pre-existing (committed at `6a16a13`, v1.0.3), not
+  introduced by this pass, and undoing it means rebuilding the 19-MAIN-MENU title
+  screen procedurally. `public/theme-music/*.mp3` is already being removed and the
+  build plugin reports "0 track(s) in the build (dev-only layer)"; the menu art
+  and fonts are not.
+- **`features.js` now imports `src/registry/blocks.js`**, which pulls the block
+  registry (and `items/fortune.js`) into the terrain-worker bundle. It is correct
+  — `HM_SKIP` must be exactly `LightEngine.terminatesSky(id, 0)` or a decorated
+  column's heightMap changes between worldgen and the save/reload recompute — but
+  it contradicts `village.js`'s "Worker-side (no registry import)" convention.
+  Verified safe for the worker: the whole 17-file transitive graph is free of
+  `window`/`document`/`localStorage`/`navigator`/`Date.now`/`performance.now`, and
+  the only `Math.random` sites (`blocks.js:734,783,785`, `fortune.js:29`) are
+  inside runtime tick/particle handlers, never reached from gen.
+
+## RECORDS — the 2026-07-19 backlog reconciled against the tree (2026-07-31)
+
+The VERIFICATION pass below checked the sweep's *reports* against the tree. This
+one checks this **file** against the tree: the 2026-07-19 AUDIT backlog is ~90
+open findings, the sweep closed some of them silently, and a backlog that still
+lists a fixed defect is as misleading as a report that claims an unfixed one.
+Method was the same and deliberately dumb — `git show 094ef4c:<file>` versus the
+working tree, one identifier at a time. No entry below was closed on the strength
+of a diff hunk *looking* like the fix.
+
+**Result: 11 backlog entries closed, 2 found stale, 21 re-verified as still open,
+1 documented claim found outright false.** Every one of them is annotated in
+place further down; nothing was deleted.
+
+### Closed by the 15-cluster sweep (annotated in the backlog, not removed)
+
+| Entry | Sev | Evidence at `094ef4c` → tree |
+|---|---|---|
+| **§4.5 dust rendering — no power tints, no connection mesh** | major | `grep -c dust_dot atlas.js` **0 → 32 tiles**; `ChunkMesher.emitDust` + `emitDustQuad` + `emitDustRiser` are new. **The headline closure of this sweep** — see below |
+| Dispenser bone meal never fertilizes | major | `Game.tryBonemeal` **absent → `Game.js:1247`** |
+| Composter has no functional behaviour | major | `useComposter` **absent → `interaction.js:1023`**, §7.3 table at `:62` |
+| Blast furnace / smoker are plain furnaces | major | `blast_furnace` in `Game.js` **absent → `:913`**, filters `:982`, lit variants `:1025` |
+| Host Save & Quit never signals shutdown | major | `hostShutdown` in `main.js` **absent → `:187`**, behind a `quitting`/`quitForced` latch |
+| MP container click applier has no `tagsEqual` | major | `tagsEqual` in `Game.js` **absent → imported `:8`, used `:2095`** |
+| `notePunch` defined but never wired | minor | **absent → `interaction.js:216`** |
+| Boss-bar never replicated to clients (E11 + E12, two entries) | minor ×2 | `broadcastBossBar` in `Game.js` **absent → `:1261/1266/1271`** |
+| Ctrl+pick-block copies no tags | minor | `pickTags(_hit) { return undefined; }` **→ real read at `interaction.js:297`** |
+| Cosmetic particles missing (burnout smoke, note, lit-dust sparks) | minor | **fixed**: `Particles.smoke()` `:149`, `.note()` `:161` and `.redstoneSpark()` `:169` are all new; the §4.5 1/8-chance roll fires from redstone_wire's `randomTick` (`registry/blocks.js:783`) |
+
+### The dust closure, since it is the one worth reading
+
+§4.5 asked for three things and the build had none of them. All three landed:
+
+- **32 tiles, not one.** `tilePainters.js` bakes `dust_dot_<p>` and
+  `dust_line_<p>` for p = 0–15, with the §4.5 brightness ramp folded in at paint
+  time. They share **one** grain field (`mulberry32(DUST_SEED)`, the per-tile rng
+  deliberately ignored) — otherwise each power gets its own noise, the ramp stops
+  being monotonic, and the centre dot visibly mismatches the arms it butts
+  against. `atlas.js` exports the two `Uint16Array` lookup tables.
+- **A composed figure, not a box.** `ChunkMesher.emitDust` lays a 6×6 px centre
+  dot plus one 5×6 px arm per rendered direction as flat cutout quads at y+1/64,
+  unlit by AO and shade per §4.5, and `emitDustRiser` draws the UP_SLOPE quad
+  against the climbed block's face at a 1/64 offset.
+- **One connection graph, not two.** The shape comes from
+  `dustConnections()` in `redstone/dust.js` — the same function the solver's
+  `dustOutputDirs()` calls — via a two-method `hoodWorld` shim over the mesher's
+  captured 3×3 neighbourhood. The 0-connections → cross and 1-connection →
+  straight-line rules are therefore identical in the mesh and in the logic **by
+  construction**. A power change is now a pure UV swap.
+
+### Entries found stale — fixed *before* this sweep and never marked
+
+Both were already closed at `094ef4c`, so no sweep gets credit; they are marked
+`STALE` in place rather than deleted, because the useful record is that a
+backlog line survived its own fix.
+
+- **Note block missing fuel value 300** — `[B.NOTE_BLOCK]: 300` is at
+  `registry/items.js:56` in `094ef4c` as well as in the tree.
+- **Creative palette's 07/09 id sets never populated** — `REDSTONE_BLOCKS` is
+  derived from the 70–104 range and `BREWING_ITEMS` is populated, both at
+  `094ef4c`. (This sweep did touch that file, but for tab 4 and Decoration.)
+
+### A documented claim found false
+
+**The ship summary's "the C418 tracks are removed from HEAD" is not true and was
+not true when written.** `git ls-tree -r HEAD -- public/theme-music` returns all
+14 `*.mp3` at `094ef4c`; `git ls-files` returns them in the index. Only
+`.gitignore` was changed, and ignoring a path does not untrack it. The **build**
+side of the claim holds — `npm run build` reports `ship-gate: 0 track(s)` and
+`dist/` contains no audio — but the repository side does not. Corrected in place
+at ship-summary item 2 and in the operator-action list at the foot of this file;
+`README.md`'s matching sentence is corrected too. The two E13 backlog entries
+that flagged this in 2026-07-19 were **right all along** and stay open.
+
+Worth noting that this file had already learned the lesson once: the 2026-07-17
+theme-music section (search "Outstanding, needs a human decision") says of the
+`CC-assets/CC-sounds/` copy, in bold, that "the new `.gitignore` rule does **not**
+untrack them and no build-time gate can". Two days later the same rule was
+applied to `public/theme-music/` and recorded as if it had removed the files.
+
+### New gaps this sweep introduced, deliberately
+
+- `minor` **The mesher now imports from `src/redstone/`.** `ChunkMesher.js` pulls
+  `dustConnections`/`CONN` from `redstone/dust.js` and `ATTACH_DIR`/`FACE6_DIR`
+  from `redstone/dirs.js`. 01 §2's module map does not describe a render → logic
+  edge, and this is one. It is the price of the "one connection graph" property
+  above — re-deriving the graph in the mesher is the alternative, and that is the
+  bug §4.2 is easiest to reintroduce. Accepted, not hidden.
+- `minor` **`redstone_wire`'s registry tiles are now a second, unused source of
+  truth for the dot.** `blocks.js:776-777` still names `dust_line_0` / a
+  `tilesFor` returning `dust_line_<p>`, but `emitDust` indexes `DUST_DOT_TILE` /
+  `DUST_LINE_TILE` from `atlas.js` directly, because `tilesFor` is keyed on
+  (nibble, face) and can name only ONE tile per face while a dust cell needs two.
+  The registry entry survives for the item icon. If the two namings ever drift,
+  nothing catches it: smoke `U4` proves every tile name has a painter, not that
+  the mesher indexes the tile the registry names.
+- `minor` **The composter and dust variant tiles moved the atlas to 404/1024.**
+  Still under half, but the two families cost 32 + 18 slots between them; the
+  §7.1 4-frame animated-tile pipeline (still unimplemented, logged below) would
+  want four consecutive slots per animated tile out of the same budget.
+
+## VERIFICATION — the sweep's unrun verification phases, re-run (2026-07-31)
+
+The 15-cluster sweep below landed its FIX phases and then **stopped**: its
+verification phases (regression review, smoke harness, handoff integration, docs)
+never ran. This section is that missing work, run separately. Everything here was
+established from `git diff` and from the tree — never from the sweep's own
+completion reports, because those reports turned out to be partly wrong.
+
+**The pattern, stated plainly: where the sweep edited a file it often wrote the
+new function and never wired it.** Two instances were fatal, and both were found
+only by *running* the game — reading did not catch either:
+
+- **`Game.tick()` called `this.tickParticles()` at two sites and the method was
+  never defined.** Every tick threw a `TypeError` and unwound, so every pass
+  *below* the call — the redstone-component pass and the scheduled-tick pass —
+  silently never ran, while the render loop kept painting. The failure presented
+  as a stutter, not a crash. Fixed: `tickParticles()` is defined at
+  `src/Game.js:419` and steps `Particles.update()` exactly once per tick (05
+  §16.3 — particles integrate in the TICK domain, so `render()` must not also
+  step them).
+- **`Piglin` and `ZombifiedPiglin` overrode `buildMesh()` instead of
+  `buildModel()`.** `humanoidModel` returns `{ group, parts }` (models.js §16.3)
+  and it is `Mob.buildMesh` that unwraps `.group` and stores `.parts` for limb
+  animation; overriding `buildMesh` handed the plain record straight to
+  `entity.object3d`, so `updateRender`'s `object3d.position.set(...)` threw on
+  the first frame after a Nether spawn — freezing the screen while the tick loop
+  ran on. Fixed at `src/entities/mobs/nether/mobs.js:161` and `:294`.
+
+Neither of these is a fidelity gap. Both were live crashes in the shipped tick
+trunk, and neither was mentioned in any report of the work that introduced them.
+
+### Closed by this pass (the historical entries below are kept, not deleted)
+
+- **`Beacon.disposeBeams()` was defined and never called.** Its own docblock said
+  "Must be called from `Game.disposeWorld()`", and the identifier had exactly one
+  occurrence tree-wide: its definition. `Game.disposeWorld` now calls it
+  (`src/Game.js:269`) alongside `clearFireOrigins()` and `disposeGatewayBeams()`
+  — the three explicit teardown calls the declined `src/world/teardown.js`
+  (INTEGRATION section, "Remaining approximations") was meant to backstop.
+- **`raycastBlocks` was imported into `Game.js` and never called** — a dead
+  import is the cleanest available fingerprint of an unfinished edit. The import
+  is gone. Block highlighting continues to run from
+  `PlayerInteraction.currentHit` (`src/player/interaction.js:98,140`), which was
+  always the real call site; nothing in `Game.js` needed it.
+- **`hud.flashPickup(...)` was called and did not exist.** `ItemEntity.js`
+  invoked it through `?.`, so 03 §23's pickup pulse had been a silent no-op for
+  the entire life of the build. Both halves are now real: `Hud.flashPickup` at
+  `src/ui/hud.js:185`, its `.picked` keyframe at `src/ui/style.css:86`, and the
+  call repointed to `game.ui?.hud?.flashPickup?.()` at
+  `src/entities/ItemEntity.js:222`. This closes the second half of E3 retro
+  item 5 and E1 deviation 15 below, both of which logged it as doubly dead.
+- **`hud.damageFlash` was written twice and never read.** The red damage vignette
+  is wall-clock driven (a 250 ms `setTimeout` in `Hud.onDamage`,
+  `src/ui/hud.js:173`), so the counter had no decrementer and no reader. The
+  write-only field is removed rather than given a fake consumer.
+- **`Particles.js`'s header claimed a pool the implementation never had.** The
+  header is corrected in place (`src/render/Particles.js:1-4`): every spawn still
+  allocates its own `Mesh` and the record is dropped on expiry. **No pool was
+  added** — the claim was fixed, not the code.
+
+### Sweep claims that did not survive verification
+
+Recorded because the correction matters more than the omission. Each of these was
+reported by the sweep as implemented; none of them is in the tree:
+
+| Claimed | Verified state |
+|---|---|
+| Frustum culling | **Not implemented.** The only `frustum` hits in `src/` are five `mesh.frustumCulled = false` opt-outs (Sky, Beacon, endArena, EndCrystal) and one comment. No culling pass exists. |
+| Early-Z / depth pre-pass | **Not implemented.** No occurrence of `prepass`, `early-z` or any equivalent anywhere in `src/`. |
+| Particle pool | **Not implemented.** See above — the header claim was removed instead. |
+| Nether delay send (16 §3.5 cavern reverb) | **Not implemented.** No `DelayNode` and no `delaySend` in `src/audio/`. This one was already logged honestly in the E1 backlog below (`audio/engine.js:109`); that entry stands and is *correct*. |
+| Block-highlight raycast in `Game.js` | **Never existed there.** The dead import was the whole of it (above). |
+| 10-tick damage fade | **Not implemented.** `Hud.onDamage` is a 250 ms wall-clock fade, not a 10-tick decay; the tick counter it would have needed is the removed `damageFlash`. |
+
+The lesson worth keeping: none of these six was claimed in `README.md`,
+`BUILD-STATE.md` or `DEVIATIONS.md` — they were claimed only in the sweep's own
+phase reports, which no longer exist. Where this file *did* speak on one of them
+(the Nether delay send) it was already accurate. The failure mode was reports
+outrunning the tree, not the tree outrunning this file.
+
+### New gaps found and left open
+
+- `minor` **30 unused named imports across `src/`.** Every one of them predates
+  this sweep — checked individually against the diff, none appears on an added
+  line — so they are hygiene debt rather than unfinished-edit fingerprints. Worst
+  concentrations: `redstone/components.js` (`ATTACH_DIR`, `strongPower`,
+  `directPowerInto`, `obsFace`), `net/NetHost.js` (`STATE`, `MS_PER_TICK`,
+  `CHUNK_CELLS`), `entities/mobs/Mob.js` (`B`, `MOVE`, `LOOK`). Harmless at
+  runtime (the bundler drops them), but each one is indistinguishable at a glance
+  from the `raycastBlocks` case above, which is exactly why that one was so easy
+  to miss.
+- `minor` **The smoke harness cannot see an unused import.** `U2` proves every
+  named import *resolves* to a real export; nothing proves it is *used*. That is
+  the gap the `raycastBlocks` fingerprint fell through, and it is still open.
+- `minor` **`public/theme-music/README.md` still describes the pre-ship-gate
+  behaviour** — its "Where files can live" table marks `public/theme-music/` as
+  playing in a build, and its prose says `npm run build` copies the folder into
+  `dist/theme-music/` unchanged. Both were true before the gate was reinstated
+  (AUDIT ruling 1 below) and are false now: the build forces an empty manifest
+  and deletes `dist/theme-music` after the publicDir copy. Not fixed here —
+  outside this pass's edit scope. The same claim in the top-level `README.md`
+  **is** corrected.
+- `minor` **The 34 acceptance suites cited by `BUILD-STATE.md` are not in this
+  repository.** `scripts/` holds only `gen-theme-manifest.mjs` and `smoke.mjs`;
+  no `verify-*`, no `rmb-diag`, no test directory exists in the tree. They ran
+  from separate worktrees and did not survive the cleanup, so those results are a
+  historical record and not a reproducible gate. `BUILD-STATE.md` now says so.
+  `npm run smoke` is the only harness that can be run today.
+- `minor` **The 13-BOSSES beam teardown has no structural guard.** `disposeBeams`
+  is wired now, but the reason it was ever missable is unchanged: a fourth
+  persistent-scene resource added later would leak the same way, silently. The
+  declined `src/world/teardown.js` remains declined (see INTEGRATION), so this is
+  a known, accepted exposure rather than an oversight.
+
+### What this pass verified rather than asserted
+
+- `npm run smoke` — **8/8 PASS** over 128 source files under `src/` and
+  `server/`. `U1` alone resolves 1569 `this.x()` call sites across 103 classes;
+  it is the tripwire that would have caught `tickParticles` on the day it landed.
+- `npm run build` — green: 126 modules transformed, theme ship-gate reports
+  `0 track(s)`, `dist/` emits no audio. (The >500 kB main-chunk advisory is
+  Vite's default warning, not a failure.)
+- The tree at the time of writing is **92 files changed, +4802 / -925** against
+  `094ef4c`, plus the untracked `scripts/smoke.mjs` (1050 lines). The sweep's own
+  share of that is *not separable* — the sweep and this pass are both uncommitted
+  in the same working tree — so no per-phase line counts are claimed here.
+
+## INTEGRATION — 15-cluster parallel fix sweep, merged (2026-07-30)
+
+Fifteen fixers worked disjoint file clusters and handed off the edits that fell
+outside their ownership; this section records what the integration landed, the
+conflicts it resolved, and the deviations that remain. Entries in the sections
+below that this sweep closed have been deleted or annotated in place rather than
+duplicated here.
+
+### Ambiguity rulings made this sweep (CLAUDE.md §2 precedence)
+
+- **02 §9.2 ore vein sizes: the prose is unreachable from the pseudocode; the
+  code wins.** `ores.js:59-92` implements §9.2's pseudocode verbatim, including
+  `const r = 0.6 + Math.sin(t * Math.PI) * (0.4 + size / 16)` and the 0.7 step.
+  That pseudocode cannot produce §9.2's own prose estimates (size 4 ~3-8, 9
+  ~6-14, 17 ~12-26): measured **9.6 / 29.8 / 93.5** distinct cells over 4000
+  trials each in unbounded stone. 12-VILLAGES §6.1's "single blocks/tiny
+  clusters" likewise cannot follow from its own size-3 row (measured 7.0
+  cells/vein). **Ruling** per CLAUDE.md §1 (code wins over base specs 01-06) and
+  §2 (table data over prose): the code is UNCHANGED, §15's acceptance box "vein
+  sizes fall in §9.2's ranges" is marked **N/A**, and ore density stays
+  seed-stable. Per-chunk totals for the record (seed `12345`, 441 chunks):
+  diamond 36.97, gold 60.63, lapis 49.04, redstone 82.63, iron 166.98, coal
+  193.80 blocks/chunk.
+- **08 §8.3 branch (c) requires `isDamageable(target)`** — logged in full as
+  ruling N in the E4 "Rulings that look like bugs but are not" list below.
+- **Creative item transactions are all-or-nothing** (18 §5.3) — logged as
+  ruling 27 in `ClaudeCraft Promts/DEVIATIONS.md`, which is what the four
+  `interaction.js` citations resolve against by name.
+- **Area-effect clouds are NOT restored from save.** Two handoffs collided here:
+  one asked for an `AreaEffectCloud.deserialize` + a `Game.restoreEntity` branch,
+  the other had already excluded clouds from `serializeChunk`. §09.3's standing
+  decision ("in-flight thrown potions + area-effect clouds drop on save") wins:
+  the write-side exclusion stands, `restoreEntity` now drops legacy
+  `area_effect_cloud` records silently, and no deserializer was added. A cloud
+  restored from a pre-sweep record would have come back inert anyway — its
+  `serialize()` omits `effectPayload`/`radiusOnUse`/`radiusPerTick`.
+
+### Registry / rendering decisions
+
+- **`BLOCKS[id].occludes` added (AMENDS 01 §8.1).** Occlusion is a RENDER
+  property, not a light one: only a full-cube RENDER seals a neighbour's flush
+  face. `defBlock` now derives `occludes = opaque && shape !== 'farmland' &&
+  shape !== 'soul_sand'`, which is exactly the three short opaque boxes
+  (farmland 55, soul_sand 119, dirt_path 170). Their `opacity` is untouched —
+  06 §3 row 55 and 10 §1.1 row 119 pin it at 15.
+- **dirt_path (170) is now `opaque: true, opacity: 15`, matching farmland.**
+  12-VILLAGES §12.1 gives Opac `O` to every village block except composter,
+  bell, lectern and fletching_table, and §1.1 reuses the farmland shape. At
+  opacity 0 every village path column terminated its sky heightmap at the DIRT
+  UNDER the path and leaked sky light through a 15/16 solid block. **This shifts
+  lighting and heightmaps for EXISTING worlds** — already-saved chunks keep
+  their stored blocks, but their heightmaps recompute on hydrate, so a village
+  loaded from a pre-sweep save re-lights one row differently. Safe only because
+  `occludes` landed in the same integration.
+- **end_rod (158) facing enum unified on 11-END §2.2** (`0 up, 1 down, 2-5 =
+  N/E/S/W`, i.e. 2 = -Z, 3 = +X, 4 = +Z, 5 = -X). Three sites disagreed:
+  `blocks.js`'s `ROD_SUPPORT` was correct, `interaction.js`'s placement branch
+  mapped 3/4/5 to S/W/E, and `ChunkMesher.emitEndRod` treated 2/3 as the Z axis
+  and 4/5 as X. The registry was taken as ground truth and the other two were
+  corrected to it; a wall rod now renders along the right axis and pops from the
+  right support cell.
+- **07 §13.2 rows 510/516 — lever and piston_head are still approximations.**
+  Lever: the 6/16 base plate is now correctly mounted on its ATTACH face (§13.3
+  bits0-2), but the angled stick cross-quads and the on/off tilt are not drawn.
+  piston_head: plate + arm are drawn, but the plate wears the (sticky) face tile
+  on all six sides because the block's `tilesFor` is face-blind. Buttons are
+  fully per-spec as of this sweep. (`ChunkMesher.js:218-220` points here.)
+- **composter (172) and lectern (174) gained mesher shapes.** Both carried a
+  `shape:` the mesher's switch had no case for, so `default: break` emitted
+  NOTHING and both rendered invisible in every village. The composter's fill
+  level 0-8 is now visible: 9 baked top tiles + 9 baked side tiles per 12 §12.2,
+  selected by `tilesFor` from the state nibble.
+
+### Determinism-affecting worldgen changes
+
+- **The stronghold `fits()` tightening (`stronghold.js:284-292`, outer-vs-inner
+  rejection) CHANGES THE PIECE LAYOUT FOR EVERY SEED.** Existing saves keep
+  already-visited stronghold chunks from IndexedDB, but any not-yet-generated
+  chunk of the same stronghold regenerates against the new plan, so a partially
+  explored stronghold in a pre-fix world can show a seam. New worlds are
+  unaffected. Measured over 200 seeds: accidental shell-into-interior intrusions
+  **2256 cells / 98 worlds -> 0 / 0**; piece counts stay 19-31; every world keeps
+  >= 1 altar chest and exactly one portal room.
+
+- **The Nether cavern re-tune (`nether.js:64` `CAVERN_THR` 0.30 -> 0.175, plus a
+  MULTIPLICATIVE roof/floor taper replacing the additive one) CHANGES EVERY
+  NETHER CHUNK OF EVERY SEED.** The carve is
+  `if (Math.abs(netherDensity(...)) < thr) id = AIR`, so both edits move the
+  cavern field wholesale. Measured on one seed over 16 chunks, Y 6-122, counting
+  air + lava: **79.8% open -> 47.5% open**, which is what brings §4.3's
+  "swiss-cheese" band (~40-55%) back; the old additive taper also *opened* the
+  roof and floor instead of closing them (an empty attic under the bedrock roof,
+  no floor under the lava sea), which the multiplicative form seals at y=122 and
+  y=5. Same save consequence as the stronghold entry above: a pre-fix world keeps
+  its already-visited Nether chunks from IndexedDB, so walking one chunk past the
+  explored boundary can show a seam — a corridor ending in a flat netherrack wall
+  at the chunk plane. New worlds are unaffected.
+
+- **`features.js` `SOLID_TOP` gained ids 4 / 5 / 7 (cobblestone, oak planks,
+  spruce planks), which changes the SNOW PASS over village roofs.** Villages are
+  stamped before the snow pass precisely so cold-biome roofs cap, but the three
+  village build materials had no `gen/biomes.js` ID entry and so were not in the
+  set. Newly generated chunks now lay a snow layer on those roofs; chunks already
+  persisted from a pre-fix world do not, so a village straddling the explored
+  boundary in a snowy/taiga biome can show a half-capped roofline. Overworld
+  terrain itself is unchanged — only the one-block snow layer differs.
+
+### Remaining approximations logged this sweep
+
+- **07 §9.3 piston entity push.** `pushEntities` (`src/redstone/PistonMover.js:150-164`)
+  displaces entities by writing `e.pos` directly (`shove`), bypassing collision
+  resolution entirely, so a shoved entity can be pushed into or through a solid
+  block. It also excludes `e.type === 'item'` from the push, which §9.3 does not
+  exempt. Both are undocumented approximations of §9.3's "1.0 x dir, no damage".
+  The double-shove bug (an entity straddling two collinear push cells being
+  flung 2 blocks) was fixed by deduping hits into a `Set` before shoving; the
+  collision bypass remains. *Corrected 2026-07-31:* this entry used to name
+  `moveEntitySubstepped` (`physics/collision.js`) as the proper fix. That helper
+  has since been **deleted** — it never had a caller (see the 01 §12 supersession
+  entry below) — so the standing fix is to route the displacement through
+  `moveEntity` / `collideAxis` once the block transaction has committed. Doing so
+  is a behavioural change, not a defect repair, so it stays out of scope here.
+
+- **01 §12's `ceil(dist / 0.5)` projectile sub-step is SUPERSEDED, not
+  implemented.** The helper `moveEntitySubstepped` and its companion `getCellBox`
+  were removed from `src/physics/collision.js` — both had zero callers tree-wide,
+  and `getCellBox` could not safely gain one (it returns null both for a
+  non-collidable block and for a collidable full cube, a distinction
+  `collideAxis`/`collidesAny` must make). Projectiles advance with `pos += vel`
+  and resolve collisions themselves, at three different fidelities:
+  `Arrow`, `ThrownProjectile` (egg/snowball/ender_pearl) and `ThrownPotion` sweep
+  the segment with `raycastBlocks`, which is **exact** rather than sampled and
+  genuinely supersedes the sub-step; `GhastFireball` and `WitherSkull` — which
+  are independent classes, *not* `ThrownProjectile` subclasses — point-sample
+  `getBlock` at the destination cell only and can therefore tunnel through a thin
+  wall at high speed; `EyeOfEnder` does no block collision at all, by design.
+  Only the first group is a true supersession; the other two are approximations.
+- **`ChunkManager.markDirty` guards on `state >= LIT`, not 01-ARCHITECTURE.md
+  §327's `state >= MESHED`.** Deliberate: LIT is exactly "lit but never meshed",
+  and the LIT mesh-ready sweep in `promote()` depends on the looser guard.
+- **The first-person viewmodel now uses a CROSSED sprite** (two quads at 90°)
+  for non-block items, matching the dropped-item entity. It gives the held item
+  thickness; a flat plane vanished to a hairline at the tuned hold angle. Purely
+  cosmetic and revertible at the two `crossedSpriteGeometry` call sites in
+  `Game.updateViewmodel`.
+- **`src/world/teardown.js` was NOT added.** The optional structural guard
+  (`onWorldTeardown`/`runWorldTeardown`) was declined during a merge; the leaks
+  it was meant to backstop are closed directly — `Game.disposeWorld` now calls
+  `clearFireOrigins()`, `disposeBeams()` and `disposeGatewayBeams()` explicitly.
+  A fourth omission would still go unnoticed.
+
 ## AUDIT — full front-to-back sweep + self-correction (2026-07-19)
 
 `AUDIT-full-sweep-selfheal.md`, run autonomously on branch `audit-sweep`. Every
@@ -111,7 +693,6 @@ simplifications** already reasoned about in this file's per-phase sections.
 **E1 · 16-AUDIO**
 
 - `minor` **Nether delay send (fake cavern reverb) not implemented — no echo on nether voices** — `src/audio/engine.js:109`. 16 §3.5 specifies a shared DelayNode(0.31 s) → Gain(0.45) → LP 2 kHz feedback loop mixed into ambientBus, with every mob/world voice also connecting envGain → delaySend at 0.25 gain while the current dimension is the nether, and §
-- `minor` **The reserved 'nether' material class is never assigned — nether blocks use overworld voices and block.*.nether events are dead** — `src/registry/blocks.js:1249`. 16 §3.1 reserves a 'nether' class ('10's blocks default here': gravel recipe ×0.84 + 3 kHz hiss — 'soft, dense, organic') and events.js implements it (CORES.nether at events.js:41, STEP_DUR.nether, full block.step/dig/break/place.
 - `minor` **item.elytra.loop is registered but never started — elytra gliding is silent** — `src/audio/events.js:379`. 16 §3.5 specifies a whoosh loop with per-frame BP-frequency/gain drive from player speed while gliding (11 owns the state; E10 is built). The event def exists (events.js:379-380, with whooshFreq/whooshGain mod params exposed by th
 - `minor` **block.beacon.ambient hum loop is registered but never started** — `src/audio/events.js:427`. 16 §3.5's world.beacon.loop (drone, ambient, ref 4, max 32 — code names it block.beacon.ambient with loop: true) has a full recipe but no caller: Game.js:731 emits only activate/deactivate and containers.js:711 the power-select ch
 - `minor` **Distance-based NEAR/FAR priority never operates — event defs hardcode P.NEAR ahead of the dist<16 branch** — `src/audio/engine.js:303`. §1.4 defines priority NEAR 1 (event dist < 16) vs FAR 0 so pool exhaustion drops distant sounds first. emitSound computes `def.priority ?? (panned ? (dist < 16 ? P.NEAR : P.FAR) : P.PLAYER)` — but nearly every positional def in ev
@@ -137,15 +718,15 @@ simplifications** already reasoned about in this file's per-phase sections.
 
 - `major` **Dispenser-fired arrows are not player-collectible** — `src/redstone/containersRedstone.js:87`. Spec: dispenser arrows spawn with owner=null and 'are player-collectible' (AMENDS 05 §11, §10.2). dispenserFire spawns via g.spawnArrow(..., null, { fromPlayer: false }), and Arrow.tick line 52 gates pickup on `this.fromPlayer &&
 - `major` **Furnace smelt/fuel mutations never call redstone.containerChanged** — `src/Game.js:738`. §8 requires container mutations including 'furnace smelt consuming/producing' to call redstone.containerChanged(pos). tickFurnace (Game.js:738-776) consumes fuel, decrements input, and produces output without ever calling it, and
-- `major` **Dispenser bone meal never fertilizes — game.tryBonemeal does not exist** — `src/redstone/containersRedstone.js:125`. The bone-meal fire path calls g.tryBonemeal?.(fx, fy, fz); no tryBonemeal method exists anywhere on Game (the player path is interaction.useBoneMeal, interaction.js:761). The optional chain yields undefined so bone meal always fal
-- `major` **Dust rendering: no power-tint variants and no connection-shape mesh** — `src/mesh/ChunkMesher.js:179`. §4.5/§14 specify 16 pre-tinted dust_dot/dust_line variants (32 tiles) with the vanilla brightness ramp, dot+arm quad composition per connection, and an UP_SLOPE vertical face quad. The atlas has a single 'dust_line_0' tile (atlas.
+- `FIXED (integration sweep 2026-07-30 — Game.tryBonemeal at src/Game.js:1247; the dispenser call at containersRedstone.js:177 now resolves)` **Dispenser bone meal never fertilizes — game.tryBonemeal does not exist** — `src/redstone/containersRedstone.js:125`. The bone-meal fire path calls g.tryBonemeal?.(fx, fy, fz); no tryBonemeal method exists anywhere on Game (the player path is interaction.useBoneMeal, interaction.js:761). The optional chain yields undefined so bone meal always fal
+- `FIXED (integration sweep 2026-07-30 — 32 tiles in the atlas, ChunkMesher.emitDust composes dot+arms+UP_SLOPE riser off dustConnections(); see the E5 §4.5 entry below)` **Dust rendering: no power-tint variants and no connection-shape mesh** — `src/mesh/ChunkMesher.js:179`. §4.5/§14 specify 16 pre-tinted dust_dot/dust_line variants (32 tiles) with the vanilla brightness ramp, dot+arm quad composition per connection, and an UP_SLOPE vertical face quad. The atlas has a single 'dust_line_0' tile (atlas.
 - `minor` **Observer placement orientation inverted vs spec** — `src/player/interaction.js:994`. §6.6: watched-face FACE6 is 'set opposite the player's look at placement' (vanilla parity: face points toward the player). redstonePlaceState returns look6, so the eye watches the direction the player is looking — inverted relativ
-- `minor` **notePunch is defined but never wired — left-click does not play the note** — `src/redstone/components.js:385`. §12.2: 'left-click punch starts (plays current note without incrementing)'. RedstoneComponents.notePunch exists but has no caller anywhere in the codebase; the mining/attack path never invokes it, so punching a note block is silen
+- `FIXED (integration sweep 2026-07-30 — the mining path calls it at src/player/interaction.js:216)` **notePunch is defined but never wired — left-click does not play the note** — `src/redstone/components.js:385`. §12.2: 'left-click punch starts (plays current note without incrementing)'. RedstoneComponents.notePunch exists but has no caller anywhere in the codebase; the mining/attack path never invokes it, so punching a note block is silen
 - `minor` **No placement-time support validation for wire/components (and plates reject fences)** — `src/player/interaction.js:1074`. §4.1/§6 restrict placement (dust only on top of a conductive block or glass; lever/buttons on conductive-or-glass faces; plates on conductive blocks or fences). None of blocks 70–78 define canPlaceAt and tryPlace performs no suppo
 - `minor` **§5.6 chunk-border network healing not implemented** — `src/redstone/RedstoneEngine.js:46`. Spec: when a chunk reaches GENERATED and enters SIM_RADIUS for the first time since load, every wire cell on its 4 border planes must be enqueued as a network seed to heal cross-border seams. No such seeding exists in RedstoneEngi
 - `minor` **§5.5 per-tick component scheduled-tick warning (>500) missing** — `src/world/scheduledTicks.js:21`. The budget table requires a console warning when component scheduled ticks exceed 500/tick. ScheduledTicks.run has no counting or warning (the dust solver's 1024-cell warn exists, but not this one).
-- `minor` **Cosmetic particles missing: burnout smoke, note particle, lit-dust red sparks** — `src/render/Particles.js:35`. components.js calls this.game.particles?.smoke?.() (torch burnout, line 87) and ?.note?.() (line 396) but Particles has neither method, so both are silent no-ops; the §4.5 lit-dust 1/8-chance red particle emission does not exist a
-- `minor` **Note block missing fuel value 300** — `src/registry/items.js:47`. §12.2 gives the note block 'fuel 300 t (wood)'. FUEL_BLOCKS (items.js:47-57) omits B.NOTE_BLOCK so its block-item has fuel 0.
+- `FIXED (integration sweep 2026-07-30 — Particles.smoke() (src/render/Particles.js:149), Particles.note() (:161) and Particles.redstoneSpark() (:169) all exist, so the two ?. no-ops in components.js now fire. The §4.5 lit-dust 1/8-chance red spark fires from redstone_wire's randomTick (src/registry/blocks.js:783), which deliberately draws from Math.random rather than the seeded world stream — cosmetic RNG must never perturb worldgen determinism)` **Cosmetic particles missing: burnout smoke, note particle, lit-dust red sparks** — `src/render/Particles.js:35`. components.js calls this.game.particles?.smoke?.() (torch burnout, line 87) and ?.note?.() (line 396) but Particles has neither method, so both are silent no-ops; the §4.5 lit-dust 1/8-chance red particle emission does not exist a
+- `STALE — was already fixed before this sweep (verified 2026-07-31: [B.NOTE_BLOCK]: 300 is present at src/registry/items.js:56 in commit 094ef4c as well as in the tree, so an earlier pass closed it and never marked the entry)` **Note block missing fuel value 300** — `src/registry/items.js:47`. §12.2 gives the note block 'fuel 300 t (wood)'. FUEL_BLOCKS (items.js:47-57) omits B.NOTE_BLOCK so its block-item has fuel 0.
 - `minor` **Piston entity push excludes item entities and shove() bypasses collision** — `src/redstone/PistonMover.js:138`. §9.3 pushes 'entities whose AABB intersects any destination cell or the head cell'. pushEntities filters e.type !== 'item', so dropped items are never moved (vanilla pushes them). Also `e.moveEntity?.(...) ?? shove(e, dir)` — enti
 - `minor` **State-dependent component visuals missing: repeater lock bar, comparator subtract dot, observer pulse face** — `src/registry/blocks.js:776`. §7 requires a bedrock-gray bar rendered while a repeater is locked; §14 gives the comparator a lit front dot in subtract mode and the observer a brightened face while pulsing. tilesFor for repeater (blocks.js:776) and comparator (
 - `minor` **Components on glass supports get no initial evaluation at placement** — `src/redstone/components.js:516`. Repeater/comparator/lamp/note block have no onPlaced hook; their initial power read relies on setBlock's onCellChanged second-order fan-out reaching the placed cell back through a CONDUCTIVE neighbor. With a conductive support thi
@@ -158,9 +739,8 @@ simplifications** already reasoned about in this file's per-phase sections.
 - `major` **Breeding (§10) entirely absent — foodPoints is a dead field** — `src/entities/mobs/villager.js:93`. foodPoints is initialized but nothing ever accrues it (no food-item pickup), there is no willing flag, no bed-count population gate, no Breed goal, no love-mode pairing, and no baby spawn from breeding (isBaby exists only for the
 - `major` **AMENDS 05 §6 not applied — zombies never target villagers or iron golems** — `src/entities/mobs/Mob.js:244`. Mob.updateTarget only acquires the player, and Zombie.js has no override; grep confirms no villager/golem reference in Mob.js or ai.js. The amended rule 'nearest of {player, villager, iron_golem} within detection 35' is missing, s
 - `major` **Zombie-kills-villager 50% conversion (§11.4 source 2) not wired** — `src/entities/mobs/villager.js:207`. ZombieVillager exists and the natural 5% spawn route works (mobs/index.js:100), but there is no code anywhere replacing a villager killed by a zombie with a zombie_villager carrying its profession/level/trades (grep for conversion
-- `major` **Composter has no functional behavior (fill 0–8 / bone meal)** — `src/player/interaction.js:882`. The block is registered interactable ('composter', blocks.js:1048) but the RMB handler is `case 'composter': case 'lectern': break;` — a no-op. No compost-chance table, no fill-level state nibble mutation, no bone_meal dispense at
-- `major` **Blast furnace and smoker are plain furnaces — no 2× speed, no input filter, lit variants dead** — `src/Game.js:696`. getBlockEntity maps blockEntity kinds 'blast_furnace'/'smoker' to the default `{type:'furnace'}`, so tickFurnace cooks them at the fixed 200-tick rate (Game.js:761) and accepts any SMELTING recipe (no ore-only/food-only rejection)
-- `minor` **dirt_path never reverts to dirt (no neighborUpdate)** — `src/registry/blocks.js:1037`. Block 170's definition has no neighborUpdate handler, and no other code references DIRT_PATH for reversion — yet interaction.js:1214's comment claims 'it reverts to dirt under a placed block via its neighborUpdate'. Placing a soli
+- `FIXED (integration sweep 2026-07-30 — useComposter at src/player/interaction.js:1023 with §7.3's compost-chance table transcribed at :62; the 0–8 fill level also renders, see the INTEGRATION section)` **Composter has no functional behavior (fill 0–8 / bone meal)** — `src/player/interaction.js:882`. The block is registered interactable ('composter', blocks.js:1048) but the RMB handler is `case 'composter': case 'lectern': break;` — a no-op. No compost-chance table, no fill-level state nibble mutation, no bone_meal dispense at
+- `FIXED (integration sweep 2026-07-30 — blast_furnace and smoker are their own blockEntity kinds at src/Game.js:913, with §7.6/§7.7's input filters at :982 and the lit variants driven at :1025)` **Blast furnace and smoker are plain furnaces — no 2× speed, no input filter, lit variants dead** — `src/Game.js:696`. getBlockEntity maps blockEntity kinds 'blast_furnace'/'smoker' to the default `{type:'furnace'}`, so tickFurnace cooks them at the fixed 200-tick rate (Game.js:761) and accepts any SMELTING recipe (no ore-only/food-only rejection)
 - `minor` **Workstation claim protocol simplified — no POI claim ledger, no job loss/lock** — `src/entities/mobs/villager.js:101`. claimStation is a 3×3×3 adjacent-block scan every 40 ticks instead of pathfinding to the nearest unclaimed villageMeta.stations POI; stations[].claimedBy is never written, so multiple villagers can employ off one block; breaking a
 - `minor` **Village chests are placed empty — §3.2/§3.5 chest loot never rolled** — `src/world/gen/village.js:479`. Fixture chests (library/smithy/butcher/fletcher/farm) are stamped as bare blocks with no lootSeed records; the layout never emits {be:'chest', loot} spawn records, and Game.rollGenChest is only invoked for records that carry one (
 - `minor` **Gen villager spawn records deviate from §8.6 (count formula, nitwit determinism)** — `src/world/gen/village.js:220`. The layout spawns 3 villagers at the plaza plus 1 per building rather than min(bedsInVillage−1, jobSites+2), and records carry no profession/nitwit fields; nitwit is instead rolled at runtime via world.rng() < 0.05 (villager.js:90
@@ -185,25 +765,20 @@ simplifications** already reasoned about in this file's per-phase sections.
 **E9 · 09-POTIONS**
 
 - `major` **Potion tooltips and per-potionId icon tint absent — all 29 potions indistinguishable** — `src/ui/containers.js:1544`. showTooltip renders only item.displayName + enchant lines; there is no 'Potion of Swiftness — Speed (3:00)' line, and paintItemIcon/tileForItemId (src/ui/hud.js:17-48) are id-only, so items 371/372/373/378 always show the neutral
-- `major` **AreaEffectCloud serialized into chunk saves but dropped with a warning on reload** — `src/Game.js:1121`. saveManager.serializeChunk (saveManager.js:105-106) excludes only 'arrow' and types starting with 'thrown', so 'area_effect_cloud' records (AreaEffectCloud.serialize, AreaEffectCloud.js:71-77) are written to disk. On hydration res
 - `minor` **Night Vision flash cadence is 20 ticks, spec/acceptance say 10-tick sine** — `src/env/DayNight.js:21`. Code: 0.7 + 0.3*sin(duration * PI / 10) — period 2π/(π/10) = 20 ticks. Spec formula sin((duration − partialTick)·π·0.2) has a 10-tick period. (The code's 0.7±0.3 amplitude actually matches real Java 1.20 better than the spec's tra
 - `minor` **AMENDS 01 §13.1 entity-lighting night-vision floor not applied** — `src/entities/Entity.js:103`. sampleLight sets lightScalar = brightness(level) with no max() against nightVisionScale when the local player has Night Vision; the viewmodel (Game.js:661) reads the same un-floored value. Terrain brightens via uNightVision (mater
-- `minor` **Splash water bottle bypasses removeFire: no block.extinguish sound, fireOrigins leak** — `src/entities/ThrownPotion.js:99`. splashWater removes fire via w.setBlock(bx+dx, by, bz+dz, 0, { byPlayer: true }) instead of fire.js removeFire(world, x, y, z, /*douse*/ true). Consequences: (1) the §17-mandated block.extinguish sound never plays for splash-water
 - `minor` **§14.4 creeper effect-cloud interaction not implemented** — `src/entities/mobs/Creeper.js:44`. SwellGoal detonation (m.dead = true; game.explode(...)) never inspects m.effects nor spawns an AreaEffectCloud. Spec: a creeper exploding with active duration effects spawns a cloud (radius 2.5, duration 600, remaining effects at
-- `minor` **Mushrooms pop from bright light on random tick, violating the spec's kept vanilla quirk** — `src/registry/blocks.js:920`. mushroomTick begins with `if (world.internalLight(x,y,z) >= 13) { world.popBlock(x,y,z); return; }`, so a lit mushroom pops on its next random tick. The spec explicitly requires the light check on neighbor update only (which mushr
 - `minor` **Mushroom worldgen ~10x sparser than §7.4 and floor whitelist narrower** — `src/world/gen/features.js:208`. Spec: 8 brown + 6 red attempts/chunk, y = 2 + rngInt(max(1, heightAt−4)), floor stone/dirt/gravel/cobblestone, expected yield 0.5–1.5/chunk. Code: 3 attempts each gated by rng() > 0.3 (≈0.9 effective attempts total), y ∈ [8,47], f
-- `minor` **Brewing stand has a collision box; spec chose none** — `src/registry/blocks.js:941`. defBlock(112) sets collisionBox [0,0,0,1,2/16,1] and inherits collidable:true (default at blocks.js:265). §7.2 explicitly cut the partial box ('with stepHeight 0 a partial box is pure annoyance'). With this box the player bumps in
 - `minor` **Brewing UI has no progress arrow animation, fuel bar, or bubble column** — `src/ui/containers.js:854`. The brewing branch calls this.addArrow(panel, 79, 34) without the id used by refresh(); refresh() (line 1597) animates only the furnace gauge ('g-flame'/'g-arrow'). Result: the brew arrow is static, and there is no fuel/20 blaze b
 
 **E10 · 11-END**
 
-- `major` **End-city loot records silently lost when a chest cell crosses a chunk border** — `src/world/gen/endCity.js:105`. stampCity emits ALL loot/spawn records only on the chunk holding the city ORIGIN ((city.ox>>4)===cx), but the chests sit at ox±2/oz±2 — whenever (ox&15) or (oz&15) ∈ {0,1,14,15} a chest block lands in a NEIGHBOR chunk. Game.onChun
-- `major` **end_rod facing placement and support-pop unimplemented** — `src/registry/blocks.js:1162`. (a) tryPlace's per-block state chain (src/player/interaction.js:1088-1109) has no B.END_ROD branch, so an end rod always places with state 0 (facing up) regardless of the clicked face — §2.2's 'bits0-2 facing… placeable on any sol
+- `FIXED (integration sweep 2026-07-30)` **End-city loot records silently lost when a chest cell crosses a chunk border** — `src/world/gen/endCity.js:105`. stampCity emits ALL loot/spawn records only on the chunk holding the city ORIGIN ((city.ox>>4)===cx), but the chests sit at ox±2/oz±2 — whenever (ox&15) or (oz&15) ∈ {0,1,14,15} a chest block lands in a NEIGHBOR chunk. Game.onChun
 - `minor` **Several §16 sound-event triggers never fire** — `src/entities/mobs/Shulker.js:161`. Defined in audio/events.js but never emitted: shulker.open/shulker.close (peek transitions in Shulker.tick change this.peek without emitting), shulker.hurt_closed (no closed-hit branch), chorus.grow (blocks.js chorusGrow 1099-1130
 - `minor` **Shulker closed-state arrow deflection absent (declared deviation)** — `src/entities/mobs/Shulker.js:191`. §9.2 requires closed shulkers to DEFLECT arrows (reflect velocity ×−0.3, zero damage, shulker.hurt_closed); the build instead lets arrows damage through the 20-armor formula (armorPoints() at line 60). Declared in DEVIATIONS.md:50
 - `minor` **Shulker box item tooltip does not preview contents** — `src/ui/containers.js:1524`. §9.4: 'the block-item tooltip lists the first 5 stacks + "and n more..."'. showTooltip renders only name/durability/enchant lines; there is no tags.containerItems branch anywhere in the UI, so a filled shulker box item gives no hi
 - `minor` **Tattered elytra sprite variant never displayed** — `src/assets/tilePainters.js:1447`. item_elytra_tattered is painted into the atlas but no code references it — the icon pipeline has no damage-aware tile selection, so at durability 1 the elytra keeps its normal sprite. §10.1/§14 specify a visible tattered state at
-- `minor` **End-city placement omits the island-mass gate; shulker population below spec** — `src/world/gen/endCity.js:47`. §12.1 requires island mass m ≥ 0.35 at the picked column; cityForRegion checks only surfY!=null && surfY>=50, so cities can generate on thin island rims (the compact tower grammar itself — no bridges/tower stacking/loot rooms/sepa
+- `PARTLY FIXED (integration sweep 2026-07-30 — the m >= 0.35 + d > 1024 gate now lives at endCity.js:44-61 with endSurface.js:23-40; shulker population is still below spec)` **End-city placement omits the island-mass gate; shulker population below spec** — `src/world/gen/endCity.js:47`. §12.1 requires island mass m ≥ 0.35 at the picked column; cityForRegion checks only surfY!=null && surfY>=50, so cities can generate on thin island rims (the compact tower grammar itself — no bridges/tower stacking/loot rooms/sepa
 - `minor` **iron_bars collision is a full cube instead of connecting 2/16 panes** — `src/registry/blocks.js:1154`. §2.2 specifies collision as 'connecting 2/16 panes, height 1.0'; the registry uses collisionBox [0,0,0,1,1,1] (full 1×1×1) with a code comment claiming '(approx)' — the spec does not mark the collision as approx, only the visual n
 - `minor` **End portal teleports only the local player, not mobs/items** — `src/world/Portal.js:165`. §5.4: 'Any living entity or player whose AABB overlaps an end_portal cell teleports instantly… Item entities that touch a portal are teleported too'. tickPortal only samples the local player's feet/head cells; no mob/item path che
 - `minor` **Spec-internal conflict: gateway bipyramid '12 bedrock' vs its own 10-cell enumeration** — `src/world/endArena.js:40`. §11.1 prose (and the §18 checklist) say '12 bedrock', but the enumeration it gives — tips (0,±2,0) plus the 4-cell plus-rings at y±1 — totals 10 cells, which is also the vanilla structure. spawnGateway places the enumerated 10. Un
@@ -219,25 +794,25 @@ simplifications** already reasoned about in this file's per-phase sections.
 - `minor` **Death-sequence visuals absent and death sound mistimed; explosion vs headBox uses head formula** — `src/entities/EnderDragon.js:442`. tickDying implements movement + the exact XP schedule but omits §7.9's every-2-tick white flicker and the up-to-12 growing light rays; mob.ender_dragon.death is emitted at tick 200 (finalize, line 476) instead of ascension tick 0
 - `minor` **At ritual t=604 only one summoning crystal actually explodes; no simultaneous power-6 quartet** — `src/entities/EnderDragon.js:672`. The loop hurts each rim crystal in order; the first crystal's power-6 explosion damages the other rim crystals with source 'explosion', which makes them vanish silently (EndCrystal chain rule), so 'the 4 summoning crystals explode
 - `minor` **Wither: +5 HP heal on killing blow missing; hover-goal offset sign inverted; skull effect hits undead** — `src/entities/mobs/Wither.js:123`. (a) §8.1's 'Regeneration … +5 HP on landing a killing blow' has no implementation (grep: no kill hook). (b) The §8.5 hover goal uses t.pos − this.pos as the clamped offset, mirroring the goal to the target's far side instead of ho
-- `minor` **Boss-bar state never replicated to multiplayer clients — broadcastBossBar has no callers** — `src/net/NetHost.js:622`. 13 §Multiplayer requires the one line replicating {name, fraction, color} to clients. NetHost.broadcastBossBar and NetClient._onBossBar both exist, but repo-wide grep shows broadcastBossBar is never invoked, so remote players in a
+- `FIXED (integration sweep 2026-07-30 — the bosses route through three Game helpers at src/Game.js:1261/1266/1271, each calling this.net?.broadcastBossBar?.(…))` **Boss-bar state never replicated to multiplayer clients — broadcastBossBar has no callers** — `src/net/NetHost.js:622`. 13 §Multiplayer requires the one line replicating {name, fraction, color} to clients. NetHost.broadcastBossBar and NetClient._onBossBar both exist, but repo-wide grep shows broadcastBossBar is never invoked, so remote players in a
 - `minor` **endFight.crystalsAlive[10] is dead state — never written or reconciled on load** — `src/entities/EnderDragon.js:592`. §10.1 makes crystalsAlive the authority on load, with chunk-entity crystals reconciled against it. The array is initialized to all-true in ensureRecord and never updated when crystals die or during the ritual; load-time reconcilia
 - `minor` **Registered sound events never emitted + assorted cosmetic gaps** — `src/audio/events.js:407`. mob.ender_dragon.ambient (HOLDING roar every 200–400 t), mob.ender_dragon.flap (wing zero-crossing), mob.ender_dragon.hurt (damagePool plays nothing), block.beacon.ambient (active hum loop), block.end_portal.spawn (activateExitPor
 
 **E12 · 14-MULTIPLAYER**
 
-- `major` **Host Save & Quit never signals shutdown — hostShutdown() is dead code and clients hang; client quit leaves a ghost player** — `src/main.js:106`. NetHost.hostShutdown (NetHost.js:644) has zero call sites. The pause menu onQuit awaits saveAll, disposes the world and goes to TITLE, but never broadcasts hostShutdown, never closes the relay socket, and never nulls game.net. The
+- `FIXED (integration sweep 2026-07-30 — onQuit in src/main.js now broadcasts game.net.hostShutdown() (:187) behind a re-entrancy latch (quitting/quitForced, :113), and NetClient handles the message at NetClient.js:153)` **Host Save & Quit never signals shutdown — hostShutdown() is dead code and clients hang; client quit leaves a ghost player** — `src/main.js:106`. NetHost.hostShutdown (NetHost.js:644) has zero call sites. The pause menu onQuit awaits saveAll, disposes the world and goes to TITLE, but never broadcasts hostShutdown, never closes the relay socket, and never nulls game.net. The
 - `major` **Non-player entities never get .dim assigned — clients see an entity-less Nether/End after party travel** — `src/entities/Entity.js:43`. Entity's constructor sets this.dim = 0 and no spawn path (EntityManager.add, MobSpawner, drops, arrows) ever reassigns it to world.activeDim; only Player entities are updated (Game.js:411/425/1501). NetHost._buildInterest (NetHost
 - `major` **Client's own inventory screen (E) is not networked — every rearrangement/armor-equip/2×2 craft is reverted by the unconditional playerState push** — `src/ui/containers.js:1`. containers.js has zero net awareness; on a CLIENT, KeyE (main.js:201) opens the full local survival inventory/crafting screen whose clicks mutate the local replicated p.inventory/p.armor with no message to the host. NetHost.outbou
 - `minor` **Client block PLACEMENT is not predicted and blockEdit action=1 is never sent (documented deviation)** — `src/player/interaction.js:700`. All client RMB routes through the useBlock JSON request; placement appears ~RTT later. Spec §4.5 requires instant client-side place + the 0x03 action-1 path (which exists host-side at Game.js:1446-1451 but is dead — no client send
 - `minor` **Party-travels-together replaces per-client dimensions (documented deviation) — 'staying client keeps playing the overworld' acceptance item unachievable** — `src/Game.js:422`. changeActiveDimension force-moves every connected player and wipes/restreams all clients because the v1 engine holds one resident dimension (NetHost._streamChunks also skips clients whose dim ≠ world.activeDim, NetHost.js:437). Th
 - `minor` **Relay §10 caps partially implemented: no join-attempts/min/IP limit and no 4 h host-only-room reaping** — `server/relay.js:62`. The §10 table specifies '10 join attempts/min/IP' and 'host-only room after 4 h' reaping; neither exists (joinRoom has no per-IP tracking; rooms only die on host disconnect). Also the client→host hello has no host-side 2 KB JSON s
 - `minor` **Sticky sleep flag: a client leaving its bed never clears Client.sleeping, so the night can skip without them** — `src/Game.js:1185`. trySleep sets the net Client record's sleeping=true (actor.sleeping), but nothing ever clears it except the skip itself (Game.js:1209) — there is no sneak-to-leave path, no movement-based cancel, and the sleeping player's input is
-- `minor` **bossBar broadcast plumbing exists but no boss code calls it — boss fights don't replicate bars to clients** — `src/net/NetHost.js:622`. broadcastBossBar has zero call sites (grep across bossHooks.js, EnderDragon.js, BossBar.js). NetClient._onBossBar (NetClient.js:342) is ready. §12's 13-Bosses interop row requires boss HP/phase UI via bossBar messages; a client ne
+- `FIXED (integration sweep 2026-07-30 — same fix as the E11 entry above: Game.js:1261/1266/1271)` **bossBar broadcast plumbing exists but no boss code calls it — boss fights don't replicate bars to clients** — `src/net/NetHost.js:622`. broadcastBossBar has zero call sites (grep across bossHooks.js, EnderDragon.js, BossBar.js). NetClient._onBossBar (NetClient.js:342) is ready. §12's 13-Bosses interop row requires boss HP/phase UI via bossBar messages; a client ne
 - `minor` **Dev/test affordances from §13 missing: ?relay=&join=&name= auto-join, game.net.stats()/dropNext()/fakeLag(), and several F3 net counters** — `src/main.js:122`. No URLSearchParams handling exists anywhere (spec §8.1/§13 auto-join prefill), NetClient/NetHost expose no stats()/dropNext(n)/fakeLag(ms) console hooks, and the F3 net line (debug.js:57-65) omits clock offset, in/out KB/s windowe
 
 **EC · 18-CREATIVE**
 
-- `minor` **Ctrl+pick-block still copies no tags — `pickTags()` is a permanent `undefined` stub although 08 has landed** — `src/player/interaction.js:201`. `pickTags(_hit) { return undefined; }` at interaction.js:201, with a comment saying to "Wire the read when 08 lands". 08-ENCHANTING landed at E3/E4 — `src/items/tags.js` exists and is imported across the codebase (items.js:6), and
+- `FIXED (integration sweep 2026-07-30 — pickTags(hit) reads the real tags at src/player/interaction.js:297; the stub is gone)` **Ctrl+pick-block still copies no tags — `pickTags()` is a permanent `undefined` stub although 08 has landed** — `src/player/interaction.js:201`. `pickTags(_hit) { return undefined; }` at interaction.js:201, with a comment saying to "Wire the read when 08 lands". 08-ENCHANTING landed at E3/E4 — `src/items/tags.js` exists and is imported across the codebase (items.js:6), and
 
 **E13 · 17-SHIP / 19-MAIN-MENU**
 
@@ -253,19 +828,18 @@ simplifications** already reasoned about in this file's per-phase sections.
 
 **UPDATE-* backlog**
 
-- `minor` **Right-click deposit-one ignores a slot's maxStack cap, overfilling capped slots** — `src/ui/containers.js:1344`. The button-2 deposit branch tests `same(cur, inSlot) && inSlot.count < stackMax(cur.id)` and then does `inSlot.count++` (containers.js:1344-1346), sizing against the ITEM's max instead of the slot's. The left-click merge path on t
 - `minor` **Left-drag-distribute does not exist — two UPDATE-rightclick acceptance lines are unmeetable (06 wins under §2)** — `src/ui/containers.js:1228`. UPDATE-rightclick §C says to keep left-click-drag-distribute working and its acceptance list has 'Left-drag-distribute still works and is no longer the only way to fill the grid'. No drag-distribute exists anywhere in containers.j
 
 **Registry governance**
 
-- `major` **Creative palette's 07/09 id sets never populated — Redstone and Brewing tabs classify zero ids and are hidden** — `src/ui/creativeTabs.js:44`. Lines 44-45 declare `const REDSTONE_BLOCKS = new Set();  // 07 (blocks 70–104)` and `const BREWING_INGREDIENTS = new Set();  // 09 (items 370–389)` with the comment '07 fills REDSTONE_BLOCKS, 09 fills BREWING_INGREDIENTS — so they
+- `STALE — was already fixed before this sweep (verified 2026-07-31: at commit 094ef4c REDSTONE_BLOCKS is already derived from the 70–104 range (creativeTabs.js:48) and BREWING_ITEMS is populated (:59). This sweep instead widened tab 4 (UTILITY_BLOCKS gained enchanting_table/anvil/grindstone/smithing_table) and filed bell + composter under Decoration)` **Creative palette's 07/09 id sets never populated — Redstone and Brewing tabs classify zero ids and are hidden** — `src/ui/creativeTabs.js:44`. Lines 44-45 declare `const REDSTONE_BLOCKS = new Set();  // 07 (blocks 70–104)` and `const BREWING_INGREDIENTS = new Set();  // 09 (items 370–389)` with the comment '07 fills REDSTONE_BLOCKS, 09 fills BREWING_INGREDIENTS — so they
 - `minor` **Registry has no runtime guard enforcing §3's no-duplicate-id / no-name-collision / in-range rules** — `src/registry/blocks.js:313`. defBlock ends with a bare `BLOCKS[id] = block; B[name.toUpperCase()] = id;` (blocks.js:313-314) — a second defBlock on the same id or name silently overwrites the first with no warning. defItem is worse in a different direction: `
 - `minor` **Dimension id→name mapping duplicated in two UI modules instead of read from the dimension registry** — `src/ui/debug.js:4`. Dimension ids are correctly registered in exactly one place — registerDimension(0|1|2) in src/world/dimensions.js:44/56/66, each descriptor already carrying a `key` field ('overworld'/'nether'/'the_end'). But debug.js:4 keeps a pr
 - `minor` **Block-level `fuel` property on four village blocks is a dead second source of truth for 06 §11.3** — `src/registry/blocks.js:1049`. composter (blocks.js:1049), barrel (:1053), lectern (:1057) and fletching_table (:1083) each carry `fuel: 300` in their defBlock opts. defBlock has no `fuel` field in its defaults object (blocks.js:260-307), so this lands as an ad
 
 **Cross-file references**
 
-- `major` **Multiplayer container click applier compares stacks by id+damage only — no tagsEqual — so differently-tagged stacks merge and tags objects are aliased by shallow spreads** — `src/Game.js:1651`. `applyNetContainerClick` — the host-authoritative chest/hopper/dropper/shulker click path reached from `hostContainerClick` (src/Game.js:1526) — declares its own local `same()` at line 1651: `const same = (a, b) => a && b && a.id
+- `FIXED (integration sweep 2026-07-30 — tagsEqual is imported at src/Game.js:8 and folded into the local same() at :2095)` **Multiplayer container click applier compares stacks by id+damage only — no tagsEqual — so differently-tagged stacks merge and tags objects are aliased by shallow spreads** — `src/Game.js:1651`. `applyNetContainerClick` — the host-authoritative chest/hopper/dropper/shulker click path reached from `hostContainerClick` (src/Game.js:1526) — declares its own local `same()` at line 1651: `const same = (a, b) => a && b && a.id
 - `major` **Dispenser/dropper default ejection rebuilds the stack from id+count alone, destroying tags and damage** — `src/redstone/containersRedstone.js:155`. `defaultDrop` — the fallback ejection path for every non-special item in a dispenser and for a dropper facing a non-container — calls `this.game.spawnItemById(s.id, 1, fx, fy, fz, vel)`. `spawnItemById` (src/Game.js:914-923) const
 - `minor` **Hopper and dropper can insert a shulker_box item into a shulker_box block entity — 11 §9.4 forbids box-in-box** — `src/redstone/containersRedstone.js:229`. `insert(dst, n, stack, dstId, rule)` gates slots only on `rule` ('furnaceInput'/'furnaceFuel'/'any') — it never inspects `dstId` against `stack.id`. `slotCountFor` (line 15) explicitly resolves `B.SHULKER_BOX` to 27 slots, so hopp
 
@@ -286,7 +860,7 @@ simplifications** already reasoned about in this file's per-phase sections.
 **Sound events**
 
 - `minor` **Three §3.5 ambient loops never implemented: `world.portal.loop`, `block.brewing.loop`, `block.enchant.sparkle`** — `src/audio/events.js:798`. 16 §3.5 tables three events that exist in neither the registry nor any call site. `world.portal.loop` (10) — the 3-sine 180/181.2/90 Hz portal drone with a chime every 2-5 s, also required by 10 §14 as `block.portal.ambient` ("loo
-- `minor` **Sixteen registered recipes are orphaned — defined but emitted from nowhere** — `src/audio/events.js:355`. Grep over src/ (excluding events.js) returns zero call sites for: `gateway.beam` (355), `gateway.travel` (357), `chorus.grow` (359), `chorus.break` (363), `shulker.open` (365), `shulker.close` (367), `shulker.hurt_closed` (373), `
+- `minor` **Fourteen registered recipes are orphaned — defined but emitted from nowhere** — `src/audio/events.js:355`. (Re-scoped 2026-07-30: `gateway.beam` and `gateway.travel` are no longer orphans — 11-END §11.1's beam and both §16 events are emitted from `src/world/endArena.js`.) Grep over src/ (excluding events.js) returns zero call sites for: `chorus.grow` (359), `chorus.break` (363), `shulker.open` (365), `shulker.close` (367), `shulker.hurt_closed` (373), `
 
 **Hygiene**
 
@@ -298,9 +872,15 @@ simplifications** already reasoned about in this file's per-phase sections.
 
 ### Outstanding — operator action required (NOT done autonomously)
 
-- **C418 audio remains in git history.** 28 mp3 blobs are still reachable from
-  commits `b74a1b5`, `07d9919`, `16cb1cb`. HEAD and every build are clean, but
-  a `git clone` reconstructs them. Scrubbing needs a history rewrite and a
+- **C418 audio remains in git history — and, corrected 2026-07-31, at HEAD.** 28
+  mp3 blobs are still reachable from commits `b74a1b5`, `07d9919`, `16cb1cb`.
+  *This entry used to say "HEAD and every build are clean". Only the second half
+  is true:* `git ls-tree -r HEAD -- public/theme-music` lists 14 tracked `*.mp3`,
+  so a plain `git clone` gets them from the current tip, not merely from history.
+  Every **build** is clean (ship-gate `0 track(s)`, no audio in `dist/`).
+  Untracking them (`git rm --cached public/theme-music/*.mp3`) is a one-commit
+  fix and is a prerequisite for, not a substitute for, the history scrub below.
+  Scrubbing needs a history rewrite and a
   force-push to a shared remote — destructive, outward-facing, and irreversible,
   so it is deliberately left to the operator:
   `git filter-repo --path public/theme-music --path CC-assets --invert-paths`
@@ -326,7 +906,19 @@ already passed when each phase landed. Ship-time decisions and residual deviatio
    open-source game distributed with zero audio, so the gate policed a `dist/`
    nobody redistributes while adding friction for every contributor testing music.
    See item 2 — the meaningful residual risk is git history, not the build.)*
-2. **C418 placeholder tracks removed from the tree.** 14 numbered `*.mp3` (the
+2. **C418 placeholder tracks removed from the tree.** *(**CORRECTED 2026-07-31 —
+   this item is FALSE as written, and has been since it was filed.** `git ls-tree
+   -r HEAD -- public/theme-music` returns all 14 `*.mp3` at commit `094ef4c`, and
+   `git ls-files` returns them in the index too. They were never removed; only
+   `.gitignore` changed, and ignoring a path does not untrack it. So "HEAD and any
+   fresh build are clean" is half right: **the build is clean** — verified
+   2026-07-31, `npm run build` reports `ship-gate: 0 track(s)` and `dist/`
+   contains no audio of any kind — but **HEAD is not**. The E13 backlog entries
+   above ("README §Audio & copyright falsely states the repo ships no audio
+   files", "public/theme-music/ is not gitignored and not stripped from dist")
+   were filed against exactly this and remain **OPEN**. `README.md` has been
+   corrected to say so; the untracking is an operator action, listed below.)* 14
+   numbered `*.mp3` (the
    Minecraft/C418 OST dev placeholders) had been committed into
    `public/theme-music/`; they are removed from HEAD here. They remain in **git
    history** (commit `b74a1b5`) — **before making the repository public**, scrub
@@ -768,7 +1360,11 @@ transcription are EXACT; peripheral systems compressed):
    cascade (`chorusSupport` neighbor-update) ARE implemented, so planted flowers grow
    and felled trees collapse.
 3. **End cities are a compact tower grammar** (base platform + a 3-floor base tower
-   with purpur walls, pillar corners, end-rod lights, a parkour spiral, a decorative
+   with purpur walls, pillar corners, end-rod lights, a parkour spiral *(amended
+   2026-07-30: the spiral was declared here but SEALED in code — solid floor slabs,
+   no doorway, and a rod occupying step 0 — until `endCity.js:83-104`. It is now
+   climbable: the ground floor has a 3x3 doorway in the -X wall, and every floor
+   above the first carries a stairwell hole at dz = -3, dx = -2..0)*, a decorative
    shulker box, and TWO top-floor loot chests: one standard `end_city` chest (§15.3
    with 08-enchanted gear) and one `end_ship` treasure chest carrying a **guaranteed
    elytra** (§15.4) — the ship's elytra chest simplified to a city treasure chest since
@@ -1228,6 +1824,16 @@ modified. **08's id ranges are now populated**: blocks 105 (enchanting_table),
    which it scopes to "two same-id **damageable** items". Two enchanted books have
    no defined result. **Rejected** (`grindstoneResult` returns null) rather than
    inventing one — any invented output destroys one of the two items.
+N. **08 §8.3 branch (c) requires `isDamageable(target)`.** §8.3's pseudocode
+   gates the combine branch on `sac.id === target.id` alone. For a NON-damageable
+   same-id pair the branch body is dead (repair needs `isDamageable`; only 346
+   carries enchants and that is branch (b)) — but a rename still sets `did`, and
+   `takeAnvilOutput` (`ui/containers.js:503`) then consumes `sac.count`, destroying
+   the whole sacrifice stack for a 1-level rename. Reachable normally: `shiftMove`
+   routes a second full stack into the empty sacrifice slot, and §8.4 blesses
+   renaming stackables. **Rejected** (`anvilResult` returns null; the player clears
+   the slot to rename) on the same reasoning as ruling 6 — any invented output
+   destroys an item.
 7. **`item.break` is still named `player.item_break`.** §12 names the hook
    `item.break`; this codebase has had `player.item_break` since E1, and 06 §7.1
    owns the break sound. The existing id is kept (E3 logged the same divergence);
@@ -1296,7 +1902,12 @@ the spec. It independently reproduced the two bugs the gate suite had just caugh
 missed**:
 
 1. **HIGH — the table's item slot had no stack cap; buying destroyed up to 63
-   books.** §4.2: "item slot (**accepts one** enchantable item)". The container
+   books.** §4.2: "item slot (**accepts one** enchantable item)". *(Amended
+   2026-07-30: this retro's fix list named only three paths. The cap is now
+   honoured on ALL FOUR — click-merge, click-place, right-click deposit-one
+   (`containers.js:1383`) and the number-key / offhand swaps (`containers.js:1548`,
+   `:1565`). The two swap paths were the strictly worse variant: a whole stack per
+   keystroke.)* The container
    framework had no per-slot cap — every path sized against the ITEM's max, and
    `book` is stack-64. §4.5 step 2 rewrites a book to `count = 1` when it becomes
    an `enchanted_book`, so shift-clicking a 64-stack in and buying **silently
@@ -1381,8 +1992,11 @@ not see, both in the seam between the 08 logic and the container framework:**
   would never be consumed. **My own gate test hid this by calling
   `takeAnvilOutput()` directly instead of clicking.** Fixed by using the
   framework's `result` region — the computed-output shape these slots always
-  were — whose shift path also correctly refuses to consume when the inventory
-  is full. The test now goes through `onSlotClick`.
+  were — whose shift path refuses to consume when the inventory is full.
+  *Corrected 2026-07-30:* that safety property held only for a **total** refusal.
+  The partial-fit case (craft-max shift with room for some but not all of the
+  output) was an unbounded dupe, and is now gated by the `fitsWhole` dry-run at
+  `src/ui/containers.js:75`. The test now goes through `onSlotClick`.
   A follow-on that surfaced with it: `takeResult` hands the stack to the cursor
   **before** the take handler runs, so an unaffordable/"Too Expensive!" anvil
   result would have been a **free item**. `takeResult` now consults an optional
@@ -1425,9 +2039,23 @@ added: `conductive` (§3.2), `onUse` (§6–§12 right-click), `onMoved` (§6.6/
    16 pre-tinted dust tiles into the atlas. This build ships a single grayscale
    dust tile; the power gradient is not rendered as 16 discrete brightnesses. The
    stored power (states bits0–3) and all LOGIC are exact — only the visual ramp
-   is simplified. The custom wire/lever/button/plate/repeater/comparator/piston-
-   head/hopper meshes are likewise **approximate boxes** (the logic reads state,
-   never the mesh); wall levers/torches render floor-style.
+   is simplified. **CLOSED (integration sweep 2026-07-30).** All 32 tiles are
+   painted (`tilePainters.js` bakes `dust_dot_<p>` / `dust_line_<p>` for p = 0–15
+   off one shared grain field, so the ramp is monotonic and the dot matches the
+   arms it butts against), `atlas.js` exports `DUST_DOT_TILE` / `DUST_LINE_TILE`,
+   and `ChunkMesher.emitDust` composes the §4.5 figure — centre dot + one arm per
+   rendered direction + the UP_SLOPE riser quad — reading the connection graph
+   from `redstone/dust.js`'s `dustConnections()` rather than re-deriving it, so
+   shape and logic cannot drift. A power change is now a pure UV swap. The custom
+   lever/button/plate/repeater/comparator/piston-head/hopper meshes are still
+   **approximate boxes** (the logic reads state, never the mesh); wire no longer
+   is. *Corrected 2026-07-31:* wall mounting is no longer
+   floor-style. `ChunkMesher.attachBox` rotates the lever/button box onto its
+   §13.3 ATTACH face, and `emitTorch` offsets both torch ids toward their support
+   — the 06 §3 torch (38, nibble = facing) and the 07 §13.3 redstone_torch (71,
+   bits0–2 = attach, bit3 = lit), which previously matched no branch while lit and
+   snapped to the cell centre on every toggle. What remains simplified: no tilt on
+   either, and the lever's stick cross-quads are still skipped.
 2. **§9.2 piston render — instant move (as the spec's own adaptation allows).**
    No moving-block entity or animation; blocks teleport one cell on the
    completion tick. The spec explicitly rejects animated interpolation.
@@ -1793,6 +2421,11 @@ a **visible behavior change** beyond E3's scope, but the alternative was to copy
 a known-dead call into the new F-swap path. `ItemEntity.js:168`'s
 `game.hud?.flashPickup?.(…)` is left alone: `flashPickup` is not defined on `Hud`
 either, so it is doubly dead and belongs to whoever writes that method.
+*CLOSED 2026-07-31:* whoever wrote that method is the verification pass at the
+top of this file. `Hud.flashPickup` now exists (`ui/hud.js:185`) with its
+`.picked` keyframe (`ui/style.css:86`), and the call is repointed to
+`game.ui?.hud?.flashPickup?.(…)` at `entities/ItemEntity.js:222`. 03 §23's
+pickup pulse fires for the first time.
 
 **6. Six stack-copy sites shared their `tags` object (08 §1 rule 4).**
 `{...stack}` is a shallow copy, so a split/drop left both halves pointing at one
@@ -2116,10 +2749,18 @@ The API later phases should use: `WATERLOGGED`, `STATE_NIBBLE`, `isWaterCellAt(i
 
 1. **`BLOCKS[id].skyOpacity` does not exist.** AMENDS 01 §4.6/§4.2 specifies
    `max(BLOCKS[id].skyOpacity, bit7 ? 1 : 0)`. This codebase has no such field —
-   the heightmap predicate is `terminatesSky(id)` in `LightEngine.js`. The
-   amendment lands as `terminatesSky(id, state)` instead. The gen-side heightmap
-   (`features.js`, in the worker) stays id-only and still agrees, because
-   worldgen never emits bit 7.
+   the heightmap predicate is `terminatesSky(id, state)` in `LightEngine.js`, and
+   01 §5's only concrete requirement ("water counts, glass doesn't") is satisfied
+   by `opacity` alone, so no `skyOpacity` field was introduced.
+   *Corrected 2026-07-30:* the old justification for the gen side ("stays id-only
+   and the two still agree, because worldgen never emits bit 7") was **false for
+   every opacity-0 block** — the hand-written 9-entry `HM_SKIP` list in
+   `features.js` omitted `oak_fence`, `glass` and friends, so gen and hydrate
+   disagreed on those columns. The two now agree BY CONSTRUCTION rather than by
+   luck: `features.js` DERIVES `HM_SKIP` from the registry as exactly
+   `!terminatesSky(id, 0)` (`b.opacity === 0 && id !== SNOW_LAYER && id !== CACTUS`),
+   and `nether.js:137` calls the same `computeHeightMap` instead of its former
+   "topmost non-AIR" loop. All three predicates are one predicate.
 2. **`LightEngine.onBlockChanged` gained `oldState`/`newState` params.** It
    derived everything from `BLOCKS[oldId]`/`BLOCKS[newId]`, so a waterlog toggle
    (same id) compared `oldB === newB`, every opacity test read false, and it did
@@ -2536,9 +3177,15 @@ The §4A theme layer stays OFF/empty (side-prompt 19 owns it).
    ~3.3 s ahead at 72 BPM. The two-clock property §1.5 actually cares about
    (JS picks *what*, the audio clock decides *when*) holds either way, and a
    partial bar cannot be scheduled without splitting the chord walk.
-10. **Ambience adds a fire/furnace proximity scan.** §3.5's `ambient.fire.loop`
-    names no sampling rule (unlike the fluid clusters' explicit 48-cell pass), so
-    it reuses the same once-per-second pattern with a 24-cell scan at radius 8.
+10. **Ambience adds a fire/furnace proximity scan, and it is a box scan at
+    radius 4, not the fluid pass at radius 8.** §3.5's `ambient.fire.loop` names
+    no sampling rule (unlike the fluid clusters' explicit 48-cell pass). Reusing
+    the random pass was wrong for fire: fluids come in hundred-cell bodies, a fire
+    is one cell, so 24 random draws out of a ~16^3 box found it 0.6% of the time
+    and `reconcile()` tore the lucky hit down a second later. `sampleFluids` now
+    scans a deterministic 9x9x9 box (729 `getBlock`/s, once per second, still
+    noise against §6's budget). Residual: fires 5-8 blocks away are missed where
+    §3.5 says "within 8" — radius 8 would be 4913 `getBlock`/s.
 11. **`ambient.wind.loop`/`weather.rain.loop` recipes start at gain 0** and are
     driven by `ambience.js` from `rainLevel`/altitude on the same tick. The §3.5
     gains are formulas, not constants, so a recipe-side fade-in to full would blast
@@ -2564,7 +3211,10 @@ The §4A theme layer stays OFF/empty (side-prompt 19 owns it).
     at `game.ui.hud`, so all three are silent no-ops today. Logged per CLAUDE.md §1
     (code is ground truth); the `ui.hotbar` and `player.item_pickup` emits are
     placed as their own statements, never chained onto them. **Not fixed here** —
-    out of E1's scope.
+    out of E1's scope. *CLOSED 2026-07-31:* all three are live. E3 repointed the
+    two `onHotbarChange` calls to `game.ui?.hud?.…`; the verification pass at the
+    top of this file repointed `ItemEntity`'s and wrote the missing
+    `Hud.flashPickup` it was calling into.
 16. **`entity.arrow.hit_block` is the thud layer only.** §3.3's recipe is "thud +
     the *struck block's* `step` recipe at 0.5", which needs the block class —
     again no param channel. The hook emits `block.step.<class>` alongside it at

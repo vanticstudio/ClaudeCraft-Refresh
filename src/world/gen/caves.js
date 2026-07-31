@@ -83,7 +83,16 @@ export function carveWorms(ctx, blocks, cx, cz) {
           }
         }
       }
-      if (rng() < 0.02) {                           // ravine: 1 in 50 chunks
+      // §8.3 DEVIATION — ravine probability 0.02 → 0.03 (1 in 50 → 1 in 33), i.e.
+      // one origin per ~5,700 blocks² instead of ~12,800. Deliberately the mild
+      // step: ravines are the most expensive carver here (length 70–110, thick up
+      // to 4.2, vScale 3.0) and carveWorms re-simulates a 15×15 origin window per
+      // chunk. Measured over 600 chunks, seed 'claudecraft': 2.017 → 2.065 ms/chunk
+      // (+0.05), well inside budget; 0.045 measured 2.186 (+0.17) and was not taken.
+      // Stream-safe: the draw is consumed unconditionally on the origin-chunk
+      // stream and the tunnel steps on the independent child stream tRng (the
+      // documented design at the top of this file), so only the threshold moves.
+      if (rng() < 0.03) {
         const x = ocx * 16 + rng() * 16, z = ocz * 16 + rng() * 16;
         const y = 24 + rng() * 28;
         const yaw = rng() * Math.PI * 2;
