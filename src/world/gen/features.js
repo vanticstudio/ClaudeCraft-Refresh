@@ -3,6 +3,7 @@
 // growth (01 module map exception).
 
 import { splitmix32, chunkSeed, posHash, rngInt } from '../../math/rng.js';
+import { BLOCKS, B } from '../../registry/blocks.js';   // 01 §5 — one heightmap predicate
 import { stampVillages } from './village.js';   // 12-VILLAGES §2
 import { ID, BIOMES, TREE_CFG, GRASS_COUNT, FLOWER_COUNT, CANE_BIOMES,
          PUMPKIN_BIOMES, HERD_WEIGHTS } from './biomes.js';
@@ -127,12 +128,22 @@ export function decorate(ctx, blocks, cx, cz, colD, states = null) {
   const at = (x, y, z) => blocks[(y << 8) | (z << 4) | x];
   const set = (x, y, z, id) => { blocks[(y << 8) | (z << 4) | x] = id; };
 
+  // 02 §10.5 DEVIATION — plant DECISIONS are per COLUMN, not per chunk centre.
+  // `biome` (the centre column) still gates which plant loops RUN, so no rng draw
+  // is added, removed or reordered; but each attempt is additionally rejected when
+  // ITS OWN column is not a legal biome. Before, a chunk whose centre was desert
+  // scattered cactus across its grassy half and grass density changed in hard
+  // 16×16 squares along every biome border (a visible chunk grid).
+  // Trees (above) stay centre-column per §10.3.
+  const bAt = (x, z) => colD.biome[(z << 4) | x];
+
   if (biome === BIOMES.DESERT) {
     // cactus ×3: 1–3 tall, all 4 horizontal neighbors of every cell air
     for (let a = 0; a < 3; a++) {
       const x = rngInt(rng, 16), z = rngInt(rng, 16);
       const h = colD.h[(z << 4) | x];
       const height = 1 + rngInt(rng, 3);
+      if (bAt(x, z) !== BIOMES.DESERT) continue;          // §10.5 per-column gate
       if (h >= 127 || at(x, h, z) !== ID.sand || at(x, h + 1, z) !== ID.air) continue;
       for (let k = 0; k < height && h + 1 + k <= 127; k++) {
         const y = h + 1 + k;
@@ -144,6 +155,7 @@ export function decorate(ctx, blocks, cx, cz, colD, states = null) {
     for (let a = 0; a < 2; a++) {
       const x = rngInt(rng, 16), z = rngInt(rng, 16);
       const h = colD.h[(z << 4) | x];
+      if (bAt(x, z) !== BIOMES.DESERT) continue;          // §10.5 per-column gate
       if (h < 127 && at(x, h, z) === ID.sand && at(x, h + 1, z) === ID.air) {
         set(x, h + 1, z, ID.dead_bush);
       }
@@ -157,6 +169,7 @@ export function decorate(ctx, blocks, cx, cz, colD, states = null) {
       const x = rngInt(rng, 16), z = rngInt(rng, 16);
       const height = 2 + rngInt(rng, 3);
       const h = colD.h[(z << 4) | x];
+      if (!CANE_BIOMES.has(bAt(x, z))) continue;          // §10.5 per-column gate
       if (h < 62 || h > 64) continue;
       const surf = at(x, h, z);
       if (surf !== ID.grass_block && surf !== ID.sand) continue;
@@ -178,6 +191,7 @@ export function decorate(ctx, blocks, cx, cz, colD, states = null) {
       const x = bx + rngInt(rng, 7) - 3, z = bz + rngInt(rng, 7) - 3;
       const roll = rng() < 0.5;
       if (!roll || x < 0 || x > 15 || z < 0 || z > 15) continue;
+      if (!PUMPKIN_BIOMES.has(bAt(x, z))) continue;       // §10.5 per-column gate
       const h = colD.h[(z << 4) | x];
       if (h < 127 && at(x, h, z) === ID.grass_block && at(x, h + 1, z) === ID.air) {
         set(x, h + 1, z, ID.pumpkin);
@@ -185,18 +199,59 @@ export function decorate(ctx, blocks, cx, cz, colD, states = null) {
     }
   }
 
-  for (let a = 0; a < GRASS_COUNT[biome]; a++) {
-    const x = rngInt(rng, 16), z = rngInt(rng, 16);
-    const h = colD.h[(z << 4) | x];
+  // §10.5 DEVIATION — ground cover: chunk-wide attempt COUNT, per-column GATE,
+  // and clumping. The count is the max over the chunk's own columns (pure function
+  // of colD, no draw), and an attempt on a column whose biome wants fewer is
+  // dropped by a stateless posHash at gb/gMax odds — so a biome border becomes a
+  // per-column density GRADIENT instead of a hard 16×16 step. Inside one biome
+  // gMax === GRASS_COUNT[biome] and the gate never fires, i.e. the common case is
+  // exactly §6.3's count.
+  let gMax = 0, fMax = 0;
+  for (let ci = 0; ci < 256; ci++) {
+    const g = GRASS_COUNT[colD.biome[ci]]; if (g > gMax) gMax = g;
+    const f = FLOWER_COUNT[colD.biome[ci]]; if (f > fMax) fMax = f;
+  }
+  // Clumping reuses the two draws §10.5 already takes: their sum picks one of 3
+  // chunk-local patch centres and their low bits scatter ±3 around it, so no rng
+  // draw is added, removed or reordered (cane/pumpkin/mushroom output above and
+  // below is unaffected). Uniform scatter read as an evenly-sprayed texture;
+  // patches read as meadows. Wrap (not clamp) the offset so patches never pile up
+  // against a chunk edge. Known limitation: patches are chunk-local, so a meadow
+  // never spans a chunk border.
+  const patch = (kBase, rx, rz) => {
+    const k = (rx + rz) % 3;
+    const kx = Math.floor(posHash(ctx.seeds.detail, cx, kBase + k, cz) * 16);
+    const kz = Math.floor(posHash(ctx.seeds.detail, cx, kBase + 8 + k, cz) * 16);
+    return [(kx + (rx % 7) - 3 + 16) & 15, (kz + (rz % 7) - 3 + 16) & 15, k];
+  };
+
+  for (let a = 0; a < gMax; a++) {
+    const rx = rngInt(rng, 16), rz = rngInt(rng, 16);
+    const [x, z] = patch(700, rx, rz);
+    const ci = (z << 4) | x;
+    const gb = GRASS_COUNT[colD.biome[ci]];
+    if (gb === 0) continue;
+    if (gb < gMax && posHash(ctx.seeds.detail, wx0 + x, 3, wz0 + z) >= gb / gMax) continue;
+    const h = colD.h[ci];
     if (h < 127 && at(x, h, z) === ID.grass_block && at(x, h + 1, z) === ID.air) {
       set(x, h + 1, z, ID.short_grass);
     }
   }
-  for (let a = 0; a < FLOWER_COUNT[biome]; a++) {
-    const x = rngInt(rng, 16), z = rngInt(rng, 16);
-    const h = colD.h[(z << 4) | x];
+  for (let a = 0; a < fMax; a++) {
+    const rx = rngInt(rng, 16), rz = rngInt(rng, 16);
+    // 900: flower patches use their own centres, so they do not land inside the
+    // grass patches already written (which would block them — the air test below).
+    const [x, z, k] = patch(900, rx, rz);
+    const ci = (z << 4) | x;
+    const fb = FLOWER_COUNT[colD.biome[ci]];
+    if (fb === 0) continue;
+    if (fb < fMax && posHash(ctx.seeds.detail, wx0 + x, 4, wz0 + z) >= fb / fMax) continue;
+    const h = colD.h[ci];
     if (h < 127 && at(x, h, z) === ID.grass_block && at(x, h + 1, z) === ID.air) {
-      const flower = posHash(ctx.seeds.detail, wx0 + x, h + 1, wz0 + z) < 0.5
+      // §10.5 DEVIATION — species is per PATCH, not per block. The per-block
+      // posHash made every flower field a 50/50 pepper of both species; real
+      // patches are monoculture. Keyed off the patch, so no chunk-grid seam.
+      const flower = posHash(ctx.seeds.detail, cx, 1100 + k, cz) < 0.5
         ? ID.dandelion : ID.poppy;
       set(x, h + 1, z, flower);
     }
@@ -224,7 +279,9 @@ export function decorate(ctx, blocks, cx, cz, colD, states = null) {
     for (let x = 0; x < 16; x++) {
       const ci = (z << 4) | x;
       const h = colD.h[ci];
-      const tEff = colD.t[ci] - Math.max(0, h - 80) * 0.008;
+      // COUPLED CONSTANT — must equal biomes.js selectBiome's cooling term
+      // (0.008 × noise.js CLIMATE_GAIN 1.7 = 0.0136). colD.t is already gained.
+      const tEff = colD.t[ci] - Math.max(0, h - 80) * 0.0136;
       if (!(tEff < -0.45 || h >= 104)) continue;
       let top = 127;
       while (top > 0 && at(x, top, z) === ID.air) top--;
@@ -257,19 +314,26 @@ const SOLID_TOP = (() => {
                     ID.sandstone, ID.bedrock, ID.oak_log, ID.birch_log,
                     ID.spruce_log, ID.oak_leaves, ID.birch_leaves,
                     ID.spruce_leaves, ID.pumpkin, ID.coal_ore, ID.iron_ore,
-                    ID.gold_ore, ID.diamond_ore, ID.redstone_ore, ID.lapis_ore]) {
+                    ID.gold_ore, ID.diamond_ore, ID.redstone_ore, ID.lapis_ore,
+                    // 12-VILLAGES §2.5/§4.4 — villages stamp BEFORE the snow pass
+                    // precisely so taiga roofs cap; cobblestone/oak/spruce planks
+                    // are village build materials with no gen/biomes.js ID entry.
+                    4, 5, 7]) {
     a[id] = 1;
   }
   return a;
 })();
 
-// Blocks that do NOT terminate the sky heightmap (01 §4.2: cross plants)
+// Blocks that do NOT terminate the sky heightmap (01 §4.2). Derived from the
+// registry so it is EXACTLY LightEngine.terminatesSky(id, 0): worldgen never emits
+// bit 7, so state is moot, but the id half must agree or a decorated column's
+// heightMap changes between worldgen and the save/reload recompute (ChunkManager
+// hydrate/_recomputeHeightMap) and canSeeSky/isRainingAt flip under the player.
 const HM_SKIP = (() => {
   const a = new Uint8Array(256);
-  for (const id of [ID.air, ID.short_grass, ID.dandelion, ID.poppy,
-                    ID.dead_bush, ID.sugar_cane_block, ID.oak_sapling,
-                    ID.birch_sapling, ID.spruce_sapling]) {
-    a[id] = 1;
+  for (let id = 0; id < 256; id++) {
+    const b = BLOCKS[id];
+    a[id] = (b && b.opacity === 0 && id !== B.SNOW_LAYER && id !== B.CACTUS) ? 1 : 0;
   }
   return a;
 })();

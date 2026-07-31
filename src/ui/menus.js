@@ -84,7 +84,7 @@ export class Menus {
            nested in #screen-title — .screen{display:none} would make it
            unreachable from PAUSE, which the amendment requires. -->
       <div class="cc-settings" id="cc-settings" hidden>
-        <div class="cc-panel" role="dialog" aria-modal="true" aria-label="Settings">
+        <div class="cc-panel" role="dialog" aria-modal="true" aria-label="Settings" tabindex="-1">
           <h2>Options</h2>
           ${OPT_ROWS.map(([k, label]) => `
           <label class="cc-row">
@@ -163,7 +163,12 @@ export class Menus {
       $(id).onclick = e => {
         audio.unlock();
         emitSound('ui.click', null);
-        fn(e);
+        // 17-SHIP §1.6 — five of these hooks are async and their promises were
+        // discarded, so a rejecting save.deleteWorld() made New Game silently
+        // dead with nothing in the console. main.js's global unhandledrejection
+        // catches it now; this adds the per-button context.
+        const r = fn(e);
+        if (r && typeof r.catch === 'function') r.catch(err => console.error('[ui]', id, err));
       };
     };
 
@@ -184,7 +189,14 @@ export class Menus {
     this.el.title.addEventListener('keydown', e => this._onTitleKey(e));
     // The panel is no longer inside #screen-title, so Escape and the focus trap
     // need their own binding — otherwise both die the moment PAUSE hosts it.
-    this.el.settings.addEventListener('keydown', e => this._onSettingsKey(e));
+    // Bound on `document`, gated on visibility: an element listener only fires
+    // while focus is INSIDE the sheet, and one mousedown on dead space (the <h2>,
+    // the .cc-note) drops focus to body — killing Escape and letting Tab walk to
+    // #btn-new behind the opaque backdrop. No document-level Escape covers the
+    // panel (main.js's onKeyEdge handles only PLAYING_UI / netContainer).
+    document.addEventListener('keydown', e => {
+      if (!this.el.settings.hidden) this._onSettingsKey(e);
+    });
 
     for (const [key] of OPT_ROWS) {
       const slider = $(`opt-${key}`), out = $(`out-${key}`);
@@ -359,8 +371,14 @@ export class Menus {
       const f = [...scope.querySelectorAll('button, input, select')].filter(el => !el.hidden);
       if (!f.length) return;
       const first = f[0], last = f[f.length - 1];
-      if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
-      else if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      // Membership, not first/last identity: a click on the panel's dead space
+      // (the <h2>, the .cc-note) parks focus on body or on the panel div itself,
+      // and neither comparison matched — Tab then walked straight to #btn-new
+      // behind the opaque backdrop. Anything off the list re-enters the trap.
+      const i = f.indexOf(document.activeElement);
+      if (i < 0) { e.preventDefault(); (e.shiftKey ? last : first).focus(); return; }
+      if (!e.shiftKey && i === f.length - 1) { e.preventDefault(); first.focus(); }
+      else if (e.shiftKey && i === 0) { e.preventDefault(); last.focus(); }
       return;
     }
     if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
@@ -392,6 +410,8 @@ export class Menus {
   }
 
   show(name) {
+    const prev = this._shown;
+    this._shown = name;
     for (const key of ['title', 'loading', 'pause', 'death']) {
       this.el[key].classList.toggle('visible', key === name);
     }
@@ -399,9 +419,13 @@ export class Menus {
       // every title entry (boot, quit-to-title, failed world start) rearms
       // PRESS START; music restarts from that gesture (§4.5)
       this.resetTitle();
-    } else {
+    } else if (prev === undefined || prev === 'title' || prev === 'loading') {
       // §4A.3 menu → world: fade the menu track out ~1 s, then hand off — to the
       // in-game theme layer on musicMode 'full', else to the §4 composer.
+      // Gated on the MENU→WORLD transition, not on every non-title show(): main.js
+      // funnels PLAYING_UI, the PAUSED→PLAYING resume and CONNECTING through here
+      // too, so opening a chest used to stop() + restart(), reshuffling the
+      // playlist and bypassing §4A.2's 180–420 s in-game gap and no-repeat rule.
       this.music?.stop();
       if (name === null && this.options.musicMode === 'full' && this.music?.available) {
         setTimeout(() => {

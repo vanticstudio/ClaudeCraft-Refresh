@@ -1,5 +1,7 @@
-// Tiny pooled cube-sprite particles (01 §2): block break, crit stars,
-// explosion puffs, hearts, teleport motes.
+// Tiny cube-sprite particles (01 §2): block break, crit stars, explosion puffs,
+// hearts, teleport motes. (No pool: every spawn allocates its own Mesh, and the
+// record is dropped on expiry — the header used to claim pooling that the
+// implementation never had.)
 import * as THREE from 'three';
 import { BLOCKS } from '../registry/blocks.js';
 import { EFFECT_META } from '../status/effects.js';
@@ -34,25 +36,33 @@ function sweepTexture() {
 export class Particles {
   constructor(scene) {
     this.scene = scene;
-    this.pool = [];
     this.active = [];
     this.colorGeo = new THREE.BoxGeometry(0.1, 0.1, 0.1);
     // Baked flat so the arc needs only a single yaw rotation at spawn — setting
     // rotation.x and rotation.z together would depend on Euler order.
     this.sweepGeo = new THREE.PlaneGeometry(1, 0.25);
     this.sweepGeo.rotateX(-Math.PI / 2);
+    // 01 §17.2 — ONE atlas material for every block-break particle. It is never
+    // tinted or faded, so the per-particle material makeAtlasMaterial() used to
+    // mint (16 per broken block, none of them ever disposed — the expiry path
+    // only frees map-less materials) bought nothing but GL bookkeeping and 16
+    // extra material switches per burst. Lazy because ATLAS is wired at boot.
+    this._atlasMat = null;
   }
 
-  obtain(mesh) {
-    mesh.visible = true;
-    this.scene.add(mesh);
-    return mesh;
+  atlasMat() {
+    if (!this._atlasMat) {
+      this._atlasMat = makeAtlasMaterial();
+      this._atlasMat.userData.shared = true;   // the disposal predicates opt out on this
+    }
+    return this._atlasMat;
   }
 
-  // opts (all optional, used by sweep()): {scale0, scale1, alpha0, disposeMat}.
+  // opts (all optional, used by sweep()): {scale0, scale1, alpha0}.
   // Absent for every other caller, so their records behave exactly as before.
+  // A null mesh means the emitter declined at the cap (see colored()).
   spawn(mesh, x, y, z, vx, vy, vz, life, gravity = 0.04, opts = null) {
-    if (this.active.length >= MAX) return;
+    if (!mesh || this.active.length >= MAX) return;
     mesh.position.set(x, y, z);
     const rec = { mesh, vx, vy, vz, life, gravity };
     if (opts) Object.assign(rec, opts, { maxLife: life });
@@ -61,6 +71,11 @@ export class Particles {
   }
 
   colored(color, size = 0.1) {
+    // The MAX gate lives HERE, not only in spawn(): every caller allocated its
+    // Mesh + MeshBasicMaterial first and spawn() then dropped it on the floor, so
+    // at the cap — the normal state during combat or mining — 100% of the churn
+    // was immediate garbage. Declining up front makes the emitters no-ops.
+    if (this.active.length >= MAX) return null;
     const mat = new THREE.MeshBasicMaterial({ color });
     const m = new THREE.Mesh(this.colorGeo, mat);
     m.scale.setScalar(size / 0.1);
@@ -71,7 +86,8 @@ export class Particles {
     const rng = Math.random;
     const geo = blockCubeGeometry(blockId, 0.1);
     for (let i = 0; i < 16; i++) {
-      const m = new THREE.Mesh(geo, makeAtlasMaterial());
+      if (this.active.length >= MAX) return;   // same up-front cap as colored()
+      const m = new THREE.Mesh(geo, this.atlasMat());
       const ang = rng() * Math.PI * 2;
       const sp = rng() * 0.1;
       this.spawn(m, x + 0.2 + rng() * 0.6, y + 0.2 + rng() * 0.6, z + 0.2 + rng() * 0.6,
@@ -105,7 +121,7 @@ export class Particles {
     m.rotation.y = yaw;
     m.scale.setScalar(0.8);
     this.spawn(m, px + fx * 1.7, py + 0.9, pz + fz * 1.7, 0, 0, 0, 6, 0,
-      { scale0: 0.8, scale1: 1.6, alpha0: 0.4, disposeMat: true });
+      { scale0: 0.8, scale1: 1.6, alpha0: 0.4 });
   }
 
   explosion(x, y, z, power) {
@@ -125,6 +141,47 @@ export class Particles {
     const m = this.colored(0xd0342c, 0.09);
     this.spawn(m, x + (Math.random() - 0.5) * 0.6, y, z + (Math.random() - 0.5) * 0.6,
       0, 0.03, 0, 16, -0.001);
+  }
+
+  // 07-REDSTONE §6.4 — redstone-torch burnout smoke: grey puffs drifting up out
+  // of the torch head. Negative gravity is this file's idiom for "rises"
+  // (hearts does the same); the pool/dispose path is the shared one.
+  smoke(x, y, z) {
+    for (let i = 0; i < 5; i++) {
+      const g = 0.25 + Math.random() * 0.25;
+      const m = this.colored(new THREE.Color(g, g, g), 0.05);
+      this.spawn(m, x + (Math.random() - 0.5) * 0.2, y + Math.random() * 0.15, z + (Math.random() - 0.5) * 0.2,
+        (Math.random() - 0.5) * 0.01, 0.02 + Math.random() * 0.01, (Math.random() - 0.5) * 0.01,
+        16 + (Math.random() * 8) | 0, -0.0015);
+    }
+  }
+
+  // 07-REDSTONE §12.2 — one note particle above the note block, rising and
+  // fading. `hue` is note/24 (0..1), mapped straight onto the HSL wheel.
+  note(x, y, z, hue) {
+    const m = this.colored(new THREE.Color().setHSL(hue, 1, 0.6), 0.07);
+    this.spawn(m, x + (Math.random() - 0.5) * 0.2, y, z + (Math.random() - 0.5) * 0.2,
+      0, 0.035, 0, 14, -0.0008);
+  }
+
+  // 07-REDSTONE §4.5 — one red spark off a lit dust cell. Cosmetic only; the
+  // 1/8 roll and the position live in block 70's randomTick.
+  redstoneSpark(x, y, z) {
+    const m = this.colored(0xd22b2b, 0.045);
+    this.spawn(m, x, y, z,
+      (Math.random() - 0.5) * 0.01, 0, (Math.random() - 0.5) * 0.01,
+      8 + (Math.random() * 6) | 0, 0);
+  }
+
+  // 10-NETHER §6.2 — the spawner's flame cue, fired every tick by tickSpawner
+  // while a player is inside activationRange. Without it an active fortress
+  // spawner is completely inert: nothing signals that the player is in range.
+  // The 50% roll keeps it near 10 particles/s per spawner against MAX.
+  spawnerFlame(x, y, z) {
+    if (Math.random() < 0.5) return;
+    const m = this.colored(0xff8800, 0.05);
+    this.spawn(m, x + (Math.random() - 0.5) * 0.6, y + (Math.random() - 0.5) * 0.6,
+      z + (Math.random() - 0.5) * 0.6, 0, 0.01, 0, 8, 0);
   }
 
   /**
@@ -197,6 +254,9 @@ export class Particles {
     }
   }
 
+  // 01 §3 — a pure per-TICK integrator: every spawn site supplies tick-domain
+  // units (velocities in blocks/tick, `life` in ticks, gravity 0.04 b/t²), so
+  // this must be driven from the 20 Hz clock, never from render().
   update() {
     for (let i = this.active.length - 1; i >= 0; i--) {
       const p = this.active[i];
@@ -212,16 +272,27 @@ export class Particles {
       }
       if (--p.life <= 0) {
         this.scene.remove(p.mesh);
-        // Mapped materials are normally shared and must not be disposed; the
-        // sweep's is per-particle (it animates opacity) and opts in explicitly.
-        if (p.disposeMat || p.mesh.material.map == null) p.mesh.material.dispose();
+        // `userData.shared`, not "has a map": makeAtlasMaterial() mints a NEW
+        // material per call, so the old map!=null proxy for "shared" silently
+        // skipped 16 live materials per broken block. Only atlasMat() opts out.
+        if (p.mesh.material.userData?.shared !== true) p.mesh.material.dispose();
         this.active.splice(i, 1);
       }
     }
   }
 
   dispose() {
-    for (const p of this.active) this.scene.remove(p.mesh);
+    // Same rule as update()'s expiry path: everything except the one shared
+    // atlas material, which this instance owns and frees below. The two shared
+    // geometries are per-Particles instances, so they go with it.
+    for (const p of this.active) {
+      this.scene.remove(p.mesh);
+      if (p.mesh.material.userData?.shared !== true) p.mesh.material.dispose();
+    }
     this.active.length = 0;
+    this._atlasMat?.dispose();
+    this._atlasMat = null;
+    this.colorGeo.dispose();
+    this.sweepGeo.dispose();
   }
 }

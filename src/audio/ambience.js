@@ -1,13 +1,13 @@
 // Loop voices: rain, wind, fluid clusters, fire proximity (16 §3.5, §5).
 // Driven from audio.tick() (AMENDS 01 §3 tick step 10) — never from render.
-import { BLOCKS } from '../registry/blocks.js';
+import { BLOCKS, B } from '../registry/blocks.js';
 import { STATE } from '../constants.js';
 
 const SAMPLE_CELLS = 48;        // §3.5: 48 getBlock/s — noise in the budget
 const SAMPLE_RADIUS = 12;
 const BUCKET = 4;               // 4x4x4 grid cells
 const MAX_CLUSTERS = 2;         // per fluid type
-const FIRE_RADIUS = 8;
+const FIRE_SCAN = 4;            // half-extent of the fire box scan (see sampleFluids)
 const MAX_FIRE = 3;
 
 export class Ambience {
@@ -93,15 +93,26 @@ export class Ambience {
       }
     }
 
-    // fire proximity: separate short scan (§3.5 ambient.fire.loop, within 8)
-    for (let i = 0; i < 24; i++) {
-      const x = Math.floor(p.x + (Math.random() * 2 - 1) * FIRE_RADIUS);
-      const y = Math.floor(p.y + (Math.random() * 2 - 1) * FIRE_RADIUS);
-      const z = Math.floor(p.z + (Math.random() * 2 - 1) * FIRE_RADIUS);
+    // Fire proximity (§3.5 ambient.fire.loop, "fire blocks / burning furnace
+    // within 8"). Deliberately NOT the random pass the fluids use: §3.5's
+    // sampling rule is written for fluids, which come in hundred-cell bodies,
+    // while a fire is a single cell — 24 random draws out of a ~16^3 box find it
+    // 0.6% of the time, and reconcile() treats every pass as ground truth, so a
+    // lucky hit is torn down a second later. A deterministic box scan finds it
+    // every pass: 729 getBlock/s against §6's budget, next to the fluid pass's
+    // 48/s and still noise. DEVIATION: half-extent 4, so a fire 5-8 blocks away
+    // is missed where §3.5 says "within 8".
+    const cx = Math.floor(p.x), cy = Math.floor(p.y), cz = Math.floor(p.z);
+    for (let dy = -FIRE_SCAN; dy <= FIRE_SCAN; dy++) {
+      const y = cy + dy;
       if (y < 0 || y > 127) continue;
-      const id = world.getBlock(x, y, z);
-      if (BLOCKS[id]?.name === 'fire' || BLOCKS[id]?.name === 'furnace_lit') {
-        fires.push({ x: x + 0.5, y: y + 0.5, z: z + 0.5 });
+      for (let dz = -FIRE_SCAN; dz <= FIRE_SCAN; dz++) {
+        for (let dx = -FIRE_SCAN; dx <= FIRE_SCAN; dx++) {
+          const id = world.getBlock(cx + dx, y, cz + dz);
+          if (id === B.FIRE || id === B.FURNACE_LIT) {
+            fires.push({ x: cx + dx + 0.5, y: y + 0.5, z: cz + dz + 0.5 });
+          }
+        }
       }
     }
 

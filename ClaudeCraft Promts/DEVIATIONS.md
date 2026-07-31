@@ -82,6 +82,34 @@ the implementation added on top of them.
 26. Player arrows use inaccuracy 1 (05 §11); skeleton arrows frequently miss at
     range with Normal inaccuracy 6 — authentic to MC.
 
+27. **Creative item transactions are all-or-nothing.** 18 §5.3. In creative, an
+    item use that would consume a source stack and mint a product applies the
+    WORLD-side effect (potion effect, bucket scoop, dragon-breath cloud shrink,
+    composter layer) but neither spends the source nor mints the product. Cited
+    by `interaction.js` `fillBucketStack` / `drinkPotion` / `fillBottle` (x2) and
+    `useComposter` **by name**, not by number — the rulings are one running
+    sequence and 5 is the jack o'lantern face entry.
+
+28. **07 §9.3 piston entity push bypasses collision resolution.**
+    `redstone/PistonMover.js:pushEntities` displaces a pushed entity with a direct
+    `e.pos` write (`shove`) rather than `moveEntity`, so the entity is not
+    collision-resolved and can be pushed into a wall. Item entities are excluded
+    from the push entirely, which §9.3 does not exempt. Entities are now shoved
+    exactly **once** per push (hits are deduped into a `Set` across overlapping
+    push cells — previously an entity straddling two collinear push cells was
+    flung 2 blocks). Swapping in a collision-resolved move is a behavioural
+    change beyond the defect, so it is deferred, not applied.
+29. **01 §12's `ceil(dist / 0.5)` projectile sub-step is SUPERSEDED, not
+    implemented.** `moveEntitySubstepped` and `getCellBox` were removed from
+    `physics/collision.js` — both had zero callers tree-wide. Projectiles advance
+    with `pos += vel` and resolve collisions themselves at three fidelities:
+    `Arrow` / `ThrownProjectile` (egg, snowball, ender_pearl) / `ThrownPotion`
+    sweep the segment with `raycastBlocks`, which is exact rather than sampled and
+    genuinely supersedes the sub-step; `GhastFireball` and `WitherSkull`
+    (independent classes, **not** `ThrownProjectile` subclasses) point-sample
+    `getBlock` at the destination cell and can tunnel through a thin wall at
+    speed; `EyeOfEnder` does no block collision at all, by design.
+
 ## Verified against acceptance checklists (headless Chrome, 2026-07-17)
 
 - Worldgen: deterministic across generation order and generator instances;

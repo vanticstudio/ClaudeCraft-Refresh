@@ -1,11 +1,11 @@
 // Game: fixed-timestep loop, system wiring, screen state machine (01 §3, §15).
 import * as THREE from 'three';
 import {
-  MS_PER_TICK, MAX_TICKS_PER_FRAME, STATE, AUTOSAVE_INTERVAL, chunkKey, SIM_RADIUS,
+  MS_PER_TICK, MAX_TICKS_PER_FRAME, STATE, chunkKey, SIM_RADIUS, CAMERA_FOV,
 } from './constants.js';
-import { BLOCKS, B, blockByName, FACING_DIR, WATERLOGGED } from './registry/blocks.js';
-import { ITEMS, idOf, SMELTING, fuelValue } from './registry/items.js';
-import { cloneStack, packContainer } from './items/tags.js';
+import { BLOCKS, B, WATERLOGGED } from './registry/blocks.js';
+import { ITEMS, idOf, SMELTING, fuelValue, FURNACE_KINDS, furnaceAccepts } from './registry/items.js';
+import { cloneStack, packContainer, tagsEqual } from './items/tags.js';
 import { rollChestLoot } from './world/gen/endLoot.js';
 import { explosionKnockbackScale } from './items/effects.js';   // 08 — blast-protection KB scale
 import { World } from './world/World.js';
@@ -15,20 +15,20 @@ import { createChunkMaterials } from './mesh/materials.js';
 import { EntityManager } from './entities/EntityManager.js';
 import { Player } from './entities/Player.js';
 import {
-  ItemEntity, initEntityVisuals, blockCubeGeometry, tileSpriteGeometry,
+  ItemEntity, initEntityVisuals, blockCubeGeometry, crossedSpriteGeometry,
   makeAtlasMaterial, itemTileFor,
 } from './entities/ItemEntity.js';
 import { FallingBlock } from './entities/FallingBlock.js';
 import { XpOrb } from './entities/XpOrb.js';
 import { EndCrystal } from './entities/EndCrystal.js';   // 13-BOSSES §3
 import { EndFight } from './entities/EnderDragon.js';    // 13-BOSSES §7
-import { pyramidLevels, skyClear, applyBeaconEffects } from './world/Beacon.js';   // 13-BOSSES §9
+import { pyramidLevels, skyClear, applyBeaconEffects, disposeBeams } from './world/Beacon.js';   // 13-BOSSES §9
 import { PrimedTnt } from './entities/PrimedTnt.js';
 import { ThrownProjectile } from './entities/ThrownProjectile.js';
 import { Arrow } from './entities/Arrow.js';
 import { ThrownPotion } from './entities/ThrownPotion.js';
-import { AreaEffectCloud, spawnEffectCloud } from './entities/AreaEffectCloud.js';
-import { LivingEntity, lerp, lerpAngle } from './entities/Entity.js';
+import { spawnEffectCloud } from './entities/AreaEffectCloud.js';
+import { LivingEntity, lerp } from './entities/Entity.js';
 import { Interaction } from './player/interaction.js';
 import { placeTree } from './world/gen/features.js';
 import { hasLineOfSight } from './world/raycast.js';
@@ -38,14 +38,14 @@ import { isGlinted, addGlintPass, tickGlint } from './render/glint.js';
 import { AABB } from './math/aabb.js';
 import { createMob, MobSpawner, HOSTILE_TYPES } from './entities/mobs/index.js';
 import { emitSound, startLoop, at } from './audio/engine.js';
-import { forgetFireInChunk } from './world/fire.js';
+import { forgetFireInChunk, clearFireOrigins } from './world/fire.js';
 import { RedstoneEngine } from './redstone/RedstoneEngine.js';
 import { RedstoneComponents, installComponentHooks } from './redstone/components.js';
 import { installBossHooks } from './world/bossHooks.js';   // 13-BOSSES
 import { RedstoneContainers } from './redstone/containersRedstone.js';
 import { getDimension } from './world/dimensions.js';
 import { findOrCreatePortal } from './world/Portal.js';
-import { buildObsidianPlatform, END_SPAWN } from './world/endArena.js';
+import { buildObsidianPlatform, END_SPAWN, disposeGatewayBeams } from './world/endArena.js';
 import { installNetherBehaviors, tickSpawner } from './world/nether.js';
 import { tickBrewing } from './world/brewing.js';
 import { addEffect as engineAddEffect, applyInstant as engineApplyInstant, applyEffectsData, serializeEffects } from './status/effects.js';
@@ -53,7 +53,7 @@ import { addEffect as engineAddEffect, applyInstant as engineApplyInstant, apply
 import { getLocalPlayerId, getLocalPlayerName, hueFromId } from './net/identity.js';
 import { RemotePlayer } from './entities/RemotePlayer.js';
 import { hostileCap } from './constants.js';
-import { ETYPE, ETYPE_REV, indexToFace } from './net/protocol.js';
+import { indexToFace } from './net/protocol.js';
 import { currentXp } from './items/xp.js';
 
 const NEUTRAL_FRAME = {
@@ -62,6 +62,39 @@ const NEUTRAL_FRAME = {
   middlePressed: false, pressed: new Set(), wheel: 0, hotbar: -1, shift: false,
   ctrl: false,
 };
+
+// 12-VILLAGES §7.6/§7.7 — the furnace FAMILY now lives in registry/items.js
+// beside SMELTING, because ui/containers.js and the headless net twin need the
+// same cook time and input filter and neither may import this module. Only the
+// id-swap (06 §5.5) is still resolved here, from the rows' B keys.
+//
+// Reverse index for that swap: BOTH the unlit and the lit block id of every
+// member map back to its FURNACE_KINDS key. Built lazily so registry/blocks.js
+// has finished populating B first.
+let FURNACE_BY_BLOCK = null;
+function furnaceKindAt(blockId) {
+  if (!FURNACE_BY_BLOCK) {
+    FURNACE_BY_BLOCK = new Map();
+    for (const k in FURNACE_KINDS) {
+      FURNACE_BY_BLOCK.set(B[FURNACE_KINDS[k].unlit], k);
+      FURNACE_BY_BLOCK.set(B[FURNACE_KINDS[k].lit], k);
+    }
+  }
+  return FURNACE_BY_BLOCK.get(blockId) ?? null;
+}
+
+// 10-NETHER §3.5 — the ARRIVAL half of the 1-second #e0a0ff spawn-in burst.
+// world/Portal.js owns the source-side twin and its comment defers here; this
+// is that deferral made real. Render-only, so Math.random is fine (the world
+// rng must stay reserved for simulation determinism).
+function portalArrivalBurst(game, x, y, z) {
+  const ps = game.particles;
+  if (!ps?.spawn || !ps.colored) return;
+  for (let i = 0; i < 20; i++) {
+    ps.spawn(ps.colored(0xe0a0ff, 0.08), x + (Math.random() - 0.5), y + Math.random() * 1.8,
+      z + (Math.random() - 0.5), 0, 0.02, 0, 20, 0);
+  }
+}
 
 export class Game {
   constructor({ canvas, input, renderer, camera, viewmodelCamera, atlas, ui, audio, options }) {
@@ -160,22 +193,32 @@ export class Game {
       // 10-NETHER §2.4 — restore the per-dimension blob (portal links, fortress
       // registry, 11's endFight) so the frozen contract round-trips.
       this.dimMeta = savedMeta.dimensions ?? {};
-      // Apply the saved active dimension BEFORE any chunk streams — ChunkManager
-      // tags new chunks with world.activeDim and saveManager queries save.activeDim,
-      // so a Nether save must swap these before initWorkers or it reboots into the
-      // Overworld and orphans every Nether edit (audit H-1).
-      const savedDim = this.player.dim ?? 0;
-      const desc = getDimension(savedDim) ?? getDimension(0);
-      this.world.activeDim = savedDim;
-      this.world.hasSkyLight = desc.hasSkyLight;
-      if (this.save) this.save.activeDim = savedDim;
     } else {
       this.dimMeta = {};
     }
+    // Apply the active dimension BEFORE any chunk streams — ChunkManager tags new
+    // chunks with world.activeDim and saveManager queries save.activeDim, so a
+    // Nether save must swap these before initWorkers or it reboots into the
+    // Overworld and orphans every Nether edit (audit H-1).
+    // UNCONDITIONAL: a FRESH world must also RESET a SaveManager left on dim 1/2
+    // by an earlier session in this page load (Nether → Save & Quit → New World).
+    // `new World()` already reset world.activeDim to 0, so a stale save.activeDim
+    // makes every hasChunk() probe the wrong prefix and silently discards every
+    // block edit on chunk reload.
+    const activeDim = savedMeta ? (this.player.dim ?? 0) : 0;
+    const dimDesc = getDimension(activeDim) ?? getDimension(0);
+    this.world.activeDim = activeDim;
+    this.world.hasSkyLight = dimDesc.hasSkyLight;
+    if (this.save) this.save.activeDim = activeDim;
 
     this.setState(STATE.LOADING);
-    const spawn = await new Promise(resolve => {
+    const spawn = await new Promise((resolve, reject) => {
       this.chunkManager.onReady = resolve;
+      // 01 §9 — a terrain worker that cannot boot (blocked Worker constructor, a
+      // throw inside its init branch) previously left this promise pending
+      // forever, parking the player on "Building terrain…" with nothing able to
+      // observe it. The reject arm lands in main.js's startWorld catch.
+      this.chunkManager.onFatal = reject;
       this.chunkManager.initWorkers(seedString);
     });
     this.worldSpawn = spawn;
@@ -190,6 +233,10 @@ export class Game {
     // or a failed startWorld that already nulled world but not chunkManager) is a
     // no-op instead of a null-deref crash. Everything is nulled at the end so the
     // second call short-circuits.
+    // 13-BOSSES §1 — the bar container is part of Hud's one-time template and
+    // survives every world; nothing else clears it, so a boss bar from the world
+    // being torn down would stay frozen on the HUD for the rest of the session.
+    this.ui?.bossBar?.clearAll?.();
     if (this.chunkManager && this.world) {
       this.chunkManager.dispose();
       for (const chunk of this.world.chunks.values()) this.chunkManager.disposeChunkMeshes(chunk);
@@ -197,18 +244,62 @@ export class Game {
     if (this.entities) {
       for (const e of [...this.entities.entities.values()]) this.entities.remove(e);
     }
+    // 13-BOSSES §7.1 — the dragon is NOT an EntityManager member (it lives on
+    // dimMeta[2].endFight), so the loop above cannot reap its mesh. Without this
+    // a full dragon model stays parented to the persistent scene forever.
+    this.endFight?.dispose?.();
+    if (this.endFight) this.endFight.liveDragon = null;
+    // 15 §6.4 — fireOrigins is module state in world/fire.js and is only pruned
+    // per-chunk from onChunkUnloading, which disposeWorld never routes through.
+    // Stale entries count against MAX_ACTIVE and can be inherited by a colliding
+    // coordinate in the NEXT world.
+    clearFireOrigins();
+    // 13-BOSSES §9.4 — beam Groups are parented to the PERSISTENT scene and the
+    // BEAMS map is keyed by a bare "x,y,z" with no dim component. Never calling
+    // this left a beam mesh in the scene after Save & Quit, its handle pinning
+    // the discarded World (and every 32 KB chunk buffer it still held), and let
+    // a new world inherit a stale entry at a colliding coordinate.
+    disposeBeams();
+    // 11-END §11.1 — the gateway beam meshes are parented to the persistent
+    // scene too, and their onBeforeRender self-retire never fires once the
+    // render loop early-returns at TITLE. dimensions.js covers the dimension
+    // change; only Save & Quit was leaking.
+    disposeGatewayBeams();
     this.dayNight?.dispose?.();
     this.particles?.dispose?.();
+    this.world?.chunks?.clear?.();   // drop the last refs to 4 × 32 KB buffers per chunk
+    // 03 §17 — the bow-draw voice is a `loop: true` event, so the audio engine
+    // never retires it on its own and every stopBowLoop() call site lives inside
+    // Interaction.tick, which is gone with the world. Quitting mid-draw left the
+    // crackle looping on the title screen for the rest of the session.
+    this.interaction?.stopBowLoop?.();
+    this.interaction = null;
     this.world = null;
     this.player = null;
+    // 14 §2.4 — the parallel player registry (host proxies + the local player).
+    // Only `this.player` was nulled, so every torn-down Player — and through it
+    // the discarded World, its LightEngine and its ScheduledTicks — stayed
+    // reachable from nearestPlayerTo/eachPlayer until the next startWorld.
+    this.players.length = 0;
     this.chunkManager = null;
     this.entities = null;
+    // 14 §2.4 — per-player records belong to the world that produced them. They
+    // were only ever assigned (never cleared), so New World inherited the old
+    // world's meta.players and handed a rejoining client the inventory, XP and
+    // spawn point it earned somewhere else.
+    this._savedPlayers = null;
+    // 12-VILLAGES §2.7 — village anchors are keyed by bare coordinates, so a
+    // stale entry both keeps tickVillages iterating a dead world's bells and can
+    // shadow a same-coordinate registration in the next one.
+    this.villages = null;
   }
 
   setState(next) {
     const prev = this.state;
     this.state = next;
     if (next === STATE.PAUSED && prev === STATE.PLAYING) this.save?.saveAll(this);
+    // 01 §9 — arm the loading-gate watchdog (see tick()'s LOADING branch).
+    if (next === STATE.LOADING) { this._loadSeen = -1; this._loadStallTicks = 0; }
     if (next === STATE.PLAYING) {
       this.lastTime = performance.now();
       this.accumulator = 0;
@@ -247,14 +338,31 @@ export class Game {
       this.accumulator += frameDelta;
       let ran = 0;
       while (this.accumulator >= MS_PER_TICK && ran < MAX_TICKS_PER_FRAME) {
-        this.tick();
+        // 01 §3 — the drain MUST happen even on a fault. With `-= MS_PER_TICK`
+        // after an unguarded tick(), a throwing tick skipped both the drain and
+        // the MAX_TICKS_PER_FRAME clamp: the accumulator grew without bound for
+        // as long as the fault lasted, and everything below the throw point
+        // (chunk streaming, autosave, audio.tick's per-tick voice reset) stopped.
+        try { this.tick(); this._tickErrors = 0; }
+        catch (err) { this.onTickError(err); }
         this.accumulator -= MS_PER_TICK;
         ran++;
       }
       if (ran === MAX_TICKS_PER_FRAME) this.accumulator = 0;
+      // 01 §3 — a tick may zero the accumulator mid-loop (setState(PLAYING) does,
+      // on every LOADING exit / portal transit), and the `-= MS_PER_TICK` for the
+      // iteration that just ran then leaves it at −50. Render alpha is contracted
+      // to [0,1]; clear the debt rather than carrying it into the next frames.
+      if (this.accumulator < 0) this.accumulator = 0;
     }
-    const alpha = Math.min(1, this.accumulator / MS_PER_TICK);
-    this.render(alpha);
+    const alpha = Math.min(1, Math.max(0, this.accumulator / MS_PER_TICK));
+    // 01 §3 — the RENDER half needs the same isolation as the tick half above.
+    // frame() re-arms requestAnimationFrame at the top, so a throw in render()
+    // does not stop the loop: it kills every frame at the same point forever
+    // while tick() keeps simulating, i.e. a frozen picture with a live world and
+    // a console flooded at 60 Hz (exactly the Piglin buildMesh failure mode).
+    try { this.render(alpha); this._renderErrors = 0; }
+    catch (err) { this.onRenderError(err); }
 
     this.debug.frameMs = performance.now() - t0;
     this._fpsWindow.push(now);
@@ -262,12 +370,63 @@ export class Game {
     this.debug.fps = this._fpsWindow.length;
   }
 
+  // 01 §3 — the throttled reporter for a fault isolated by frame(). Same idiom
+  // as the slow-tick warn below: at most one line per 5 s. Three consecutive
+  // failed ticks park the world in PAUSED (which checkpoints the save and ducks
+  // the audio) rather than letting the player simulate blind.
+  onTickError(err) {
+    const now = performance.now();
+    if (now - (this._lastTickErrAt ?? -Infinity) > 5000) {
+      this._lastTickErrAt = now;
+      console.error('[game] tick failed', err);
+    }
+    this._tickErrors = (this._tickErrors ?? 0) + 1;
+    if (this._tickErrors >= 3) {
+      this._tickErrors = 0;
+      this.toast('The world hit an error and was paused');
+      if (this.state !== STATE.PAUSED) this.setState(STATE.PAUSED);
+    }
+  }
+
+  // 01 §3 — render-half twin of onTickError. A frozen picture is worse than a
+  // paused one: the player has no signal at all, so after three consecutive dead
+  // frames say so and park in PAUSED (whose menu still paints from CSS).
+  onRenderError(err) {
+    const now = performance.now();
+    if (now - (this._lastRenderErrAt ?? -Infinity) > 5000) {
+      this._lastRenderErrAt = now;
+      console.error('[game] render failed', err);
+    }
+    this._renderErrors = (this._renderErrors ?? 0) + 1;
+    if (this._renderErrors >= 3) {
+      this._renderErrors = 0;
+      this.toast('Rendering hit an error and the world was paused');
+      if (this.state !== STATE.PAUSED) this.setState(STATE.PAUSED);
+    }
+  }
+
+  // 05 §16.3 — particles integrate in the TICK domain, not the render domain, so
+  // their motion is framerate-independent. Both tick paths (host and client) call
+  // this; render() must NOT also step them or they advance twice on fast frames.
+  // Particles.update() takes no argument — it steps exactly one tick.
+  tickParticles() {
+    this.particles?.update();
+  }
+
   tick() {
     if (!this.world) return;
     this.tickCount++;
+    // 01 §16 — a NaN reaching the player position is silent and self-
+    // perpetuating: every collideAxis loop bound becomes NaN so no iteration
+    // runs, `Math.floor(NaN) >> 4` streams around chunk (0,0), the frustum test
+    // rejects everything, and the next autosave writes the NaN into
+    // meta.players — after which Continue is a black screen forever. One
+    // isFinite per tick quarantines it at the boundary.
+    const pp = this.player?.pos;
+    if (pp && !Number.isFinite(pp.x + pp.y + pp.z)) this.recoverPlayerPosition();
     // 14-MULTIPLAYER §4.1 — a CLIENT runs no world logic; it predicts its own
     // player and renders host snapshots. Entirely separate tick path.
-    if (this.net?.isClient) { this.clientTick(); return; }
+    if (this.net?.isClient) { this.clientTick(); this.tickParticles(); return; }
     const tickStart = performance.now();
 
     const playing = this.state === STATE.PLAYING;
@@ -288,6 +447,7 @@ export class Game {
       // 14 §5.1 step 2.5 — validate + execute queued edits/uses/attacks/container ops.
       this.net?.applyRequests?.();
       this.entities.tick(this.player);
+      this.tickParticles();          // 05 §16.3 — particles integrate in TICK domain
       // 07 §6.3 — pressure-plate presses are entity-driven; scan after entities
       // move (the player is in the manager, so this covers them too).
       this.redstoneComponents?.tickPlates(this.entities.entities.values());
@@ -323,6 +483,15 @@ export class Game {
       this.chunkManager.drainRemesh(this.player.pos.x, this.player.pos.z, 40, 12);
       const { meshed, needed } = this.chunkManager.loadingProgress(pcx, pcz);
       this.ui?.setLoadingProgress?.(meshed, needed);
+      // 01 §9 ("a visible hole is a loud bug signal") — general backstop for the
+      // gate. 400 ticks is 20 s of LITERALLY zero new meshed chunks, which normal
+      // generation never produces, so the golden path cannot trip it; anything
+      // that does is unrecoverable without clearing site data otherwise.
+      if (meshed !== this._loadSeen) { this._loadSeen = meshed; this._loadStallTicks = 0; }
+      else if (++this._loadStallTicks > 400) {
+        this._loadStallTicks = 0;
+        this.chunkManager.forceResolveSpawnRing?.(pcx, pcz);
+      }
       if (meshed >= needed) {
         this.chunkManager.loading = false;
         // 10-NETHER §3.5 — a portal travel deferred the destination build until
@@ -335,6 +504,11 @@ export class Game {
           this.player.setPos(stand.x, stand.y, stand.z);
           this.player.prevPos.x = stand.x; this.player.prevPos.y = stand.y; this.player.prevPos.z = stand.z;
           this.player.portalCooldown = 300;
+          // 10-NETHER §3.5 — "purple spawn-in particles fire at BOTH ends". The
+          // source burst fires in Portal.initiatePortalTravel; this is the
+          // arrival one. Emitted here, after the LOADING gate has cleared, so
+          // the motes are not frozen by tickParticles' `state !== LOADING` guard.
+          portalArrivalBurst(this, stand.x, stand.y, stand.z);
           this.chunkManager.rebuildNow([]);   // any edited chunks re-mesh next frame
         } else if (this.pendingEndArrival) {
           // 11-END §5.5/§5.6 — build the fixed obsidian platform now that chunks
@@ -358,8 +532,19 @@ export class Game {
           this.endFight?.spawnFight(seed);
           this.endFight?.maybeRespawnDragon(seed);
         }
-        this.setState(STATE.PLAYING);
-        this.input.requestLock();
+        // AMENDS 01 §16 — the autosave counter and `pagehide` both run while the
+        // death screen is up, so a save can carry health 0. Player.serialize has
+        // no `dead` field and deserialize's `?? 20` passes 0 straight through, so
+        // an unconditional PLAYING here resurrected the corpse: 0 hearts, emptied
+        // inventory, natural regen healing it at the death site, no death screen.
+        if (this.player.dead || this.player.health <= 0) {
+          this.player.dead = true;
+          document.exitPointerLock?.();
+          this.setState(STATE.DEAD);
+        } else {
+          this.setState(STATE.PLAYING);
+          this.input.requestLock();
+        }
       }
     }
 
@@ -376,6 +561,18 @@ export class Game {
         }
       }
     } else this.slowTicks = 0;
+  }
+
+  // 01 §16 — quarantine escape hatch for tick()'s isFinite gate. prevPos is
+  // synced too so render interpolation does not spike across the correction.
+  recoverPlayerPosition() {
+    const p = this.player;
+    const s = this.worldSpawn ?? { x: 0, y: 80, z: 0 };
+    p.setPos(s.x, s.y, s.z);
+    p.prevPos.x = s.x; p.prevPos.y = s.y; p.prevPos.z = s.z;
+    p.vel.x = p.vel.y = p.vel.z = 0;
+    p.fallDistance = 0;
+    this.toast('Recovered from an invalid position');
   }
 
   snapPlayerToGround() {
@@ -404,13 +601,21 @@ export class Game {
     // 13-BOSSES — bosses don't tick across dimensions, so drop their bars now
     // (the dragon can't remove its own once the End stops ticking).
     this.ui?.bossBar?.clearAll?.();
-    if (this.endFight) this.endFight.liveDragon = null;   // the dragon re-hydrates via maybeRespawnDragon on return
+    this.endFight?.dispose?.();   // 13-BOSSES §7.1 — reap the dragon mesh too (it re-hydrates via maybeRespawnDragon on return)
 
     // 1. durably persist + unload the source dim's chunks. flushAllChunks writes
     //    every modified chunk synchronously via saveChunkNow (keyed by chunk.dim),
     //    then clears world.chunks — so the meta checkpoint below writes no chunks
     //    and there is no double-write.
     this.chunkManager.flushAllChunks();
+    // 1b. AMENDS 01 §5 — scheduled ticks are keyed by absolute (x,y,z) + due
+    //     world.time with NO dimension tag, and flushAllChunks only clears
+    //     world.chunks. The destination re-populates the SAME coordinate space
+    //     (the portal maps overworld→nether at 1/8, so near-origin cells collide
+    //     constantly), and a stale entry then ran fluids.step / fireTick against
+    //     whatever the new dimension has at that cell. Nothing needs the queue to
+    //     survive a transit: fire re-queues from resumeFireTicks on hydrate.
+    this.world.scheduled.clear();
 
     // 2. retarget the world + save layer to the new dim
     this.world.activeDim = targetDim;
@@ -481,7 +686,7 @@ export class Game {
     this.dayNight.updateRender(alpha, this.camera);
     this.entities.updateRender(alpha, this.player);
     if (this.world.activeDim === 2) this.endFight?.updateRender(alpha);   // 13-BOSSES — dragon self-renders
-    this.particles.update(alpha);
+    // Particles stepped in tick() via tickParticles() (05 §16.3), not here.
     this.updateSelectionBox();
 
     this.renderer.render(this.scene, this.camera);
@@ -542,7 +747,7 @@ export class Game {
     this.camera.position.set(px + rightX * bobR + ox, py + bobY + oy, pz + rightZ * bobR + oz);
     this.camera.rotation.set(p.pitch, p.yaw, (p.hurtTilt * p.hurtTiltDir) * Math.PI / 180);
 
-    const fov = 70 * p.fovScale;
+    const fov = CAMERA_FOV * p.fovScale;   // 03 §23 — one source for the base FOV
     if (Math.abs(this.camera.fov - fov) > 0.05) {
       this.camera.fov = fov;
       this.camera.updateProjectionMatrix();
@@ -626,7 +831,7 @@ export class Game {
           mesh.position.y = -0.2;
           mesh.rotation.y = Math.PI / 4;
         } else {
-          mesh = new THREE.Mesh(tileSpriteGeometry(itemTileFor(id), 0.5), makeAtlasMaterial({ doubleSide: true }));
+          mesh = new THREE.Mesh(crossedSpriteGeometry(itemTileFor(id), 0.5), makeAtlasMaterial({ doubleSide: true }));
           mesh.position.y = -0.25;
           mesh.rotation.set(0.25, -Math.PI / 2 + 0.35, 0.44);
         }
@@ -660,7 +865,7 @@ export class Game {
           mesh.position.y = -0.16;
           mesh.rotation.y = -Math.PI / 4;
         } else {
-          mesh = new THREE.Mesh(tileSpriteGeometry(itemTileFor(offId), 0.4), makeAtlasMaterial({ doubleSide: true }));
+          mesh = new THREE.Mesh(crossedSpriteGeometry(itemTileFor(offId), 0.4), makeAtlasMaterial({ doubleSide: true }));
           mesh.position.y = -0.2;
           mesh.rotation.set(0.25, Math.PI / 2 - 0.35, -0.44);
         }
@@ -705,6 +910,11 @@ export class Game {
         : kind === 'end_gateway' ? { type: 'end_gateway', data: { partner: null } }
         // 13-BOSSES §9.1 — beacon (primary/secondary power; levels recomputed).
         : kind === 'beacon' ? { type: 'beacon', data: { primaryEffect: null, secondary: null, levels: 0, active: false, beamHandle: null } }
+        // 12-VILLAGES §7.6/§7.7 — blast_furnace and smoker are their OWN kinds
+        // (they were falling through to the plain furnace below, so village
+        // workstations never lit, never smelted at 2× and never filtered). The
+        // data shape is identical, so every furnace UI/spill/save path is unchanged.
+        : FURNACE_KINDS[kind] ? { type: kind, data: { slots: new Array(3).fill(null), burn: 0, fuelTotal: 0, cook: 0, xpBank: 0 } }
         : { type: 'furnace', data: { slots: new Array(3).fill(null), burn: 0, fuelTotal: 0, cook: 0, xpBank: 0 } };
       chunk.blockEntities.set(i, be);
       chunk.modified = true;
@@ -721,8 +931,18 @@ export class Game {
         if (!chunk || chunk.state < ChunkState.GENERATED || chunk.blockEntities.size === 0) continue;
         for (const [i, be] of chunk.blockEntities) {
           const x = chunk.cx * 16 + (i & 15), y = i >> 8, z = chunk.cz * 16 + ((i >> 4) & 15);
-          if (be.type === 'furnace') this.tickFurnace(be.data, x, y, z, chunk);
-          else if (be.type === 'hopper') this.redstoneContainers.tickHopper(be, x, y, z);   // 07 §11.3
+          // 12-VILLAGES §7.6/§7.7 — one dispatch for the whole furnace family.
+          // A pre-v1.2 save typed EVERY member 'furnace' (getBlockEntity's old
+          // fallthrough), so such a record cooked at 200 with no input filter
+          // and — because the un-light test in tickFurnace reads profile.lit —
+          // a village blast furnace could light but never unlight, sticking at
+          // emission 13 forever. The WORLD BLOCK is the authority; self-heal the
+          // record so the save round-trips as the right kind too.
+          if (FURNACE_KINDS[be.type]) {
+            const kind = furnaceKindAt(chunk.blocks[i]) ?? be.type;
+            if (kind !== be.type) { be.type = kind; chunk.modified = true; }
+            this.tickFurnace(be.data, x, y, z, chunk, FURNACE_KINDS[kind]);
+          } else if (be.type === 'hopper') this.redstoneContainers.tickHopper(be, x, y, z);   // 07 §11.3
           else if (be.type === 'spawner') tickSpawner(this, be, x, y, z);   // 10-NETHER §6.2
           else if (be.type === 'brewing') tickBrewing(this, be.data, x, y, z, chunk);        // 09-POTIONS §10.2
           else if (be.type === 'beacon') this.tickBeacon(be, x, y, z);      // 13-BOSSES §9
@@ -739,19 +959,32 @@ export class Game {
     const levels = pyramidLevels(this.world, x, y, z);
     const active = levels >= 1 && skyClear(this.world, x, y, z);
     be.data.levels = levels;
-    if (active !== be.data.active) {
+    // 13-BOSSES §9.3 — the verb fires on a real BOOLEAN transition only. A block
+    // entity whose `data.active` is absent (a pre-v1.2 save record; getBlockEntity
+    // itself seeds `active: false`) would otherwise read `false !== undefined` on
+    // its first %80 pass and announce a deactivation that never happened. The
+    // assignment stays unconditional so the field self-heals on that same pass.
+    // Mirrors the on-GUI-open recheck in player/interaction.js's `case 'beacon'`.
+    if (typeof be.data.active === 'boolean' && active !== be.data.active) {
       emitSound(active ? 'block.beacon.activate' : 'block.beacon.deactivate', at(x + 0.5, y + 0.5, z + 0.5));
-      be.data.active = active;
     }
+    be.data.active = active;
     if (active && be.data.primaryEffect != null) applyBeaconEffects(this, be, x, y, z, levels);
   }
 
-  // 06 §11.1
-  tickFurnace(f, x, y, z, chunk) {
+  // 06 §11.1 (+ 12-VILLAGES §7.6/§7.7 — `profile` carries the variant's cook
+  // time and input filter; the plain furnace keeps cook 200 / no filter, so the
+  // golden path is byte-for-byte what it was).
+  tickFurnace(f, x, y, z, chunk, profile = FURNACE_KINDS.furnace) {
     const [input, fuel] = [f.slots[0], f.slots[1]];
     const recipe = input ? SMELTING.get(input.id) : null;
     const out = f.slots[2];
-    const canSmelt = !!recipe && (!out || (out.id === recipe.out && out.count + 1 <= (ITEMS.get(out.id)?.stack ?? 64)));
+    // §7.6 blast furnace rejects food/sand/cobblestone/wood; §7.7 smoker rejects
+    // ores and blocks — both by smelt class, not by recipe existence. The gate
+    // is shared with both shift-click routers and the input slot's canPut so a
+    // stack can never reach a slot that will never process it.
+    const classOk = !!recipe && furnaceAccepts(profile, input.id);
+    const canSmelt = classOk && (!out || (out.id === recipe.out && out.count + 1 <= (ITEMS.get(out.id)?.stack ?? 64)));
 
     if (f.burn > 0) f.burn--;
     if (f.burn === 0 && canSmelt && fuel) {
@@ -770,7 +1003,7 @@ export class Game {
     }
     if (f.burn > 0 && canSmelt) {
       f.cook++;
-      if (f.cook >= 200) {
+      if (f.cook >= profile.cook) {
         f.cook = 0;
         if (out) out.count++;
         else f.slots[2] = { id: recipe.out, count: 1 };
@@ -782,17 +1015,26 @@ export class Game {
     } else {
       f.cook = Math.max(0, f.cook - 2);
     }
-    if (f.burn === 0 && this.world.getBlock(x, y, z) === B.FURNACE_LIT) {
+    if (f.burn === 0 && this.world.getBlock(x, y, z) === B[profile.lit]) {
       this.swapFurnaceBlock(x, y, z, false);
     }
   }
 
+  // 06 §5.5 id-swap, generalised over 12-VILLAGES §7.6/§7.7's families: the old
+  // form hardcoded FURNACE/FURNACE_LIT and early-returned for any other id, so a
+  // village blast furnace or smoker could never light.
   swapFurnaceBlock(x, y, z, lit) {
     const cur = this.world.getBlock(x, y, z);
-    const want = lit ? B.FURNACE_LIT : B.FURNACE;
-    if (cur === want || (cur !== B.FURNACE && cur !== B.FURNACE_LIT)) return;
-    const state = this.world.getState(x, y, z);
-    this.world.setBlock(x, y, z, want, { state, noUpdates: true });
+    for (const k in FURNACE_KINDS) {
+      const f = FURNACE_KINDS[k];
+      const off = B[f.unlit], on = B[f.lit];
+      if (cur !== off && cur !== on) continue;
+      const want = lit ? on : off;
+      if (cur === want) return;
+      const state = this.world.getState(x, y, z);
+      this.world.setBlock(x, y, z, want, { state, noUpdates: true });
+      return;
+    }
   }
 
   spillBlockEntity(be, x, y, z) {
@@ -829,11 +1071,22 @@ export class Game {
   // 13-BOSSES §8.7 — the blue wither skull treats every destructible block as
   // blast-0 (breaks obsidian, removes fluids); only hardness<0 blocks (bedrock +
   // portal family = witherImmune) survive via the existing guard below.
-  explodeBlast0(x, y, z, power) { this.explode(x, y, z, power, { blastZero: true }); }
+  // `opts` is forwarded: the blue skull passes { source: this.owner } and the
+  // four-arg form discarded it before it could reach the entity loop below.
+  explodeBlast0(x, y, z, power, opts = {}) { this.explode(x, y, z, power, { ...opts, blastZero: true }); }
 
   explode(x, y, z, power, opts = {}) {
     const world = this.world;
     const rng = world.rng;
+    // 06 §8.1 — the entity pass below destroys item entities, and the block pass
+    // spawns this explosion's OWN drops synchronously into the same box (block
+    // radius 1.3·power+0.6 is strictly inside the entity radius 2·power). Without
+    // this snapshot every explosion ate its own drops and TNT mining returned
+    // nothing. Only items that predate the blast are eligible.
+    const range = 2 * power;
+    const box = new AABB(x - range, y - range, z - range, x + range, y + range, z + range);
+    const preexistingItems = new Set(
+      this.entities.getEntitiesInBox(box, ent => !ent.dead && ent.type === 'item'));
     // block destruction: sphere with falloff (05 §12.2 adaptation)
     const maxR = 1.3 * power + 0.6;
     const centerIsWater = BLOCKS[world.getBlock(Math.floor(x), Math.floor(y), Math.floor(z))].fluid === 'water';
@@ -874,13 +1127,17 @@ export class Game {
       }
     }
 
-    // entity damage + knockback (05 §12.3)
-    const range = 2 * power;
-    const box = new AABB(x - range, y - range, z - range, x + range, y + range, z + range);
+    // entity damage + knockback (05 §12.3) — `range`/`box` are hoisted above the
+    // block pass so the pre-blast item snapshot can share them.
     for (const e of this.entities.getEntitiesInBox(box, ent => !ent.dead)) {
       const cx = e.pos.x, cy = e.pos.y + e.height / 2, cz = e.pos.z;
       const dist = Math.hypot(cx - x, cy - y, cz - z);
       if (dist >= range) continue;
+      // 13-BOSSES §8.7 — "the wither is immune to its own skulls' damage". The
+      // source is skipped for BOTH damage and knockback: a skull that clips
+      // terrain inside the 2-block radius otherwise armour-4'd its own shooter
+      // and set breakCounter, so the wither mined a hole under itself.
+      if (opts.source && e === opts.source) continue;
       // exposure: 8 AABB corners + center (adaptation)
       const bb = e.getAABB();
       let clear = 0;
@@ -898,8 +1155,19 @@ export class Game {
       const impact = (1 - dist / range) * exposure;
       const dmg = Math.floor((impact * impact + impact) / 2 * 7 * range + 1);
       const len = dist || 1;
-      if (e instanceof LivingEntity) {
+      // 13-BOSSES §3 — an end crystal is destroyed in one hit by an explosion,
+      // and §3's chain rule ("cause = another explosion → removed silently, no
+      // secondary explosion") is unreachable between neighbouring crystals
+      // unless non-living damageables take blast damage too.
+      if (e instanceof LivingEntity || e.damageable) {
         e.hurt(dmg, 'explosion', {});
+      } else if (e.type === 'item') {
+        // 06 §8.1 item-entity table — "Destroyed by | lava, fire, cactus contact,
+        // explosions". Only the first three were implemented (ItemEntity.tick),
+        // so blowing up a full chest left all 27 stacks collectible. XP orbs are
+        // deliberately NOT included: 05 §15's orb table lists no explosion case.
+        // Only items that existed BEFORE the block pass — see preexistingItems.
+        if (preexistingItems.has(e)) { e.dead = true; e.deathTime = e.deathAnimTicks ?? 0; }
       }
       // 18 §4.4 — a creative player takes no knockback from explosions. This
       // push is applied directly, NOT through applyKnockback, so the Player
@@ -968,6 +1236,39 @@ export class Game {
   spawnXpOrb(x, y, z, value) {
     if (this.net?.isClient) return null;   // 14 §4.5 — host-authoritative
     return this.entities.add(new XpOrb(this.world, x, y, z, value));
+  }
+
+  /**
+   * 07-REDSTONE §11 dispenser table — "bone_meal (332) | apply fertilize to the
+   * front block; if not fertilizable → default-drop". containersRedstone calls
+   * this on the game; it had no definition, so the optional call was always
+   * undefined and a loaded dispenser spat the bone meal on the floor.
+   */
+  tryBonemeal(x, y, z) {
+    return this.interaction ? this.interaction.applyBoneMealAt(x, y, z) : false;
+  }
+
+  // ---------------------------------------------------------------- boss bars (13 §1 / 14 §12)
+  // 14-MULTIPLAYER §12 message table — `bossBar | H→C | id, name, hpFrac, style`.
+  // The bosses used to drive `ui.bossBar` directly, so NetHost.broadcastBossBar
+  // had zero call sites and a joined client fought the Wither / Ender Dragon with
+  // no bar at all. Every mutation goes through here instead. No dedup: the two
+  // bosses re-assert add+set every tick, which is what lets a client that joins
+  // mid-fight pick the bar up on its next tick — 2 small JSON frames per boss per
+  // tick alongside the 20 Hz snapshot is not worth a join-time resync path.
+  bossBarAdd(id, name, style) {
+    this.ui?.bossBar?.add(id, { name, color: style });
+    this.net?.broadcastBossBar?.({ id, name, style });
+  }
+
+  bossBarSet(id, hpFrac) {
+    this.ui?.bossBar?.set(id, hpFrac);
+    this.net?.broadcastBossBar?.({ id, hpFrac });
+  }
+
+  bossBarRemove(id) {
+    this.ui?.bossBar?.remove(id);
+    this.net?.broadcastBossBar?.({ id, remove: true });
   }
 
   spawnArrow(x, y, z, vx, vy, vz, owner, opts) {
@@ -1114,7 +1415,12 @@ export class Game {
       if (!this.villages.has(key)) this.villages.set(key, record.villageMeta);
     }
     if (record.entities) {
-      for (const rec of record.entities) this.restoreEntity(rec);
+      // 01 §16 — restoreEntity constructs real entity classes, so one truncated
+      // or unparseable record must not abort the rest of the chunk's entities.
+      for (const rec of record.entities) {
+        try { this.restoreEntity(rec); }
+        catch (err) { console.warn('[save] entity restore failed', rec?.type, err); }
+      }
     }
     if (!chunk.spawnsDone && record.spawns?.length) {
       chunk.pendingSpawns = record.spawns;
@@ -1122,15 +1428,48 @@ export class Game {
     }
   }
 
+  // 01 §16 — the save-side type dispatch. Every branch below is a class with a
+  // bespoke restore; ANYTHING else falls through to createMob, which warns
+  // "[mobs] unknown type" and returns null, i.e. the entity is DESTROYED by the
+  // round-trip. A new serializable entity class needs a branch here — and note
+  // that createPuppet and netStaticFor (14 §3.2) keep their own parallel type
+  // lists, so all three want checking together.
   restoreEntity(rec) {
     let e = null;
     let restoredTnt = false;
     if (rec.type === 'item') e = ItemEntity.deserialize(this.world, rec);
     else if (rec.type === 'primed_tnt') { e = PrimedTnt.deserialize(this.world, rec); restoredTnt = true; }
-    else if (rec.type === 'xp_orb') { e = new XpOrb(this.world, rec.pos[0], rec.pos[1], rec.pos[2], rec.value); }
+    else if (rec.type === 'xp_orb') {
+      // 05 §15 — the orb's 6000-tick lifetime and its in-flight velocity are both
+      // serialized (XpOrb.serialize / Entity.serialize), but the ctor zeroes both.
+      // Without these two lines an uncollected orb restarted its clock on every
+      // load (so it could persist forever) and an orb saved mid-arc reloaded
+      // frozen. ItemEntity.deserialize already restores both; the two disagreed.
+      e = new XpOrb(this.world, rec.pos[0], rec.pos[1], rec.pos[2], rec.value);
+      e.age = rec.age ?? 0;
+      if (rec.vel) { e.vel.x = rec.vel[0]; e.vel.y = rec.vel[1]; e.vel.z = rec.vel[2]; }
+    }
     else if (rec.type === 'end_crystal') e = EndCrystal.deserialize(this.world, rec);   // 13-BOSSES §3
+    // 06 §5.4 / DEVIATIONS #22 ("falling blocks are persisted as falling-block
+    // entities … they resume falling on load"). The record was written and passed
+    // saveManager's exclusion filter, but with no branch here it reached
+    // createMob, which has no such CTOR — so the sand/gravel/anvil was destroyed
+    // by a save/load (World.setBlock had already cleared the source cell).
+    else if (rec.type === 'falling_block') e = FallingBlock.deserialize(this.world, rec);
+    // 09-POTIONS §16 — area-effect clouds are deliberately dropped on save
+    // (saveManager's §09.3 exclusion). Saves written before that landed still
+    // carry the records; drop them here instead of letting createMob warn.
+    else if (rec.type === 'area_effect_cloud') return null;
     else {
-      e = createMob(this.world, rec.type, rec.pos[0], rec.pos[1], rec.pos[2], {});
+      // 05 §4.1 — thread the SAVED variant into the constructor. Zombie's ctor
+      // rolls its own 5% baby chance, and that branch is the ONLY place
+      // walkSpeed/chaseSpeed 0.18 and xpValue 12 are assigned; Mob.deserialize
+      // repairs isBaby, the hitbox and ageTicks but never the stat block, so a
+      // mismatched roll left a baby crawling at adult speed and dropping 5 XP (or
+      // an adult sprinting at ×1.5 for 12). `noBabyRoll` suppresses the spurious
+      // re-roll; every other ctor ignores both opts.
+      e = createMob(this.world, rec.type, rec.pos[0], rec.pos[1], rec.pos[2],
+        { isBaby: !!rec.isBaby, noBabyRoll: true });
       if (e) e.deserialize(rec);
     }
     if (e) this.entities.add(e);
@@ -1351,10 +1690,28 @@ export class Game {
     return NetHostP.then(({ NetHost }) => {
       const net = new NetHost(this);
       this.net = net;
+      // 14 §8.4 — the host's own Player never passes through createNetPlayer, so
+      // nothing ever stamped its identity: netStaticFor shipped
+      // `{playerId: undefined, name: undefined, hue: 0}`, JSON.stringify dropped
+      // the two undefined keys, and every client's createPuppet fell back to
+      // "Player" with hue 0. hue is xmur3(playerId) like every other player's.
+      const lp = this.player;
+      if (lp) {
+        lp.netPlayerId = this.localPlayerId;
+        lp.netName = this.localPlayerName;
+        lp.hue = hueFromId(this.localPlayerId);
+      }
       net.onCode = code => this.ui?.netMenus?.setHostCode?.(code);
       net.onError = reason => this.ui?.netMenus?.onHostError?.(reason);
       net.host(url);
       return net;
+    }).catch(err => {
+      // NetHost is its own build chunk, so this import is a real network fetch.
+      // Unhandled, a 404 or a dropped connection left the player in a live solo
+      // world with no join code and no message at all (14 §16).
+      console.error('[net] host module load failed', err);
+      this.ui?.netMenus?.onHostError?.('module');
+      return null;
     });
   }
 
@@ -1417,7 +1774,7 @@ export class Game {
     const base = {
       health: p.health, hunger: p.foodLevel, saturation: p.saturation, air: p.air,
       fireTicks: p.fireTicks, xpLevel: p.xpLevel, xpPoints: p.xpPoints, xp: currentXp(p),
-      gameMode: p.gameMode, effects: serializeEffects(p),
+      gameMode: p.gameMode, effects: serializeEffects(p) ?? [],   // 14 §5 — an emptied set must ship as [] so the client's replace-mode apply clears it
       inventory: packStacks(p.inventory), armor: packStacks(p.armor),
       offhand: p.offhand ? cloneStack(p.offhand) : null, selectedSlot: p.selectedSlot,
       dead: p.dead,
@@ -1443,7 +1800,11 @@ export class Game {
     if (t === 'falling_block') return { blockId: e.blockId };
     if (t === 'primed_tnt') return { fuse: e.fuse };
     if (t === 'xp_orb') return { value: e.value };
-    if (t === 'sheep') return { woolColor: e.woolColor ?? 0 };
+    // 14 §3.2 — `woolColor` was a field NOTHING ever assigned (Sheep stores a
+    // 24-bit `woolTint`), so every remote sheep rendered default white. Ship the
+    // field that exists; it does not fit the stateByte nibble, and it never
+    // changes after spawn, so the static payload is the right carrier.
+    if (t === 'sheep') return { woolTint: e.woolTint ?? 0xffffff };
     return {};
   }
 
@@ -1455,7 +1816,12 @@ export class Game {
       this.withActivePlayer(p, () => this.interaction.breakBlock(d.x, d.y, d.z, {}));
       return true;
     }
-    p.selectedSlot = d.hotbarSlot & 7;
+    // 14 §3.4 — the hotbar is NINE slots (0–8) and the wire field is a raw u8, so
+    // `& 7` folded slot 9 onto slot 1: the host read heldStack from index 0 and
+    // placed/consumed the wrong item. Range-check, never mask (NetHost's own
+    // input-frame path already clamps this way).
+    const hs = d.hotbarSlot | 0;
+    if (hs >= 0 && hs <= 8) p.selectedSlot = hs;
     const held = p.heldStack;
     if (!held) return false;
     const hit = { x: d.x, y: d.y, z: d.z, id: w.getBlock(d.x, d.y, d.z), face: indexToFace(d.face), t: 0 };
@@ -1467,7 +1833,17 @@ export class Game {
     const p = client.player, it = this.interaction;
     // audit M2 / §10 — reach-validate a targeted use before opening/actuating.
     if (!m.self) {
-      const dist = Math.hypot((m.x + 0.5) - p.pos.x, (m.y + 0.5) - (p.pos.y + p.eyeHeight), (m.z + 0.5) - p.pos.z);
+      // Measure to the CLOSEST POINT of the target cell, the same form
+      // NetHost._applyBlockEdit and hostApplyAttack use. The client's rayHit
+      // stops at the block SURFACE, and a cell CENTRE is up to √3/2 ≈ 0.87 m
+      // further out — more than the 0.5 m slack — so a legitimate max-reach
+      // diagonal RMB was silently dropped. RMB is never client-predicted, so the
+      // door/chest/lever simply did nothing with no feedback.
+      const ex = p.pos.x, ey = p.pos.y + p.eyeHeight, ez = p.pos.z;
+      const dist = Math.hypot(
+        Math.min(Math.max(ex, m.x), m.x + 1) - ex,
+        Math.min(Math.max(ey, m.y), m.y + 1) - ey,
+        Math.min(Math.max(ez, m.z), m.z + 1) - ez);
       if (dist > (p.creative ? 5.2 : 4.5) + 0.5) return;
     }
     const prevHit = it.currentHit, prevActor = this._netActor;
@@ -1476,8 +1852,11 @@ export class Game {
     try {
       if (m.self) it.currentHit = null;
       else {
-        p.selectedSlot = (m.hotbarSlot ?? 0) & 7;
-        it.currentHit = { x: m.x, y: m.y, z: m.z, id: this.world.getBlock(m.x, m.y, m.z), face: indexToFace(m.face), t: 0 };
+        // 14 §3.4 — 0–8, never `& 7`; a client on slot 9 otherwise used slot 1's
+        // item for EVERY right-click (bucket, flint & steel, food, bed, place).
+        const hs = (m.hotbarSlot ?? 0) | 0;
+        if (hs >= 0 && hs <= 8) p.selectedSlot = hs;
+        it.currentHit ={ x: m.x, y: m.y, z: m.z, id: this.world.getBlock(m.x, m.y, m.z), face: indexToFace(m.face), t: 0 };
       }
       const input = {
         pressed: new Set(), shift: p.sneaking, ctrl: false, hotbar: -1, wheel: 0,
@@ -1523,7 +1902,19 @@ export class Game {
     const be = this.getBlockEntity(x, y, z);
     if (!be?.data?.slots) return;
     const windowId = (client._winSeq = (client._winSeq || 0) + 1);
-    client.window = { id: windowId, kind, x, y, z, be, cursor: null };
+    // 06 §14.1 ("furnace output and craft results are take-only") + §11.1's fuel
+    // filter and input routing. Without a per-slot policy the whole furnace
+    // FAMILY was an undifferentiated 3-slot chest for every non-host player: the
+    // output was writable (which pins tickFurnace's canSmelt false forever, so
+    // the furnace stalls), the fuel slot took anything, shift-click dumped coal
+    // into the INPUT, and xpBank was never paid out. -1 = policy not applicable.
+    // The authoritative implementation is ui/containers.js's furnace slot defs;
+    // the two must agree.
+    const furnace = !!FURNACE_KINDS[be.type];
+    client.window = {
+      id: windowId, kind, x, y, z, be, cursor: null,
+      furnace, takeOnly: furnace ? 2 : -1, fuelSlot: furnace ? 1 : -1,
+    };
     this.net?._jsonTo?.(client.slot, {
       t: 'containerOpen', windowId, kind, pos: { x, y, z },
       slots: be.data.slots.map(s => s ? cloneStack(s) : null),
@@ -1534,9 +1925,26 @@ export class Game {
   hostContainerClick(client, m) {
     const win = client.window;
     if (!win || win.id !== m.windowId) return;
-    if (this.world.getBlock(win.x, win.y, win.z) === B.AIR) { this.hostContainerClose(client); return; }
+    // 14 §6 — the viewer's NetContainer closes ONLY on an explicit
+    // containerResult{close:true}; hostContainerClose emits nothing. Without the
+    // notify the remote player kept a fully rendered chest screen over a block
+    // that no longer exists, and every further click was silently swallowed by
+    // the window-id guard above. Same one-liner as spillBlockEntity and
+    // NetHost.sendDimChange — this was the last uncovered close path.
+    if (this.world.getBlock(win.x, win.y, win.z) === B.AIR) {
+      this.net?._jsonTo?.(client.slot, { t: 'containerResult', windowId: win.id, close: true });
+      this.hostContainerClose(client);
+      return;
+    }
     applyNetContainerClick(win, client.player, m, ITEMS);
-    win.be.modified = true;
+    // 01 §16.2 — a net container click is a pure block-entity write with no
+    // setBlock behind it, so the CHUNK must be dirtied: saveAll only queues
+    // chunks whose `chunk.modified` is true and serializeChunk reads
+    // chunk.blockEntities. `be.modified` is read by NOTHING, so every remote
+    // player's chest/furnace/hopper edit was dropped on reload. (containers.js's
+    // markBeDirty and containersRedstone's dirty() both already do this.)
+    const chunk = this.world.getChunkAt(win.x, win.z);
+    if (chunk) chunk.modified = true;
     const slotsCopy = () => win.be.data.slots.map(s => s ? cloneStack(s) : null);
     // reflect the full authoritative state to the CLICKER (cursor + inv + slots),
     // echoing actionId so a predictive client could match its rollback (§6).
@@ -1556,6 +1964,8 @@ export class Game {
   hostContainerClose(client) {
     const win = client.window;
     if (!win) return;
+    // No chunk dirtying here: returning the cursor only touches the player
+    // inventory, which persists via meta.players (14 §2.4), not the chunk.
     if (win.cursor) {
       const left = client.player.give(win.cursor);
       if (left > 0) { win.cursor.count = left; this.dropStackAt(win.cursor, client.player.pos.x, client.player.pos.y + 0.6, client.player.pos.z); }
@@ -1565,7 +1975,10 @@ export class Game {
   }
 
   // ---------------------------------------------------------------- CLIENT session
-  async startClientWorld(welcome, net) {
+  // NOT async: it has no awaits, and the `async` wrapper turned every construction
+  // fault into an unobserved rejection that NetClient._onWelcome's guard (its only
+  // caller) could not see. 14 §2.2 — a bad welcome must fail the join, loudly.
+  startClientWorld(welcome, net) {
     this.disposeWorld();
     this.net = net;
     this.world = new World(welcome.seed);
@@ -1631,6 +2044,9 @@ export class Game {
     else if (typeName === 'primed_tnt') e = new PrimedTnt(this.world, rec.x, rec.y, rec.z, st.fuse ?? 80);
     else if (typeName === 'falling_block') e = new FallingBlock(this.world, st.blockId ?? 1, rec.x, rec.y, rec.z);
     else if (typeName === 'arrow') e = new Arrow(this.world, rec.x, rec.y, rec.z, 0, 0, 0, null);
+    // 14 §3.2 — the dye colour rides netStaticFor; pass it to the ctor so the
+    // wool parts are painted at build time (passive.js reads woolTint in buildModel).
+    else if (typeName === 'sheep') e = createMob(this.world, typeName, rec.x, rec.y, rec.z, { woolTint: st.woolTint ?? 0xffffff });
     else e = createMob(this.world, typeName, rec.x, rec.y, rec.z, {});
     if (e) { e.isPuppet = true; e.beforeHurt = () => false; e.tick = () => {}; if (e.isBaby !== undefined && rec.stateByte & 1) { /* baby via stateByte */ } }
     return e;
@@ -1643,6 +2059,11 @@ export class Game {
     this.net.staticData.clear();
     for (const e of [...this.entities.entities.values()]) if (e !== this.player) this.entities.remove(e);
     this.chunkManager.flushAllChunks();
+    // AMENDS 01 §5 — same reason as changeActiveDimension: the queue is keyed by
+    // absolute (x,y,z) with no dimension tag and flushAllChunks does not touch it.
+    // A client never runs scheduled.run(), but wire-installed blocks still queue
+    // through World.setBlock, so the buckets would grow across every transit.
+    this.world.scheduled.clear();
     const desc = getDimension(m.dim ?? 0) ?? getDimension(0);
     this.world.activeDim = m.dim ?? 0;
     this.world.hasSkyLight = desc.hasSkyLight;
@@ -1653,21 +2074,75 @@ export class Game {
 }
 
 // ---- headless container click applier (14 §6, chest-class; no dupes, host-authoritative) ----
+// ui/containers.js is the AUTHORITATIVE implementation of these semantics; this
+// is the headless twin the host runs on a remote player's behalf, and the two
+// must agree. It had drifted on three counts, all fixed below: tag-blind stack
+// compatibility, bare spreads for split/place/fill, and no slot policy at all.
 function applyNetContainerClick(win, player, m, ITEMS) {
   const slots = win.be.data.slots;
   const inv = player.inventory;
+  // containers.js's slotMax is min(slot.maxStack ?? Infinity, stackMax(id)); no
+  // slot in a REPLICATING window declares maxStack (only the enchant/anvil
+  // screens do, and neither opens over the wire), so it reduces to stackMax.
   const stackMax = s => (s ? (ITEMS.get(s.id)?.stack ?? 64) : 64);
   const region = m.region === 'inv' ? inv : slots;
   const i = m.slotIndex | 0;
   if (i < 0 || i >= region.length) return;
-  const same = (a, b) => a && b && a.id === b.id && (a.damage ?? 0) === (b.damage ?? 0);
+  // AMENDS 06 §14.2 (08 §1 invariant 5) — stack compatibility requires DEEP-EQUAL
+  // tags. Without tagsEqual a Sharpness V sword merged with a vanilla one and two
+  // differently-tipped potions stacked: a real destroy/dupe bug.
+  const same = (a, b) => a && b && a.id === b.id && (a.damage ?? 0) === (b.damage ?? 0)
+    && tagsEqual(a, b);
+  const container = region === slots;
+  // 06 §11.1 — "when the player takes items from the output slot, award
+  // floor(xpBank)". containers.js pays this from the output slot's onTakeOut;
+  // this path never had one, so xpBank accrued silently until the block broke.
+  const drainXp = () => {
+    if (!win.furnace) return;
+    const d = win.be.data;
+    const xp = Math.floor(d.xpBank ?? 0);
+    if (xp > 0) { player.addXp(xp); d.xpBank -= xp; }
+  };
+  // 06 §14.1 — a take-only slot (the furnace output) mirrors containers.js's
+  // takeResult exactly: EITHER button takes the whole stack, never splits and
+  // never accepts a put; shift pushes it into the player inventory. Leaving it
+  // writable also stalled the furnace, since tickFurnace's canSmelt requires the
+  // output to be empty or the same item.
+  if (container && i === win.takeOnly) {
+    const out = region[i];
+    if (!out) return;
+    if (m.shift) {
+      const before = out.count;
+      const leftover = player.give(out);
+      if (leftover > 0) out.count = leftover; else region[i] = null;
+      if (leftover < before) drainXp();
+    } else {
+      if (win.cursor && !(same(win.cursor, out) && win.cursor.count + out.count <= stackMax(out))) return;
+      if (win.cursor) win.cursor.count += out.count;
+      else win.cursor = cloneStack(out);
+      region[i] = null;
+      drainXp();
+    }
+    return;
+  }
+  // §11.1 — the fuel slot's `canPut: s => fuelValue(s.id) > 0` was unenforced.
+  // 12-VILLAGES §7.6/§7.7 — slot 0 of the two FILTERED variants carries the same
+  // class gate ui/containers.js gives it, so a remote player's direct drag cannot
+  // park a stack the local UI would refuse. The plain furnace takes anything.
+  const inProfile = win.furnace ? FURNACE_KINDS[win.be.type] : null;
+  const putBlocked = s => container && (
+    (i === win.fuelSlot && fuelValue(s?.id) === 0) ||
+    (i === 0 && !!inProfile?.accepts && !furnaceAccepts(inProfile, s?.id)));
   if (m.button === 2) {                            // right click
     if (!win.cursor) {                             // split half to cursor
       const s = region[i];
-      if (s && s.count > 0) { const half = Math.ceil(s.count / 2); win.cursor = { ...s, count: half }; s.count -= half; if (s.count <= 0) region[i] = null; }
+      // cloneStack, never a spread: the two halves would share one tags object
+      // (08 §1 invariant 4) and an enchant edit on one would alias the other.
+      if (s && s.count > 0) { const half = Math.ceil(s.count / 2); win.cursor = cloneStack(s); win.cursor.count = half; s.count -= half; if (s.count <= 0) region[i] = null; }
     } else {                                        // drop one
       const s = region[i];
-      if (!s) { region[i] = { ...win.cursor, count: 1 }; if (--win.cursor.count <= 0) win.cursor = null; }
+      if (putBlocked(win.cursor)) return;
+      if (!s) { region[i] = cloneStack(win.cursor); region[i].count = 1; if (--win.cursor.count <= 0) win.cursor = null; }
       else if (same(s, win.cursor) && s.count < stackMax(s)) { s.count++; if (--win.cursor.count <= 0) win.cursor = null; }
     }
     return;
@@ -1677,13 +2152,27 @@ function applyNetContainerClick(win, player, m, ITEMS) {
     const s = region[i]; if (!s) return;
     const dest = region === inv ? slots : inv;
     // merge then fill empties (lowest slot wins)
-    for (let k = 0; k < dest.length && s.count > 0; k++) { const d = dest[k]; if (d && same(d, s) && d.count < stackMax(d)) { const add = Math.min(stackMax(d) - d.count, s.count); d.count += add; s.count -= add; } }
-    for (let k = 0; k < dest.length && s.count > 0; k++) { if (!dest[k]) { dest[k] = { ...s }; s.count = 0; } }
+    let lo = 0, hi = dest.length;
+    // 06 §11 / containers.js shiftTargets — routing INTO a furnace is NOT "first
+    // empty slot": smeltable → input, fuel → fuel, anything else → rejected. The
+    // blind fill put 8 shift-clicked coal in the INPUT slot.
+    // 12-VILLAGES §7.6/§7.7 — smeltable is not enough: the variant's class
+    // filter decides, or the stack is parked in an input that never cooks.
+    if (win.furnace && dest === slots) {
+      if (furnaceAccepts(FURNACE_KINDS[win.be.type], s.id)) { lo = 0; hi = 1; }
+      else if (fuelValue(s.id) > 0) { lo = 1; hi = 2; }
+      else return;
+    }
+    for (let k = lo; k < hi && s.count > 0; k++) { const d = dest[k]; if (d && same(d, s) && d.count < stackMax(d)) { const add = Math.min(stackMax(d) - d.count, s.count); d.count += add; s.count -= add; } }
+    for (let k = lo; k < hi && s.count > 0; k++) { if (!dest[k]) { dest[k] = cloneStack(s); s.count = 0; } }
     if (s.count <= 0) region[i] = null;
     return;
   }
   const s = region[i];
+  // The pick-up / place / swap moves below transfer the OBJECT, so no clone is
+  // needed (nothing keeps a second reference).
   if (!win.cursor) { if (s) { win.cursor = s; region[i] = null; } return; }
+  if (putBlocked(win.cursor)) return;
   if (!s) { region[i] = win.cursor; win.cursor = null; return; }
   if (same(s, win.cursor)) { const add = Math.min(stackMax(s) - s.count, win.cursor.count); s.count += add; win.cursor.count -= add; if (win.cursor.count <= 0) win.cursor = null; return; }
   const tmp = region[i]; region[i] = win.cursor; win.cursor = tmp;   // swap

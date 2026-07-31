@@ -3,7 +3,8 @@
 //  UPDATE-08 §7 offhand slot 45 + F-swap).
 // Geometry: absolute GUI-px on a 176×166 reference panel (Java 1.20 survival
 // coordinates), scaled uniformly by --gpx. Slot (x,y) = top-left INNER corner.
-import { ITEMS, RECIPES, SMELTING, fuelValue, idOf, smithingUpgrade, SMITHING_UPGRADES } from '../registry/items.js';
+import { ITEMS, RECIPES, fuelValue, idOf, smithingUpgrade, SMITHING_UPGRADES,
+  FURNACE_KINDS, furnaceAccepts } from '../registry/items.js';
 import { paintItemIcon, paintSlotIcon } from './hud.js';   // UPDATE-polish §4 — 3D-aware icon painter
 import { emitSound, at, audio } from '../audio/engine.js';
 import { beaconPrimaryOptions } from '../world/Beacon.js';   // 13-BOSSES §9.4
@@ -64,6 +65,30 @@ const same = (a, b) => a && b && a.id === b.id && (a.damage ?? 0) === (b.damage 
 // Split/copy a stack at a new count. Deep-clones tags so the two halves never
 // share one object (08 §1 invariant 4) — a spread did, silently.
 const withCount = (s, n) => { const c = cloneStack(s); c.count = n; return c; };
+
+// 06 §9 — dry-run of Player.give(): does the WHOLE stack fit?
+// give() is a MUTATING partial deposit that returns only the leftover, so
+// testing its return value after the fact is not a capacity test: on a partial
+// fit the items are already in the inventory. takeResult's craft-max loop then
+// broke out BEFORE onCraft(), handing over free items with the grid untouched —
+// unbounded duplication on every multi-count recipe. Mirrors give()'s slot order
+// (hotbar 0–8 then main 9–35 == a plain 0–35 walk) and its merge rules exactly.
+const fitsWhole = (p, stack) => {
+  const max = stackMax(stack.id);
+  let remaining = stack.count;
+  // give() only merges when the ITEM stacks and the stack carries no damage key.
+  if (max > 1 && stack.damage === undefined) {
+    for (let i = 0; i < 36 && remaining > 0; i++) {
+      const s = p.inventory[i];
+      if (s && s.id === stack.id && (s.damage ?? 0) === (stack.damage ?? 0) &&
+          tagsEqual(s, stack) && s.count < max) remaining -= Math.min(max - s.count, remaining);
+    }
+  }
+  for (let i = 0; i < 36 && remaining > 0; i++) {
+    if (!p.inventory[i]) remaining -= Math.min(max, remaining);
+  }
+  return remaining <= 0;
+};
 
 // ------------------------------------------------------------------------
 // Shared recipe resolver (06 §9) — the ONLY matcher; serves 2×2 AND 3×3.
@@ -516,8 +541,13 @@ export class Containers {
     input.type = 'text';
     input.maxLength = NAME_MAX;                 // §8.4 — ≤ 50 chars
     input.value = this.inputs[0] ? displayName(this.inputs[0]) : '';
-    // Typing must not reach the game (WASD would walk you away mid-rename).
-    input.addEventListener('keydown', e => e.stopPropagation());
+    // Typing must not reach the game (WASD would walk you away mid-rename), but
+    // Escape must still close the screen — Input listens on `document`, so a bare
+    // stopPropagation() traps the player in the field.
+    input.addEventListener('keydown', e => {
+      if (e.code === 'Escape') { e.preventDefault(); this.game.closeContainerScreen?.(); return; }
+      e.stopPropagation();
+    });
     input.addEventListener('input', () => { this.anvilName = input.value; this.refresh(); });
     wrap.appendChild(input);
     panel.appendChild(wrap);
@@ -654,7 +684,11 @@ export class Containers {
       (v?.trades ?? []).forEach((t, i) => {
         const cost = t.buyA.id === 435 ? Math.max(1, t.buyA.count + (t.specialPrice || 0)) : t.buyA.count;
         const row = document.createElement('div');
-        row.className = 'trade-row' + (t.uses >= t.maxUses ? ' locked' : '');
+        // §9.1 — a row is greyed when it is sold out OR still tier-locked. The
+        // tier gate lives in doTrade (villager.js), which just returns false, so
+        // without this the row looked live and the click was a silent no-op.
+        const shut = t.uses >= t.maxUses || (t.lvl ?? 1) > (v?.level ?? 1);
+        row.className = 'trade-row' + (shut ? ' locked' : '');
         row.appendChild(chip({ id: t.buyA.id, count: cost }));
         if (t.buyB) { row.appendChild(glyph(null, '+')); row.appendChild(chip(t.buyB)); }
         row.appendChild(glyph('trade-arrow', '→'));
@@ -809,9 +843,17 @@ export class Containers {
       defs.push(...this.playerStorageDefs());
     } else if (this.kind === 'furnace') {
       const f = this.be.data;
+      // 12-VILLAGES §7.6/§7.7 — all three variants share this screen, so the
+      // input slot carries the variant's own class filter (the same gate
+      // tickFurnace runs). Without it a direct drag parks raw beef in a blast
+      // furnace, where it can never cook and nothing says why. Only the two
+      // FILTERED variants get a canPut: the plain furnace's input has always
+      // taken any item (06 §11), and that golden path stays untouched.
+      const profile = FURNACE_KINDS[this.be.type];
       defs.push({
         x: 56, y: 17, region: 'furnaceIn',
         get: () => f.slots[0], set: v => { f.slots[0] = v; this.markBeDirty(); },
+        canPut: profile?.accepts ? (s => furnaceAccepts(profile, s.id)) : undefined,
       });
       defs.push({
         x: 56, y: 53, region: 'furnaceFuel',
@@ -1141,7 +1183,12 @@ export class Containers {
     knob.style.top = `calc(${frac} * (100% - ${knob.style.height}))`;
     bar.appendChild(knob);
     const drag = e => {
-      const r = bar.getBoundingClientRect();
+      // Resolve the track at drag time: build() rebuilds the panel on every row
+      // change, so the captured `bar` is detached by the second mousemove and its
+      // all-zero rect made f = 1, pinning the palette to the last row.
+      const track = this.root.querySelector('.cv-scrollbar');
+      if (!track) return;
+      const r = track.getBoundingClientRect();
       const f = Math.min(1, Math.max(0, (e.clientY - r.top) / r.height));
       const next = Math.round(f * max);
       if (next !== this.scroll) { this.scroll = next; this.build(); }
@@ -1176,8 +1223,13 @@ export class Containers {
       if (next) { next.focus(); next.setSelectionRange(next.value.length, next.value.length); }
     });
     // The document-level hotbar/F/Q handler must not eat typing (it reads
-    // `hovered`, which a keystroke in the box does not clear).
-    box.addEventListener('keydown', e => e.stopPropagation());
+    // `hovered`, which a keystroke in the box does not clear). Escape is the one
+    // exception: Input listens on `document` too, so swallowing it left the
+    // auto-focused Search field with no keyboard route out of the screen.
+    box.addEventListener('keydown', e => {
+      if (e.code === 'Escape') { e.preventDefault(); this.game.closeContainerScreen?.(); return; }
+      e.stopPropagation();
+    });
     box.addEventListener('mousedown', e => e.stopPropagation());
     panel.appendChild(box);
   }
@@ -1341,7 +1393,10 @@ export class Containers {
         inSlot.count -= take;
         if (inSlot.count <= 0) slot.set(null);
         this.cursor = taken;
-      } else if (cur && (!inSlot || (same(cur, inSlot) && inSlot.count < stackMax(cur.id)))) {
+        // 08 §4.2 — slotMax, not stackMax: place-one into a cap-1 slot (enchant
+        // item, beacon payment) must stop at the SLOT's cap, or §4.5's rewrite to
+        // count = 1 silently destroys the surplus.
+      } else if (cur && (!inSlot || (same(cur, inSlot) && inSlot.count < slotMax(slot, cur.id)))) {
         if (!slot.canPut || slot.canPut(cur)) {
           if (inSlot) inSlot.count++;
           else slot.set(withCount(cur, 1));
@@ -1362,11 +1417,15 @@ export class Containers {
     if (slot.canTake && !slot.canTake()) return;
     if (slot.region === 'result') {
       if (shift) {
-        // craft-max: until ingredients run out or inventory is full (§4.6)
+        // craft-max: until ingredients run out or inventory is full (§4.6).
+        // The capacity test must run BEFORE the deposit: give() is a partial,
+        // mutating insert, so `give(...) > 0` meant "some already landed" and the
+        // break skipped onCraft() — free items, grid unconsumed (06 §9).
         for (let n = 0; n < 576; n++) {
           const r = slot.get();
           if (!r) break;
-          if (this.game.player.give({ ...r }) > 0) break;
+          if (!fitsWhole(this.game.player, r)) break;
+          this.game.player.give({ ...r });
           slot.onCraft();
         }
       } else {
@@ -1378,10 +1437,14 @@ export class Containers {
       }
     } else {
       if (shift) {
+        const before = out.count;
         const leftover = this.game.player.give(out);
         if (leftover > 0) out.count = leftover;
         else slot.set(null);
-        slot.onTakeOut?.();
+        // 06 §11.1 — the furnace's banked XP is paid when the player TAKES items.
+        // With a full inventory give() moves nothing and returns `before`, so an
+        // unconditional call drained xpBank for a take that never happened.
+        if (leftover < before) slot.onTakeOut?.();
       } else {
         if (this.cursor && !(same(this.cursor, out) &&
             this.cursor.count + out.count <= stackMax(out.id))) return;
@@ -1451,7 +1514,9 @@ export class Containers {
       return grindstoneAccepts(stack) ? bySel(['grindIn0', 'grindIn1']) : [];
     }
     if (this.kind === 'furnace') {
-      if (SMELTING.has(stack.id)) return bySel(['furnaceIn']);
+      // §7.6/§7.7 — route on the VARIANT's filter, not on recipe existence, or
+      // the shift-click deposits a stack the slot's canPut would have refused.
+      if (furnaceAccepts(FURNACE_KINDS[this.be?.type], stack.id)) return bySel(['furnaceIn']);
       if (fuelValue(stack.id) > 0) return bySel(['furnaceFuel']);
       return [];
     }
@@ -1461,7 +1526,11 @@ export class Containers {
       if (SMITHING_UPGRADES.has(stack.id) || stack.id === idOf('netherite_ingot')) return bySel(['craft']);
       return [];
     }
-    if (item?.armorSlot !== undefined && item.armorSlot !== null && this.kind === 'inventory') {
+    // 06 §14.2 — "armor items go to their armor slot first (from either region)".
+    // No `kind` gate: 18 §6.2 tab 10 renders the REAL armor slots while kind is
+    // still 'creative'. Every screen with no armor def makes bySel empty, so the
+    // length guard below falls through to the hotbar/main hand-off unchanged.
+    if (item?.armorSlot !== undefined && item.armorSlot !== null) {
       const armor = bySel(['armor']).filter(t => !t.canPut || t.canPut(stack));
       if (armor.length && !armor[0].get()) return armor;
     }
@@ -1491,6 +1560,10 @@ export class Containers {
     const tmp = p.inventory[hotbarN];
     const s = slot.get();
     if (slot.canPut && tmp && !slot.canPut(tmp)) return;
+    // 08 §4.2 — a cap-1 slot refuses an over-capacity swap outright (the
+    // shift-move policy above caps instead; a swap has nowhere to leave a
+    // remainder, and set()ing the whole stack destroys it on the next buy).
+    if (tmp && tmp.count > slotMax(slot, tmp.id)) return;
     p.inventory[hotbarN] = s;
     slot.set(tmp);
     this.refresh();
@@ -1504,6 +1577,7 @@ export class Containers {
     const s = slot.get();
     const off = p.offhand;
     if (slot.canPut && off && !slot.canPut(off)) return;
+    if (off && off.count > slotMax(slot, off.id)) return;   // 08 §4.2 — as numberSwap
     p.offhand = s ?? null;
     slot.set(off ?? null);
     this.refresh();
@@ -1598,8 +1672,12 @@ export class Containers {
       const f = this.be.data;
       const flame = document.getElementById('g-flame');
       const arrow = document.getElementById('g-arrow');
+      // 12-VILLAGES §7.6/§7.7 — the blast furnace and the smoker cook in 100
+      // ticks, so a hardcoded /200 made their arrow sweep to 50% and snap back
+      // on every item, never reaching the right edge.
+      const total = FURNACE_KINDS[this.be.type]?.cook ?? 200;
       if (flame) flame.style.height = `${f.fuelTotal > 0 ? (f.burn / f.fuelTotal) * 100 : 0}%`;
-      if (arrow) arrow.style.width = `${(f.cook / 200) * 100}%`;
+      if (arrow) arrow.style.width = `${(f.cook / total) * 100}%`;
     }
   }
 

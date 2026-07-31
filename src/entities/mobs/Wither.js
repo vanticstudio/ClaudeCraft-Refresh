@@ -132,7 +132,11 @@ export class Wither extends Mob {
       this.vel.y -= 0.01;                                            // idle: drift down, no altitude gain
     }
     this.vel.x *= 0.91; this.vel.y *= 0.91; this.vel.z *= 0.91;
-    this.pos.x += this.vel.x; this.pos.y += this.vel.y; this.pos.z += this.vel.z;
+    // §8.5 "no A*; direct steering" is still COLLIDED steering — raw pos writes let
+    // the wither phase through bedrock (§8.8's "suffocation traps only work with
+    // bedrock/portal blocks" needs an enclosure to actually hold) and let an idle
+    // wither sink out of the world forever. move() zeroes the clipped axes.
+    this.move(this.vel.x, this.vel.y, this.vel.z);
 
     // body yaw toward primary target (≤ ~10°/tick)
     if (t) {
@@ -154,8 +158,10 @@ export class Wither extends Mob {
   // ------------------------------------------------------------ targeting (§8.4)
   _validTargets() {
     const out = [];
-    const p = this.world.game?.player;
-    if (p && !p.dead && !p.creative && this.distTo(p) <= 40) out.push(p);
+    // 14 AMENDS 05 §6 — every connected player is a candidate, not just the host.
+    for (const p of this.playerRoster()) {
+      if (p && !p.dead && !p.creative && this.distTo(p) <= 40) out.push(p);
+    }
     for (const e of this.world.getEntitiesInBox(this.getAABB().expand(40, 40, 40),
       e => e instanceof LivingEntity && !e.dead && e !== this &&
         e.type !== 'wither' && e.type !== 'player' && !e.undead)) {
@@ -165,8 +171,13 @@ export class Wither extends Mob {
   }
 
   _pickPrimaryTarget() {
-    const p = this.world.game?.player;
-    if (p && !p.dead && !p.creative && this.distTo(p) <= 40) return p;
+    // §8.4 — players first (nearest of them), then the nearest other living entity.
+    let pbest = null, pbd = 40;
+    for (const p of this.playerRoster()) {
+      if (!p || p.dead || p.creative) continue;
+      const d = this.distTo(p); if (d <= pbd) { pbd = d; pbest = p; }
+    }
+    if (pbest) return pbest;
     let best = null, bd = 40;
     for (const e of this.world.getEntitiesInBox(this.getAABB().expand(40, 40, 40),
       e => e instanceof LivingEntity && !e.dead && e !== this &&
@@ -186,7 +197,12 @@ export class Wither extends Mob {
     // i = -1 center; 0 left, 1 right side head.
     if (i < 0) return [this.pos.x, this.pos.y + 3.1, this.pos.z];
     const sign = i === 0 ? -1 : 1;
-    const rx = Math.cos(this.yaw) * 1.3 * sign;
+    // The render convention is rotation.y = yaw + π on a +Z-facing model, so a
+    // model-space lateral offset (X,0,0) lands at world (−X·cos yaw, +X·sin yaw).
+    // Without the leading minus the offset stops being perpendicular to the
+    // facing and, at 45° yaws, puts the side heads dead ahead of / behind the body.
+    // Sanity: yaw 0 faces −Z, so sign −1 → +X, matching the model's +11 px head.
+    const rx = -Math.cos(this.yaw) * 1.3 * sign;
     const rz = Math.sin(this.yaw) * 1.3 * sign;
     return [this.pos.x + rx, this.pos.y + 2.2, this.pos.z + rz];
   }
@@ -259,16 +275,29 @@ export class Wither extends Mob {
 
   // ------------------------------------------------------------ boss bar (§1)
   _updateBossBar() {
-    const bar = this.world.game?.ui?.bossBar;
-    if (!bar) return;
-    const p = this.world.game?.player;
+    // 14 §12 — through Game, so the bar reaches joined clients as well as the
+    // host HUD. add() is idempotent on both sides and is re-asserted every tick
+    // so a client that joins mid-fight picks the bar up without a resync path.
+    const game = this.world.game;
+    if (!game?.ui?.bossBar) return;
+    const p = this.nearestPlayer();
     const inRange = p && !p.dead && this.distTo(p) <= 128;
     if (inRange) {
-      if (!this.barShown) { bar.add(this.id, { name: 'Wither', color: '#7b2fbe' }); this.barShown = true; }
-      bar.set(this.id, this.health / 300);
+      game.bossBarAdd(this.id, 'Wither', '#7b2fbe');
+      this.barShown = true;
+      game.bossBarSet(this.id, this.health / 300);
     } else if (this.barShown) {
-      bar.remove(this.id); this.barShown = false;
+      game.bossBarRemove(this.id); this.barShown = false;
     }
+  }
+
+  // 13-BOSSES §1 — a wither discarded by chunk unload can no longer clear its own
+  // bar (_updateBossBar stops running), leaving it frozen on the HUD forever and
+  // duplicated when the chunk reloads under a new entity id.
+  onRemoved() {
+    if (!this.barShown) return;
+    this.world.game?.bossBarRemove?.(this.id);
+    this.barShown = false;
   }
 
   // ------------------------------------------------------------ death (§8.10)
@@ -280,7 +309,7 @@ export class Wither extends Mob {
       game.spawnItemByName('nether_star', 1, cx, cy, cz, { x: 0, y: 0, z: 0 });
       game.spawnXpOrb(cx, cy, cz, 50);
     }
-    if (this.barShown && game?.ui?.bossBar) { game.ui.bossBar.remove(this.id); this.barShown = false; }
+    if (this.barShown && game) { game.bossBarRemove(this.id); this.barShown = false; }
   }
 
   // no natural loot table (drops handled in onDeath)

@@ -39,9 +39,18 @@ export class ThrownPotion extends Entity {
     }
     const cand = this.world.getEntitiesInBox(sweep, e =>
       e instanceof LivingEntity && !e.dead && (this.age > 2 || e !== this.owner));   // owner grace 2 t
-    const entityHit = cand.length ? cand[0] : null;
+    // §13.1 — impact is the FIRST entity AABB intersected, i.e. the nearest along
+    // the path. getEntitiesInBox returns chunk-scan/spawn order, so take the
+    // minimum explicitly (Arrow.tick does the same); `cand[0]` picked an
+    // arbitrary one, which both mis-ordered the block/entity race and handed the
+    // 100%-potency direct hit to the wrong mob.
+    let entityHit = null, bestD = Infinity;
+    for (const e of cand) {
+      const d = Math.hypot(e.pos.x - this.pos.x, e.pos.y - this.pos.y, e.pos.z - this.pos.z);
+      if (d < bestD) { bestD = d; entityHit = e; }
+    }
 
-    if (entityHit && (!blockHit || Math.hypot(entityHit.pos.x - this.pos.x, entityHit.pos.y - this.pos.y, entityHit.pos.z - this.pos.z) < blockHit.t)) {
+    if (entityHit && (!blockHit || bestD < blockHit.t)) {
       this.impact(entityHit);
       return;
     }
@@ -96,7 +105,14 @@ export class ThrownPotion extends Entity {
     const w = this.world;
     const bx = Math.floor(hit.x), by = Math.floor(hit.y), bz = Math.floor(hit.z);
     for (const [dx, dz] of [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]]) {
-      if (w.getBlock(bx + dx, by, bz + dz) === FIRE) w.setBlock(bx + dx, by, bz + dz, 0, { byPlayer: true });
+      if (w.getBlock(bx + dx, by, bz + dz) !== FIRE) continue;
+      w.setBlock(bx + dx, by, bz + dz, 0, { byPlayer: true });
+      // §13.3 / 15 §13.3 — the douse has its own voice; the generic
+      // entity.splash_potion.break above is the bottle, not the hiss.
+      // (setBlock's FIRE→non-FIRE path already forgets the fire origin, and
+      // `byPlayer` keeps World.setBlock's immediate remesh, so removeFire() is
+      // deliberately not used here.)
+      emitSound('block.extinguish', at(bx + dx + 0.5, by + 0.5, bz + dz + 0.5));
     }
     const box = this.getAABB();
     box.min[0] = hit.x - 4.125; box.max[0] = hit.x + 4.125;

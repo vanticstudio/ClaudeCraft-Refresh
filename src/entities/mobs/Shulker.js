@@ -133,7 +133,7 @@ export class Shulker extends Mob {
     }
 
     // --- target scan every 10 ticks (§9.2) ---
-    const p = w.game?.player;
+    const p = this.nearestPlayer();   // 14 AMENDS 05 §6 — nearest, not the host's own
     if (this.age % 10 === 0) {
       const seen = p && !p.dead && !p.creative &&
         this.distTo(p) <= this.detectionRange && this.canSee(p);

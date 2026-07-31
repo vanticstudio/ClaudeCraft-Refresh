@@ -36,6 +36,10 @@ const REPAIR_BY_MATERIAL = {
   iron: [322],        // iron_ingot
   golden: [324],      // gold_ingot
   diamond: [325],     // diamond
+  // 10-NETHER AMENDS 08 §8.4 — "treat netherite tools/armor exactly like
+  // diamond": the unit material is netherite_ingot. Without this row the
+  // name-prefix lookup returns [] and the endgame tier is silently combine-only.
+  netherite: [399],   // netherite_ingot
   leather: [330],     // leather
 };
 
@@ -121,9 +125,15 @@ export function anvilResult(target, sac, newName = null) {
     // (b) book application (also book+book — §10 routes those here)
     const m = mergeEnchants(result, sac.tags?.enchants ?? [], /*book*/ true);
     cost += m.cost; did = m.acted;
-  } else if (sac && sac.id === target.id) {
-    // (c) combine same item
-    if (isDamageable(target) && damageOf(target) > 0) {
+  } else if (sac && sac.id === target.id && isDamageable(target)) {
+    // (c) combine same item. DEVIATION from §8.3's pseudocode, which tests only
+    // `sac.id === target.id`: with a NON-damageable pair the repair body below is
+    // skipped and mergeEnchants can never act (only 346 carries enchants, and
+    // that is branch (b)) — yet a rename alone sets `did`, and takeAnvilOutput
+    // then eats the whole sacrifice stack for one renamed target. Same ruling as
+    // DEVIATIONS.md 6 for the grindstone: reject the pair rather than invent an
+    // output that destroys an item. The player clears the slot to rename.
+    if (damageOf(target) > 0) {
       const rem = remaining(target) + remaining(sac) + Math.floor(maxDur(target) * 12 / 100);
       setRemaining(result, rem);
       cost += 2; did = true;                       // combine repair = 2 levels
@@ -136,8 +146,11 @@ export function anvilResult(target, sac, newName = null) {
   }
 
   // (d) rename (or clearing a name). A null field means "not renaming".
+  // §8.4: "empty field clears the name (still a +1 rename op **if a name
+  // existed**)" — blanking the pre-filled field on a never-renamed item is a
+  // no-op, not a chargeable operation (it must not bump anvilUses either).
   const nm = newName == null ? null : String(newName).slice(0, NAME_MAX);
-  if (nm !== null && nm !== displayName(target)) {
+  if (nm !== null && nm !== displayName(target) && !(nm === '' && customName(target) === null)) {
     result.tags = result.tags ?? {};
     if (nm) result.tags.name = nm; else delete result.tags.name;
     cost += 1; did = true;

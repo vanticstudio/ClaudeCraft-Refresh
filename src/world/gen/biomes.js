@@ -63,10 +63,29 @@ const { OCEAN, BEACH, RIVER, PLAINS, FOREST, BIRCH_FOREST, DESERT, SAVANNA,
 // 02 §6.2 — selection (canonical order). t0/h are raw lattice-interpolated
 // fbm values; altitude cooling applied here.
 export function selectBiome(height, c, riv, t0, h) {
-  const t = t0 - Math.max(0, height - 80) * 0.008;
+  // COUPLED CONSTANT (0.008 × noise.js CLIMATE_GAIN 1.7 = 0.0136): t0 arrives
+  // pre-scaled by the climate gain, so the altitude-cooling term must be scaled by
+  // the same factor or high ground stops cooling. The identical literal lives in
+  // features.js's §10.6 snow pass — THE TWO MUST NEVER DRIFT APART.
+  const t = t0 - Math.max(0, height - 80) * 0.0136;
+  // §6.2 DEVIATION — river tested BEFORE ocean. The spec's canonical order is
+  // ocean-first, but the river carve (noise.js §5.2) targets a bed of 57–59, i.e.
+  // every river's OWN CHANNEL fell into `height <= 59` and was typed OCEAN; only
+  // the 60–62 shoulder could ever be RIVER (measured: 0.11% of columns). Rivers
+  // therefore got ocean tint/surface rules and no river-biome sugar cane, and read
+  // as ragged sea inlets. The `c > -0.05` guard keeps genuine ocean out of RIVER.
+  // No downstream contract changes: RIVER's surface is already sand (below) and
+  // river columns still obey §7.2's submerged override.
+  if (riv > 0.5 && height <= 62 && c > -0.05) return RIVER;
   if (height <= 59) return OCEAN;
-  if (riv > 0.5 && height <= 62) return RIVER;
-  if (height <= 64 && c < 0.05) return BEACH;
+  // §6.2 DEVIATION (64/0.05 → 63/0.02): because coastal relief was zeroed, land
+  // near the coast sat in the 60–64 band for hundreds of blocks and c < 0.05 spans
+  // ~half the world, so beach measured 12.4% of ALL columns ≈ 24% of all LAND —
+  // sand plains, not shores. §15's acceptance line "sand columns ring every
+  // ocean/land boundary where height 60–64 and c < 0.05" must now be read as
+  // 60–63 / c < 0.02; the ring itself survives because §7.2's submerged rule
+  // already lays sand on every column with 56 <= height < 63.
+  if (height <= 63 && c < 0.02) return BEACH;
   if (height >= 92) return MOUNTAINS;
   const col = h < -0.2 ? 0 : h <= 0.3 ? 1 : 2; // dry | mid | wet
   if (t < -0.45) return col === 2 ? TAIGA : SNOWY_TUNDRA;

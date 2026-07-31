@@ -11,8 +11,15 @@ const solidOrLiquid = (w, x, y, z) => {
   return b.collidable || !!b.fluid;
 };
 
+// 05 §7 — a path node is a cell the mob can stand in. The spec's own literal
+// definition is `!solidOrLiquid`, but that makes §7's "water cell +4 (swimmable
+// but slow)" cost row and §8.2's "pick the first with skyExposed == false (or in
+// water)" both unreachable, so ONE-deep water counts too: solid floor below,
+// water at the feet, head cell strictly clear (so a mob's head never submerges).
 export function standable(w, x, y, z, mob) {
-  if (!solidAt(w, x, y - 1, z) || solidOrLiquid(w, x, y, z) || solidOrLiquid(w, x, y + 1, z)) return false;
+  if (!solidAt(w, x, y - 1, z) || solidOrLiquid(w, x, y + 1, z)) return false;
+  const feet = BLOCKS[w.getBlock(x, y, z)];
+  if (feet.collidable || (feet.fluid && feet.fluid !== 'water')) return false;
   if (mob?.tall3 && solidAt(w, x, y + 2, z)) return false;
   if (mob?.wide3) {
     for (let dx = -1; dx <= 1; dx++)
@@ -32,6 +39,46 @@ export function astarBudgetOk(worldTime) {
 
 const DIRS4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
 
+// 05 §7 — "open = minheap by f = g + h". Binary heap over the {x,y,z,g,f,key}
+// records findPath already builds. relax() re-pushes improved nodes without a
+// decrease-key, so duplicates are expected and the closed set below discards the
+// stale ones. Tie-breaks differ from a linear scan (arbitrary vs first-minimum);
+// paths stay deterministic, just not byte-identical to the old ordering.
+class MinHeap {
+  constructor() { this.a = []; }
+  get size() { return this.a.length; }
+  push(n) {
+    const a = this.a;
+    a.push(n);
+    let i = a.length - 1;
+    while (i > 0) {
+      const p = (i - 1) >> 1;
+      if (a[p].f <= a[i].f) break;
+      const t = a[p]; a[p] = a[i]; a[i] = t;
+      i = p;
+    }
+  }
+  pop() {
+    const a = this.a;
+    const top = a[0];
+    const last = a.pop();
+    if (a.length) {
+      a[0] = last;
+      let i = 0;
+      for (;;) {
+        const l = i * 2 + 1, r = l + 1;
+        let s = i;
+        if (l < a.length && a[l].f < a[s].f) s = l;
+        if (r < a.length && a[r].f < a[s].f) s = r;
+        if (s === i) break;
+        const t = a[s]; a[s] = a[i]; a[i] = t;
+        i = s;
+      }
+    }
+    return top;
+  }
+}
+
 export function findPath(w, mob, sx, sy, sz, gx, gy, gz, maxRange = 32, maxNodes = 512) {
   astarRuns++;
   // snap goal down ≤ 4 to a standable cell
@@ -43,15 +90,17 @@ export function findPath(w, mob, sx, sy, sz, gx, gy, gz, maxRange = 32, maxNodes
   if (!ok) return null;
 
   const key = (x, y, z) => x + ',' + y + ',' + z;
-  const open = [];   // small binary-ish: linear scan (≤512 nodes)
+  const open = new MinHeap();
+  const closed = new Set();
   const gScore = new Map();
   const parent = new Map();
   const h = (x, y, z) => Math.hypot(x - gx, y - goalY, z - gz);
   const startKey = key(sx, sy, sz);
+  const startNode = { x: sx, y: sy, z: sz, g: 0, f: h(sx, sy, sz), key: startKey };
   gScore.set(startKey, 0);
-  open.push({ x: sx, y: sy, z: sz, g: 0, f: h(sx, sy, sz), key: startKey });
+  open.push(startNode);
   let expanded = 0;
-  let best = open[0], bestH = h(sx, sy, sz);
+  let best = startNode, bestH = h(sx, sy, sz);
 
   const relax = (nx, ny, nz, ng, fromKey) => {
     const k = key(nx, ny, nz);
@@ -68,10 +117,11 @@ export function findPath(w, mob, sx, sy, sz, gx, gy, gz, maxRange = 32, maxNodes
     open.push({ x: nx, y: ny, z: nz, g: ng + penalty, f: ng + penalty + h(nx, ny, nz), key: k });
   };
 
-  while (open.length && expanded < maxNodes) {
-    let bi = 0;
-    for (let i = 1; i < open.length; i++) if (open[i].f < open[bi].f) bi = i;
-    const n = open.splice(bi, 1)[0];
+  while (open.size && expanded < maxNodes) {
+    const n = open.pop();
+    // stale duplicate from a later relax() — must not burn an expansion slot
+    if (closed.has(n.key)) continue;
+    closed.add(n.key);
     expanded++;
     const hn = h(n.x, n.y, n.z);
     if (hn < bestH) { bestH = hn; best = n; }
@@ -163,11 +213,13 @@ export class WanderGoal extends Goal {
   stop() { this.mob.clearPath(); }
 }
 
+// 14-MULTIPLAYER AMENDS 05 §6 — nearestPlayer(), not game.player: on a host
+// session the host's own player is not necessarily the one standing here.
 export class LookAtPlayerGoal extends Goal {
   constructor(mob, range = 8) { super(mob); this.range = range; }
   get flags() { return LOOK; }
   canStart() {
-    const p = this.mob.world.game?.player;
+    const p = this.mob.nearestPlayer();
     if (!p || p.dead) return false;
     if (this.mob.distTo(p) > this.range) return false;
     if (this.mob.world.rng() >= 1 / 50) return false;
@@ -175,11 +227,11 @@ export class LookAtPlayerGoal extends Goal {
     return true;
   }
   shouldContinue() {
-    const p = this.mob.world.game?.player;
+    const p = this.mob.nearestPlayer();
     return --this.duration > 0 && p && this.mob.distTo(p) <= this.range;
   }
   tick() {
-    const p = this.mob.world.game?.player;
+    const p = this.mob.nearestPlayer();
     if (p) this.mob.lookAt(p.pos.x, p.pos.y + p.eyeHeight, p.pos.z);
   }
 }
@@ -201,6 +253,10 @@ export class IdleLookGoal extends Goal {
 }
 
 export class MeleeAttackGoal extends Goal {
+  // 12-VILLAGES §11.1/§11.3 — the iron golem's cooldown is 10 ticks, every other
+  // mob in the roster is 05 §13's 20. Parameterised rather than overridden so the
+  // golem keeps the shared chase/reach logic.
+  constructor(mob, cooldown = 20) { super(mob); this.cooldown = cooldown; }
   canStart() { return !!this.mob.target; }
   tick() {
     const m = this.mob, t = m.target;
@@ -210,7 +266,7 @@ export class MeleeAttackGoal extends Goal {
     const dist = m.centerDistTo(t);
     if (dist <= m.attackReach && m.attackCooldown <= 0 && m.canSee(t)) {
       m.doMeleeAttack(t);
-      m.attackCooldown = 20;
+      m.attackCooldown = this.cooldown;
     }
   }
   stop() { this.mob.clearPath(); }
@@ -240,11 +296,19 @@ export class PanicGoal extends Goal {
 
 export class TemptGoal extends Goal {
   constructor(mob, foodIds) { super(mob); this.foodIds = foodIds; }
+  // 14-MULTIPLAYER §4.4 — remote players are full LivingEntity participants with
+  // a heldStack, so the tempt scan walks the whole roster and takes the nearest
+  // holder rather than inspecting the host's hand.
   playerHoldingFood() {
-    const p = this.mob.world.game?.player;
-    if (!p || p.dead) return null;
-    const held = p.heldStack;
-    return held && this.foodIds.includes(held.id) ? p : null;
+    let best = null, bd = Infinity;
+    for (const p of this.mob.playerRoster()) {
+      if (!p || p.dead) continue;
+      const held = p.heldStack;
+      if (!held || !this.foodIds.includes(held.id)) continue;
+      const d = this.mob.distTo(p);
+      if (d < bd) { bd = d; best = p; }
+    }
+    return best;
   }
   canStart() {
     const p = this.playerHoldingFood();
@@ -276,7 +340,11 @@ export class FollowParentGoal extends Goal {
     const near = m.world.getEntitiesInBox(m.getAABB().expand(16, 8, 16),
       e => e.type === m.type && !e.isBaby && !e.dead);
     if (!near.length) return false;
-    this.parent = near[0];
+    // 05 §6 — "nearest adult of species within 16"; getEntitiesInBox returns
+    // chunk-iteration order, so rank by distance rather than taking [0].
+    let best = null, bd = Infinity;
+    for (const e of near) { const d = m.distTo(e); if (d < bd) { bd = d; best = e; } }
+    this.parent = best;
     return m.distTo(this.parent) > 3;
   }
   shouldContinue() {
@@ -297,7 +365,10 @@ export class BreedGoal extends Goal {
       if (m.age % 10 === 0) {
         const near = w.getEntitiesInBox(m.getAABB().expand(8, 4, 8),
           e => e !== m && e.type === m.type && !e.isBaby && e.loveTicks > 0 && !e.dead);
-        if (near.length) { m.mate = near[0]; near[0].mate = m; }
+        // 05 §10 step 2 — "the NEAREST same-species adult in love within 8".
+        let best = null, bd = Infinity;
+        for (const e of near) { const d = m.distTo(e); if (d < bd) { bd = d; best = e; } }
+        if (best) { m.mate = best; best.mate = m; }
       }
     }
     if (!m.mate) return;

@@ -96,5 +96,5 @@ function netLine(g) {
     return `\nnet HOST code ${net.code ?? '…'} peers ${net.clients.size} out ${(s.outBytes / 1024).toFixed(1)}KB in ${(s.inBytes / 1024).toFixed(1)}KB`;
   }
   const s = net.stats;
-  return `\nnet CLIENT slot ${net.slot} rtt ${Math.round(net.rtt)}ms corr ${s.corrections} snap ${net.stats.snapSize || net._lastSnapSize || 0}B interp ${Math.round(net.interp?.interpTime ? (net.interp.newestSampleTime - net.interp.interpTime) : 0)}ms`;
+  return `\nnet CLIENT slot ${net.slot} rtt ${Math.round(net.rtt)}ms corr ${s.corrections}/${(net.predictor?.lastCorrectionMag ?? 0).toFixed(2)}m snap ${net.stats.snapSize || net._lastSnapSize || 0}B interp ${Math.round(net.interp?.interpTime ? (net.interp.newestSampleTime - net.interp.interpTime) : 0)}ms`;
 }

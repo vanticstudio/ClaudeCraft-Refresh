@@ -63,9 +63,12 @@ const BREWING_ITEMS = new Set(
 
 // §6.2 tab 4 — "crafting_table, furnace, chest … enchanting_table + anvil +
 // grindstone (08), brewing_stand (09), smithing_table (10), beacon (13)".
-// furnace/chest already carry `blockEntity`, so only crafting_table needs
-// naming today; the rest join as their phases land.
-const UTILITY_BLOCKS = new Set([B.CRAFTING_TABLE]);
+// furnace/chest/brewing_stand/beacon already carry `blockEntity`; the four 08/10
+// utility blocks carry only `interactable`, so §6.2's tab-4 row names them here
+// or they fall through to Building.
+const UTILITY_BLOCKS = new Set([
+  B.CRAFTING_TABLE, B.ENCHANTING_TABLE, B.ANVIL, B.GRINDSTONE, B.SMITHING_TABLE,
+]);
 
 // §6.2 tab 5 lists TNT among Combat's contents, but the block branch of the
 // classifier has no rule that would route it there — it would fall through to
@@ -89,6 +92,9 @@ const DECOR_SET = new Set([
   // "ores (as blocks)" — §6.2 files the ORES under Decoration and the refined
   // mineral blocks (coal/iron/gold/diamond/redstone/lapis) under Building.
   B.COAL_ORE, B.IRON_ORE, B.GOLD_ORE, B.DIAMOND_ORE, B.REDSTONE_ORE, B.LAPIS_ORE,
+  // "bell/composter/barrel (12)" — barrel is omitted deliberately: it carries
+  // `blockEntity`, and §6.2's first-match order puts that rule ahead of this one.
+  B.BELL, B.COMPOSTER,
 ]);
 
 // The two-block placers (06 §5.7/§5.13) are items, not block-items, so the

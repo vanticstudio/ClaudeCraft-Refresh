@@ -160,3 +160,16 @@ function retireBeam(handle) {
   handle.group.parent?.remove(handle.group);
   for (const m of handle.group.children) { m.geometry.dispose(); m.material.dispose(); }
 }
+
+/**
+ * §9.6 — retire every beam on world teardown. BEAMS is keyed on "x,y,z" with no
+ * world/dimension component, and both retire paths need the beam to keep being
+ * TICKED (block-entity tick) or RENDERED (onBeforeRender self-check). Game's
+ * Save & Quit does neither: the render loop early-returns at TITLE, so a live
+ * beam group stayed in the shared scene holding `handle.world` — the discarded
+ * World and every chunk array in it — and rendered again over the NEXT world.
+ * Must be called from Game.disposeWorld().
+ */
+export function disposeBeams() {
+  for (const h of [...BEAMS.values()]) retireBeam(h);
+}

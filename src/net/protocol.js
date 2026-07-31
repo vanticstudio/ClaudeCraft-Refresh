@@ -11,7 +11,13 @@
 //   host→client: NetHost prepends a target byte (slot|0xFF); the relay strips it,
 //                so the client reads [msgId..].
 
-export const PROTO_VERSION = 1;   // bump on ANY wire-format change (§2.1)
+// v1 → v2: the snapshot stateByte was REDEFINED for three entity types — villager
+// (profession nibble + baby bit4, was a bare baby flag), item (1–4 count bucket,
+// was a constant 1) and sheep (colour nibble dropped; woolTint moved to
+// entitySpawn.static) — plus the new client→host `rttReport` and host→client
+// `bossBar` traffic. _handleHello admits any peer whose m.v matches, so without
+// the bump a stale cached build would be accepted and mis-decode every villager.
+export const PROTO_VERSION = 2;   // bump on ANY wire-format change (§2.1)
 export const RELAY_VERSION = 1;   // relay handshake version (§1.2)
 
 export const MSG = {
@@ -37,6 +43,14 @@ export const ETYPE = {
   ender_dragon: 48, wither: 49, end_crystal: 50,
 };
 export const ETYPE_REV = Object.fromEntries(Object.entries(ETYPE).map(([k, v]) => [v, k]));
+
+// 12-VILLAGES §8.2 professions ↔ the villager stateByte low nibble (§3.4, "villager
+// profession (12)"). This is a WIRE enum: the order is frozen, new professions append.
+export const PROFESSION_LIST = [
+  'none', 'nitwit', 'farmer', 'librarian', 'cleric',
+  'armorer', 'toolsmith', 'weaponsmith', 'butcher', 'fletcher',
+];
+export const PROFESSION_ID = Object.fromEntries(PROFESSION_LIST.map((p, i) => [p, i]));
 
 // Input button bit positions (§3.4, message 0x01)
 export const BTN = {

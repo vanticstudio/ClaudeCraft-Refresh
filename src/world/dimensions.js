@@ -12,7 +12,7 @@
 // Inactive dimensions live on disk and hydrate on return (the spec explicitly
 // allows this). A descriptor is pure data + flags every existing system reads.
 
-import { regenObsidianPlatform } from './endArena.js';
+import { regenObsidianPlatform, disposeGatewayBeams } from './endArena.js';
 
 const DIMENSIONS = new Map();
 
@@ -94,5 +94,9 @@ export function changeDimension(entity, targetDim, targetPos, opts = {}) {
     return;
   }
 
+  // 11-END §11.1 — gateway beams are parented to the PERSISTENT scene and are
+  // only driven while dim 2 ticks, so leaving the End mid-beam would leave a
+  // magenta column standing at the same X/Z in the target dimension.
+  disposeGatewayBeams();
   game.changeActiveDimension(targetDim, targetPos, opts);
 }

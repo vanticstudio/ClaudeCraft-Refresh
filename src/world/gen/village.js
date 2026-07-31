@@ -31,7 +31,45 @@ const AIR = 0, GRASS = 2, DIRT = 3, COBBLE = 4, OAK_PLANKS = 5, SPRUCE_PLANKS = 
 const FACING_OF = d => (d[0] === 0 ? (d[1] > 0 ? 0 : 2) : (d[0] > 0 ? 3 : 1));
 
 const REGION = 32;
-const VILLAGE_BIOMES = new Set([BIOMES.PLAINS, BIOMES.DESERT, BIOMES.SAVANNA, BIOMES.TAIGA]);
+// UPDATE-village-density §2.1 — anchor sub-box. DEVIATES from §2.1's literal
+// `Vx*32 + 4 + rngInt(rng, 24)`. REQUIRED COMPANION to the raised spawn rate
+// below; the arithmetic, in full:
+//   min separation between anchors in ADJACENT regions = REGION − SPREAD + 1
+//     old: 32 − 24 + 1 =  9 chunks = 144 blocks
+//     new: 32 − 20 + 1 = 13 chunks = 208 blocks
+//   max village diameter = 2 × (within() reach 70 + butcher-pen pad 5) = 150 blocks
+// 144 < 150, i.e. the SHIPPED constants already admitted an overlap; §2.1's own
+// comment ("≥4-chunk margin → ≥8-chunk gap") is off by one against §2.2's ±72
+// reach before any change of mine. At the old 0.103 villages/region an adjacent
+// pair occurred ~1% of the time so it never bit; at the new rate adjacent pairs
+// are ~40× likelier, and two overlapping villages interleave their phase-sorted
+// op lists into duplicate bell plazas and cross-claimed beds. 208 > 150 makes it
+// impossible. INVARIANT: OFF + SPREAD <= REGION (6 + 20 = 26 <= 32) — this is what
+// keeps every anchor inside its own region, which is what makes the floor-based
+// region scan in stampVillages sound. Cost: anchor jitter 384 → 320 blocks.
+// The ±5-chunk reach window in stampVillages is UNCHANGED and still correct — see
+// the arithmetic there; reach is a function of within()/centre only, not of these.
+const ANCHOR_OFF = 6, ANCHOR_SPREAD = 20;
+// §2.1 DEVIATION — biome gate widened from ids 3/6/7/8 to include FOREST(4) and
+// BIRCH_FOREST(5). Measured gate rejections over 3318 rolled regions: ocean 1328,
+// forest 478, beach 385, birch_forest 143 — forest+birch alone were 621 rejections
+// against 876 passes, i.e. +71% density for one line. No other code change needed:
+// paletteFor falls through to the plains palette for any unlisted biome, and tree
+// felling is already sized for full spruce canopies (pathCell clears to
+// max(y+4, ty+13), stampBuilding to gradeY + wallH + 12). SNOWY_TUNDRA stays out —
+// §5 excludes it explicitly and it measured only 73/3318 (a 2% density gain).
+const VILLAGE_BIOMES = new Set([BIOMES.PLAINS, BIOMES.DESERT, BIOMES.SAVANNA,
+                                BIOMES.TAIGA, BIOMES.FOREST, BIOMES.BIRCH_FOREST]);
+// §2.1 DEVIATION — spawn roll 0.40 → 0.55, and up to ANCHOR_TRIES anchor
+// candidates instead of exactly one. §2.1 claims "≈1 village per ~1000×1000
+// blocks", but its ~50% land estimate is wrong: the gate passed only 25.4% of
+// rolled regions, so shipped density was 0.103/region = 1 per ~1594² blocks.
+// 74.6% of rolled regions died on a SINGLE anchor sample even though the 320×320
+// -block sub-box usually contains legal terrain, so retrying the gate is a
+// better-quality lever than inflating the roll. Precedent in-tree: endCity.js
+// draws up to TRIES columns off the same region stream for the same reason.
+// Deliberately moderate (owner asked for "a little more often", not a suburb).
+const VILLAGE_ROLL = 0.55, ANCHOR_TRIES = 3;
 
 // §5 — per-biome palette. Desert is all sandstone (incl. paths); savanna keeps
 // oak walls with spruce roofs (two-tone); taiga spruce + cobblestone roofs.
@@ -51,18 +89,31 @@ function villageForRegion(ctx, Vx, Vz) {
   const key = ctx.worldSeed + '|' + Vx + ',' + Vz;
   if (regionCache.has(key)) return regionCache.get(key);
   const rng = splitmix32(chunkSeed(ctx.seeds.village, Vx, Vz));
-  const acx = Vx * REGION + 4 + rngInt(rng, 24);   // draw order is load-bearing:
-  const acz = Vz * REGION + 4 + rngInt(rng, 24);    // two int draws, THEN the roll
+  const acx = Vx * REGION + ANCHOR_OFF + rngInt(rng, ANCHOR_SPREAD);   // draw order is load-bearing:
+  const acz = Vz * REGION + ANCHOR_OFF + rngInt(rng, ANCHOR_SPREAD);    // two int draws, THEN the roll
   let v = null;
-  if (rng() < 0.40) {
-    const center = { x: acx * 16 + 8, z: acz * 16 + 8 };
-    const biome = ctx.biomeAt(center.x, center.z);
-    if (VILLAGE_BIOMES.has(biome) && ctx.heightAt(center.x, center.z) >= 64) {
-      v = { acx, acz, center, biome };
+  if (rng() < VILLAGE_ROLL) {
+    // Every retry draw is taken strictly AFTER the roll, and always as a PAIR of
+    // rngInt(rng, ANCHOR_SPREAD) — so the pinned "two int draws, THEN the roll"
+    // prefix above is byte-identical to §2.1 and the stream stays a pure function
+    // of the region seed. The region stream feeds nothing outside this function.
+    v = anchorAt(ctx, acx, acz);
+    for (let t = 1; t < ANCHOR_TRIES && !v; t++) {
+      const bx = Vx * REGION + ANCHOR_OFF + rngInt(rng, ANCHOR_SPREAD);
+      const bz = Vz * REGION + ANCHOR_OFF + rngInt(rng, ANCHOR_SPREAD);
+      v = anchorAt(ctx, bx, bz);
     }
   }
   regionCache.set(key, v);
   return v;
+}
+
+// §2.1 gate for one anchor candidate: village biome + above sea level. Pure.
+function anchorAt(ctx, acx, acz) {
+  const center = { x: acx * 16 + 8, z: acz * 16 + 8 };
+  const biome = ctx.biomeAt(center.x, center.z);
+  if (!VILLAGE_BIOMES.has(biome) || ctx.heightAt(center.x, center.z) < 64) return null;
+  return { acx, acz, center, biome };
 }
 
 // ---- layout (§3), LRU-8 cached by anchor ----
@@ -166,7 +217,7 @@ function buildLayout(ctx, v) {
 
   const clear = (x, y, z) => ops.push({ phase: 1, x, y, z, id: AIR });
   const found = (x, y, z, id) => ops.push({ phase: 2, x, y, z, id });
-  const path = (x, y, z) => ops.push({ phase: 3, x, y, z, id: pal.path });
+  const path = (x, y, z, id = pal.path) => ops.push({ phase: 3, x, y, z, id });
   const piece = (x, y, z, id, state) => ops.push({ phase: 4, x, y, z, id, state });
   const lamp = (x, y, z, id) => ops.push({ phase: 5, x, y, z, id });
   const within = (x, z) => Math.abs(x - cx) <= 70 && Math.abs(z - cz) <= 70;
@@ -176,12 +227,25 @@ function buildLayout(ctx, v) {
   const pathCell = (x, y, z) => {
     path(x, y, z);
     const ty = ctx.heightAt(x, z);
-    for (let fy = y - 1; fy > ty - 1 && fy > 1 && y - fy <= 4; fy--) found(x, fy, z, DIRT);
+    // §2.5 — ALWAYS emit at least the one block under the road. `heightAt >= y`
+    // used to emit nothing (trusting untouched natural ground), but phase-1 CLEAR
+    // ops from a neighbouring building platform run first and delete that ground,
+    // leaving road cells floating over a hole.
+    for (let fy = y - 1; fy >= Math.min(ty, y - 1) && fy > 1 && y - fy <= 4; fy--) found(x, fy, z, DIRT);
     // clear tall RELATIVE TO THE COLUMN'S OWN TERRAIN: a tree roots at ty (which
     // can sit above a downhill-clamped path), and spruce reaches ~12 above its
     // ground — clearing from the path y alone left floating treetops on slopes.
     const top = Math.max(y + 4, ty + 13);
     for (let yy = y + 1; yy <= top; yy++) clear(x, yy, z);
+  };
+
+  // §2.4 step 3 — the pre-existing surface is water: lay FLOOR material instead of
+  // PATH (causeway/pier stub) with a pier of the same material down to the bed.
+  const wetCell = (x, y, z) => {
+    path(x, y, z, pal.floor);
+    const ty = ctx.heightAt(x, z);
+    for (let fy = y - 1; fy >= Math.min(ty, y - 1) && fy > 1 && y - fy <= 4; fy--) found(x, fy, z, pal.floor);
+    for (let yy = y + 1; yy <= y + 4; yy++) clear(x, yy, z);
   };
 
   // --- WELL (fixed) 4×4 at center offset (−6, −6), own leveled base ---
@@ -216,13 +280,21 @@ function buildLayout(ctx, v) {
     piece(cx, yb + 2, cz, BELL);            // bellPos = [cx, centerY+2, cz]
     for (const [dx, dz] of [[0, 0], [6, 0], [0, 6], [6, 6]]) { lamp(mx + dx, yb + 1, mz + dz, OAK_FENCE); lamp(mx + dx, yb + 2, mz + dz, OAK_FENCE); lamp(mx + dx, yb + 3, mz + dz, TORCH); }
     placed.push({ minX: mx - 1, minZ: mz - 1, maxX: mx + 7, maxZ: mz + 7 });
-    meta.indoorAnchors.push([cx, centerY + 1, cz]);
-    for (let i = 0; i < 3; i++) spawns.push({ type: 'villager', x: cx + 0.5 + (i - 1), y: centerY + 1, z: cz + 0.5 });
+    // §2.7 — the plaza anchor / villager trio must stand on FREE plaza paving:
+    // (cx,cz) is the bell's fence post and (cx±1,cz±1) are the log benches, so the
+    // records go one row out at dz = +2, which carries nothing.
+    meta.indoorAnchors.push([cx, centerY + 1, cz + 2]);
+    for (let i = 0; i < 3; i++) spawns.push({ type: 'villager', x: cx + 0.5 + (i - 1), y: centerY + 1, z: cz + 2.5 });
   }
 
   // --- PATH ARMS (§3.2): 2–4 arms, 40–72 steps, ±1 smoothing, lamps every 12 ---
   const DIRS = [[0, -1], [1, 0], [0, 1], [-1, 0]];
   const lampSpots = [];                      // [x, pathY, z], emitted after buildings
+  // §3.2 step 3 — road columns already emitted by the arm walk. Arms are walked
+  // BEFORE any slot is proposed and the AABB test only knows about accepted
+  // pieces, so without this a house lands on top of a finished road.
+  const pathCols = new Set();
+  const roadKey = (x, z) => x * 100000 + z;   // village cells span ≤ 145 blocks → collision-free
   const nArms = 2 + rngInt(rng, 3);
   const usedDirs = [];
   const arms = [];
@@ -240,12 +312,22 @@ function buildLayout(ctx, v) {
       px += hx; pz += hz;
       if (!within(px, pz)) { di = (di + 2) % 4; [hx, hz] = DIRS[di]; px += 2 * hx; pz += 2 * hz; }   // reflect at border
       const ty = ctx.heightAt(px, pz);
-      if (ty <= 63) { if (++wetRun > 4) break; continue; }     // §3.2: >4 water steps → terminate
+      if (ty <= 63) {                           // §3.2: >4 water steps → terminate
+        if (++wetRun > 4) break;
+        y = Math.max(y - 1, Math.min(y + 1, 64));   // ±1 smoothing toward sea level
+        wetCell(px, y, pz);
+        pathCols.add(roadKey(px, pz));
+        const wlx = px - hz, wlz = pz + hx;
+        if (within(wlx, wlz)) { wetCell(wlx, y, wlz); pathCols.add(roadKey(wlx, wlz)); }
+        armCells.push([px, y, pz, hx, hz]);
+        continue;
+      }
       wetRun = 0;
       y = Math.max(y - 1, Math.min(y + 1, ty));
       pathCell(px, y, pz);
+      pathCols.add(roadKey(px, pz));
       const lx = px - hz, lz = pz + hx;         // width-2, left of heading
-      if (within(lx, lz)) pathCell(lx, y, lz);
+      if (within(lx, lz)) { pathCell(lx, y, lz); pathCols.add(roadKey(lx, lz)); }
       armCells.push([px, y, pz, hx, hz]);
       if (s > 0 && s % 12 === 0) lampSpots.push([px + hz, y, pz - hx]);   // deferred (see below)
       if (++sinceTurn >= turnAt && rng() < 0.35) { const rot = rng() < 0.5 ? 1 : 3; di = (di + rot) % 4; [hx, hz] = DIRS[di]; sinceTurn = 0; turnAt = 6 + rngInt(rng, 5); }
@@ -286,7 +368,10 @@ function buildLayout(ctx, v) {
       rot = 0;
       for (let k = 0; k < 4; k++) { const o = DOOR_OUT(k); if (o[0] === -sx && o[1] === -sz) { rot = k; break; } }
       [W, D] = rotDims(rot, t.w, t.d);
-      const off = 3 + Math.floor(((rot & 1) ? t.d : t.w) / 2);
+      // §3.2 step 3 — the setback runs along the DOOR NORMAL, and DOOR_OUT/rotDims
+      // put the template's depth axis on that normal for all four rotations, so the
+      // half-extent is always t.d (using the world-X extent made rot 0/2 sit 1 closer).
+      const off = 3 + Math.floor(t.d / 2);
       const ox = px + sx * off, oz = pz + sz * off;
       bx0 = ox - Math.floor(W / 2); bz0 = oz - Math.floor(D / 2);
       let hmin = 999, hmax = -999, bad = false;
@@ -296,6 +381,7 @@ function buildLayout(ctx, v) {
         hs.push(h);
         if (h < hmin) hmin = h; if (h > hmax) hmax = h;
         if (!within(bx0 + dx, bz0 + dz) || h <= 63) bad = true;
+        if (pathCols.has(roadKey(bx0 + dx, bz0 + dz))) bad = true;   // §3.2 step 3 — never build on a road
       }
       const penPad = t.pen ? 6 : 0;
       const aabb = { minX: bx0 - 2, minZ: bz0 - 2, maxX: bx0 + W + 1 + penPad, maxZ: bz0 + D + 1 };
@@ -355,6 +441,10 @@ function buildLayout(ctx, v) {
   // building's inflated AABB (which covers every door approach).
   for (const [ox, oy, oz] of lampSpots) {
     if (placed.some(p => ox >= p.minX && ox <= p.maxX && oz >= p.minZ && oz <= p.maxZ)) continue;
+    // §2.5 — the lamp sits one cell OFF the road, so its column keeps its own
+    // (often lower) terrain: give the post a base or the fence hangs in the air.
+    const lty = ctx.heightAt(ox, oz);
+    for (let fy = oy; fy >= Math.min(lty, oy) && fy > 1 && oy - fy <= 4; fy--) found(ox, fy, oz, DIRT);
     lamp(ox, oy + 1, oz, OAK_FENCE); lamp(ox, oy + 2, oz, OAK_FENCE); lamp(ox, oy + 3, oz, TORCH);
   }
 
@@ -461,15 +551,20 @@ function stampBuilding(ctx, name, t, rot, bx0, gradeY, bz0, pal, emit, rng, meta
     piece(bx0 + rx, gradeY + wallH + 1 + t.tower[4] + 1, bz0 + rz, TORCH);   // steeple light
   }
 
-  // fixtures at floor+1
+  // fixtures at floor+1. `used` collects every occupied interior cell so the §2.7
+  // anchor / villager spawn below never lands inside one (the 7×7 library's
+  // geometric centre IS its lectern, and stations are full collidable cubes).
+  const used = new Set();
   for (const f of t.fix ?? []) {
     const [rx, rz] = rotXZ(rot, f.at[0], f.at[1], t.w, t.d);
     const x = bx0 + rx, y = gradeY + 1, z = bz0 + rz;
+    used.add(rx * 32 + rz);
     if (f.k === 'bed') {
       const [hdx, hdz] = rotVec(rot, f.head[0], f.head[1]);
       const facing = FACING_OF([hdx, hdz]);
       piece(x, y, z, BED_BLOCK, facing);                       // foot
       piece(x + hdx, y, z + hdz, BED_BLOCK, facing | 4);       // head
+      used.add((rx + hdx) * 32 + (rz + hdz));
       meta.beds.push({ pos: [x, y, z], claimedBy: null });
     } else if (f.k === 'station') {
       piece(x, y, z, f.id);
@@ -486,11 +581,25 @@ function stampBuilding(ctx, name, t, rot, bx0, gradeY, bz0, pal, emit, rng, meta
       for (const [ddx, ddz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
         const wx = x + ddx, wz = z + ddz;
         piece(wx, y, wz, COBBLE);
+        used.add((rx + ddx) * 32 + (rz + ddz));
       }
     }
   }
-  meta.indoorAnchors.push([bx0 + Math.floor(W / 2), gradeY + 1, bz0 + Math.floor(D / 2)]);
-  spawns.push({ type: 'villager', x: bx0 + Math.floor(W / 2) + 0.5, y: gradeY + 1, z: bz0 + Math.floor(D / 2) + 0.5 });
+  // §2.7 anchor + §8.6 villager record: first FREE non-edge interior cell, scanned
+  // from the geometric centre outward in the fixed dx→dz order (falls back to the
+  // centre when the template leaves nothing free).
+  let ax = Math.floor(W / 2), az = Math.floor(D / 2);
+  if (!has(ax, az) || isEdge(ax, az) || used.has(ax * 32 + az)) {
+    for (let dx = 0; dx < W; dx++) {
+      let hit = false;
+      for (let dz = 0; dz < D; dz++) {
+        if (has(dx, dz) && !isEdge(dx, dz) && !used.has(dx * 32 + dz)) { ax = dx; az = dz; hit = true; break; }
+      }
+      if (hit) break;
+    }
+  }
+  meta.indoorAnchors.push([bx0 + ax, gradeY + 1, bz0 + az]);
+  spawns.push({ type: 'villager', x: bx0 + ax + 0.5, y: gradeY + 1, z: bz0 + az + 0.5 });
   if (t.pen) {                                                 // butcher's side pen (inside the reserved AABB)
     const px0 = bx0 + W + 1, pz0 = bz0 + 1;
     for (let dx = 0; dx < 4; dx++) for (let dz = 0; dz < 4; dz++) {
@@ -558,6 +667,13 @@ export function stampVillages(ctx, blocks, cx, cz, states = null) {
   const wx0 = cx * 16, wz0 = cz * 16;
   let villageMeta = null;
   const outSpawns = [];
+  // §2.3 — the ±5-chunk reach window is UNCHANGED by the density tuning, and must
+  // stay that way. Reach is a function of within() and the centre only, never of
+  // REGION/ANCHOR_OFF/ANCHOR_SPREAD. Worst-case op extent from the anchor centre
+  // (acx*16+8) is within()'s ±70 plus the butcher pen's +5 = ±75 blocks, so the
+  // furthest written chunk is floor((acx*16 + 8 ± 75)/16) = acx ± 5. ±5 exactly
+  // covers it. The scan below spans 11 chunks over 32-chunk regions, so it still
+  // touches at most 2 regions per axis (32 > 2·5).
   const Vx0 = Math.floor((cx - 5) / REGION), Vx1 = Math.floor((cx + 5) / REGION);
   const Vz0 = Math.floor((cz - 5) / REGION), Vz1 = Math.floor((cz + 5) / REGION);
   for (let Vx = Vx0; Vx <= Vx1; Vx++) {

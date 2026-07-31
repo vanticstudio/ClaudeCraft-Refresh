@@ -14,6 +14,217 @@ The sweep found 195 defects (6 critical, 63 major, 126 minor). All 6 criticals
 and every golden-path blocker are fixed; the remaining long tail is minor
 fidelity gaps, logged precisely in `DEVIATIONS.md` rather than silently dropped.
 
+> That bottom line is the **2026-07-19** state. Three later passes are recorded
+> below, newest first; read the 2026-07-31 sections before treating any
+> completion claim in this file as current.
+
+---
+
+## Records pass — the backlog reconciled against the tree (2026-07-31)
+
+The verification pass below audited the sweep's *reports*. This one audits the
+repo's *records* — `DEVIATIONS.md`'s ~90-entry 2026-07-19 backlog, this file, and
+`README.md` — against the tree. A backlog that still lists a fixed defect
+misleads exactly as much as a report claiming an unfixed one, and the 15-cluster
+sweep closed a number of entries without touching the line that logged them.
+
+Method was `git show 094ef4c:<file>` versus the working tree, one identifier at a
+time. Nothing was closed because a diff hunk looked like the fix.
+
+### What the audit found
+
+| Outcome | Count | Notes |
+|---|---|---|
+| Backlog entries **closed** by the sweep | **11** | 6 major, 5 minor. Annotated in place, none deleted |
+| Entries found **stale** — fixed before the sweep, never marked | **2** | Note-block fuel 300; the creative Redstone/Brewing tab sets. Both already correct at `094ef4c` |
+| Entries **re-verified as still open** (the log was right) | **21** | magma contact damage, soul-sand slow, observer facing, §5.5 >500 warn, §5.6 border healing, dispenser inaccuracy, component state visuals, potion tooltips, portal entity transit, zombie→villager targeting, village chest loot, `isSoulBlock`, the `villages` store, `ALLOW_CLIENT_DEBUG`, nether-portal animation, elytra/beacon loops, iron-bars collision, shulker deflection, wither kill-heal, entity `.dim` |
+| Documented claims found **false** | **1** | See below |
+| New deliberate gaps **logged** | **3** | See below |
+
+Rejected nothing outright: every entry checked either closed, stayed open, or
+turned out to predate the sweep. The one claim that failed was in this repo's own
+records rather than in a finding.
+
+### The headline closure — 07-REDSTONE §4.5 dust rendering
+
+The backlog's `major` "no power-tint variants and no connection-shape mesh" is
+closed, and it is the largest visible change in the sweep:
+
+| §4.5 requirement | Before (`094ef4c`) | Now |
+|---|---|---|
+| 16 pre-tinted variants of each of 2 shapes | one grayscale `dust_line_0` | 32 tiles, `dust_dot_<p>` + `dust_line_<p>`, ramp folded in at paint time off **one** shared grain field |
+| dot + arm composition per connection | a 1/64-thick full-cell box | `ChunkMesher.emitDust` — centre dot + one arm per rendered direction, flat cutout quads, unlit by AO/shade |
+| UP_SLOPE vertical face quad | absent | `emitDustRiser`, offset 1/64 off the climbed face |
+| shape agrees with the power graph | two independent readings | one: the mesher calls `dustConnections()` from `redstone/dust.js`, the same function the solver uses, through a 2-method view of the captured 3×3 hood |
+
+A power change is now a UV swap. The cross-vs-line rules cannot drift between the
+mesh and the logic, because there is only one copy of them.
+
+### The false claim
+
+**`DEVIATIONS.md`'s ship summary said the 14 C418 placeholder `*.mp3` were
+"removed from HEAD". They were not, and never were.** `git ls-tree -r HEAD --
+public/theme-music` returns all 14 at `094ef4c`; only `.gitignore` changed, and
+ignoring a path does not untrack it. The *build* half of the claim is sound —
+`npm run build` reports `ship-gate: 0 track(s)` and `dist/` carries no audio of
+any kind, verified this pass — but the repository half is not. Corrected in
+`DEVIATIONS.md` (ship-summary item 2 and the operator-action list) and in
+`README.md`. The two E13 backlog entries that flagged this in 2026-07-19 were
+right and stay **open**; untracking the files is a one-commit operator action and
+a prerequisite for, not a substitute for, the history scrub.
+
+### New gaps introduced and logged
+
+- **The mesher now imports from `src/redstone/`** (`dust.js`, `dirs.js`). 01 §2's
+  module map has no render → logic edge; this is one. It is the price of the
+  single-connection-graph property, and the alternative — re-deriving the graph
+  in the mesher — is precisely the drift §4.2 invites.
+- **`redstone_wire`'s registry tile names are now a second, unused source of
+  truth** for the dot half. `tilesFor` is keyed on (nibble, face) and can name one
+  tile per face; a dust cell needs two, so `emitDust` indexes `atlas.js`'s tables
+  directly. Nothing would catch the two namings drifting apart.
+- **The atlas is at 404/1024 tiles** — the dust (32) and composter (18) families
+  cost 50 between them. Still under half, but the unimplemented §7.1 4-frame
+  animation pipeline wants four consecutive slots per animated tile out of the
+  same budget.
+
+### Gates re-run this pass
+
+| Gate | Result |
+|---|---|
+| `npm run smoke` | **8/8 PASS** — 128 files, 1569 `this.x()` sites resolved across 103 classes, 404/1024 tiles with 403 painters, 127 sound ids resolved |
+| `npm run build` | **Green** — 126 modules, `ship-gate: 0 track(s)`, no audio in `dist/`. The >500 kB advisory on the 1.2 MB main chunk is Vite's default warning, not a failure |
+| Records match the tree | **Yes, now.** 13 backlog entries annotated, 1 false claim corrected in two places, 3 new gaps logged |
+
+No code was changed by this pass — its edit scope was `README.md`,
+`BUILD-STATE.md` and `DEVIATIONS.md` only.
+
+---
+
+## Verification pass — the sweep's unrun phases, re-run (2026-07-31)
+
+The 15-cluster sweep below **landed its fixes and then stopped**. Its
+verification phases — regression review, smoke harness, handoff integration,
+docs — never ran; the run ended before them. This section is that missing work,
+run separately, and its first finding is about the sweep itself.
+
+**The sweep's completion claims were partly inaccurate, and reading could not
+tell.** The pattern is specific and repeats: *where the sweep edited a file it
+often wrote the new function and never wired it.* It was found by three
+independent means, in ascending order of how much it cost to get there —
+
+1. **A wiring audit over the diff.** Cheapest signal, and it works: a dead import
+   or a single-occurrence identifier is the fingerprint. `raycastBlocks` was
+   imported into `Game.js` and never called; `Beacon.disposeBeams()` carried a
+   docblock reading "Must be called from `Game.disposeWorld()`" and had exactly
+   one occurrence tree-wide — its own definition.
+2. **Cross-checking claims against the tree.** Six improvements reported as
+   implemented are simply not present (table below).
+3. **Running the game.** This is the only thing that found the two crashes, and
+   it found them immediately. Neither was visible by reading.
+
+### The two crashes — live, in the shipped tick trunk
+
+| Defect | Symptom | Fix |
+|---|---|---|
+| `Game.tick()` called `this.tickParticles()` at two sites; the method was **never defined** | Every tick threw and unwound, so the redstone-component pass and the scheduled-tick pass below the call **never ran at all**. Presented as a stutter, because the render loop kept painting | `tickParticles()` defined at `src/Game.js:419`, stepping `Particles.update()` once per tick (05 §16.3) |
+| `Piglin` / `ZombifiedPiglin` overrode `buildMesh()` instead of `buildModel()` | `humanoidModel`'s `{ group, parts }` record went straight into `entity.object3d`, so `updateRender` threw on the first frame after a Nether spawn — **screen frozen**, tick loop still running | `buildModel()` at `src/entities/mobs/nether/mobs.js:161` and `:294`, so `Mob.buildMesh` unwraps `.group` as designed |
+
+Neither is a fidelity gap and neither appeared in any report of the work that
+introduced them. 01-ARCHITECTURE §1 makes `Game.tick()` the single trunk every
+system hangs off, which is precisely why a `ReferenceError` in it is silent.
+
+### Claims checked against the tree
+
+| Reported as implemented | Verified state |
+|---|---|
+| Frustum culling | **Absent.** Only five `mesh.frustumCulled = false` opt-outs exist; no culling pass |
+| Early-Z / depth pre-pass | **Absent.** No occurrence in `src/` |
+| Particle pool | **Absent.** The header claiming it is corrected; no pool added |
+| Nether delay send (16 §3.5) | **Absent** — and already logged honestly in `DEVIATIONS.md`'s E1 backlog. That entry was correct |
+| Block-highlight raycast in `Game.js` | **Never existed.** The dead import was the whole of it; highlighting runs from `interaction.js:98,140` as it always did |
+| 10-tick damage fade | **Absent.** `Hud.onDamage` is a 250 ms wall-clock fade; the tick counter it needed was the write-only `hud.damageFlash`, now removed |
+
+None of the six was ever claimed in `README.md`, `BUILD-STATE.md` or
+`DEVIATIONS.md` — they were claimed only in the sweep's phase reports. Where this
+repo's own records spoke, they were right. The failure was reports outrunning the
+tree.
+
+### Also closed
+
+- `Beacon.disposeBeams()` is called from `Game.disposeWorld` (`src/Game.js:269`),
+  next to `clearFireOrigins()` and `disposeGatewayBeams()` — a beam mesh used to
+  survive Save & Quit, pinning the discarded `World` and its chunk buffers.
+- `Hud.flashPickup` exists (`src/ui/hud.js:185`) with its `.picked` keyframe, and
+  `ItemEntity.js:222` calls it through `game.ui?.hud`. 03 §23's pickup pulse had
+  been a silent no-op for the whole life of the build.
+- The dead `raycastBlocks` import and the write-only `hud.damageFlash` field are
+  gone.
+
+### What remains
+
+- **30 unused named imports across `src/`** — every one checked individually
+  against the diff and every one predating this sweep, so hygiene debt rather
+  than unfinished edits. Logged in `DEVIATIONS.md`.
+- **The smoke harness cannot see an unused import.** `U2` proves imports
+  *resolve*; nothing proves they are *used*. That is the gap `raycastBlocks` fell
+  through, and it is still open.
+- **`public/theme-music/README.md` still describes the pre-ship-gate behaviour**
+  (it says a build ships the folder). False since the gate was reinstated; not
+  fixed here, outside this pass's edit scope. The top-level `README.md` is fixed.
+- **The 34 acceptance suites cited below are not in this repository.** `scripts/`
+  holds exactly two files (`gen-theme-manifest.mjs`, `smoke.mjs`); there is no
+  `verify-*`, no `rmb-diag`, no test directory anywhere in the tree. Those suites
+  ran from separate worktrees and did not survive the cleanup, so every result in
+  the *Phase 3* and *Phase 6* sections is a **historical record, not a
+  reproducible gate**. `npm run smoke` is the only harness you can actually run
+  today — which is why it was written.
+- Everything in the 2026-07-19 and 2026-07-30 backlogs that those passes left
+  open is still open. Nothing was closed by assertion here.
+
+### Final status
+
+| Gate | Result |
+|---|---|
+| `npm run smoke` (**new** — `scripts/smoke.mjs`, 1050 lines, zero dependencies) | **8/8 PASS** over 128 files in `src/` + `server/` |
+| `npm run build` | **Green** — 126 modules; theme ship-gate reports `0 track(s)`; no audio in `dist/` |
+| Game boots and plays | **Yes**, after the two crash fixes above; before them, frozen |
+
+The smoke harness is the tripwire this repo did not have. `U1` resolves 1569
+`this.x()` call sites across 103 classes and would have caught `tickParticles` on
+the day it landed; `U7` parses every file, `U2` resolves every named import
+against a real export, `U3`–`U6` cover shape/painter/id/sound-event coverage, and
+`U8` guards the no-stray-`console.log` rule. It runs in Node with no packages.
+
+One honest caveat on the numbers: the sweep and this pass are **both uncommitted
+in the same working tree**, so their line counts are not separable and none are
+claimed per-phase. The tree as a whole is 92 files changed, +4802 / -925 against
+`094ef4c`, plus the untracked `scripts/smoke.mjs`.
+
+---
+
+## Integration — 15-cluster parallel fix sweep, merged (2026-07-30)
+
+Fifteen fixers worked disjoint file clusters; this merge applied their
+cross-cluster handoffs, resolved the conflicts between them, and re-verified the
+production build. Full detail (including the four new ambiguity rulings and the
+two determinism-affecting changes) is in `DEVIATIONS.md`'s INTEGRATION section.
+
+Subsystem status changes:
+
+- **12-VILLAGES trade screen — complete.** The §9.1 tier gate is now reflected in
+  the offer list (`ui/containers.js:686` greys a tier-locked row), not just
+  enforced silently inside `villager.doTrade`. Composter and lectern also render
+  at last (they had `shape:` values the mesher had no case for), and the
+  composter's 0-8 fill level is visible per 12 §12.2.
+- **11-END — end_rod is per-spec.** Facing placement, the support-pop rule and
+  the mesher's axis selection were each using a different reading of §2.2's
+  enum; all three are unified on the registry's.
+- **01-ARCHITECTURE §9/§16 — boot failures now fail loudly instead of hanging.**
+  Terrain-worker spawn/init failures, a stalled spawn ring, a corrupt chunk
+  record and blocked IndexedDB all have a defined outcome now (return to TITLE,
+  a force-resolved ring, a regenerated chunk, or an unsaved session).
+
 ---
 
 ## Phase 1 — spec → code verification matrix (final, post-fix)

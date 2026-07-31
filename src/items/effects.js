@@ -30,6 +30,13 @@ const EPF_GROUPS = {
   explosion: [PROT, [ENCH.BLAST_PROTECTION, 2]],
   // §5.2.1 note *: the falling anvil is folded into blast for simplicity.
   anvil: [PROT, [ENCH.BLAST_PROTECTION, 2]],
+  // 13-BOSSES AMENDS 05 §14.2 classes the wither skull (direct hit + explosion)
+  // as ordinary armor-reduced physical damage, so §5.2.1's Protection stage has
+  // to apply to it too. 13 never adds it to §5.2.1's table — this is the row.
+  // (Deliberately NOT allow-by-default: 13 §11 puts Protection out of scope for
+  // the dragon-breath 'magic' source, and 09 §4.1 makes magic/poison/wither
+  // armor-bypassing outright.)
+  wither_skull: [PROT],
   fire: [PROT, [ENCH.FIRE_PROTECTION, 2]],
   burn: [PROT, [ENCH.FIRE_PROTECTION, 2]],
   lava: [PROT, [ENCH.FIRE_PROTECTION, 2]],
@@ -163,6 +170,10 @@ const SILK_SELF = [
   'glass', 'oak_leaves', 'birch_leaves', 'spruce_leaves',
   'coal_ore', 'iron_ore', 'gold_ore', 'diamond_ore', 'redstone_ore', 'lapis_ore',
   'ice', 'snow_block', 'gravel', 'bookshelf', 'glowstone', 'grass_block',
+  // 10-NETHER §1.1/§1.4 — the two Nether ores are Silk-Touchable (their smelting
+  // rows in 10 §1.4 are annotated "Silk-Touched ore"; the dropped nuggets/quartz
+  // don't smelt), and both nyliums are "self only with Silk Touch, 08".
+  'nether_gold_ore', 'nether_quartz_ore', 'crimson_nylium', 'warped_nylium',
 ];
 
 const SILK_OVERRIDES = new Map([

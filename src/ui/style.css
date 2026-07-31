@@ -83,6 +83,12 @@ html, body {
   display: flex; align-items: center; justify-content: center;
 }
 .hotbar-slot.selected { border-color: #fff; box-shadow: 0 0 0 2px #fff inset; }
+/* 03 §23 — Hud.flashPickup pulses the slot an item merged into. */
+.hotbar-slot.picked { animation: slot-pick 260ms ease-out; }
+@keyframes slot-pick {
+  0%   { background: rgba(255, 255, 255, 0.55); }
+  100% { background: transparent; }
+}
 
 .slot-count {
   position: absolute; right: 2px; bottom: 0;
@@ -224,11 +230,43 @@ html, body {
 /* ---------- container screens (06 §14–15; UPDATE geometry §2–§3) ---------- */
 /* --gpx = 1 GUI pixel. Reference panel 176×166 GUI-px scales uniformly. */
 :root { --gpx: 3px; }
+/* 18 §6.1 — step the GUI scale down instead of clipping (MC's auto GUI scale);
+   html/body are overflow:hidden, so a panel taller than the viewport loses its
+   tab strip and hotbar row off-screen. Each threshold is the panel's OWN
+   footprint at the next scale up, so the default 3px holds for a normal window.
+
+   Two ladders, because the two panel sizes need different break points and a
+   single :root ladder sized for the LARGER one shrank every chest, furnace and
+   anvil by a third on viewports that never needed it (a 768-px-tall laptop).
+   The creative ladder is scoped to the panel that asks for it; :has() is a
+   progressive enhancement — where it is unsupported #container-root's
+   `overflow: auto` + `align-items: safe center` remain the safety net. */
+
+/* ordinary 176×166 GUI-px panel: 528×498 css px at 3px, + a ~26 px overhanging
+   .panel-title and #container-root's 32/8 px padding → 588×544. */
+@media (max-height: 587px), (max-width: 543px) { :root { --gpx: 2px; } }
+@media (max-height: 415px), (max-width: 367px) { :root { --gpx: 1px; } }
+
+/* creative panel: 196×218 GUI-px → 588×654 css px at 3px, so 744×604 boxed. */
+@media (max-height: 743px), (max-width: 603px) {
+  #container-root:has(.panel-creative) { --gpx: 2px; }
+}
+@media (max-height: 525px), (max-width: 407px) {
+  #container-root:has(.panel-creative) { --gpx: 1px; }
+}
 
 #container-root {
   position: absolute; inset: 0;
   display: none;
   align-items: center; justify-content: center;
+  /* Safety net below the smallest step. Symmetric padding keeps the centring
+     unchanged while giving the overhanging .panel-title room; `safe` keeps the
+     panel's TOP edge reachable when it overflows (start-direction overflow is
+     otherwise unscrollable). Browsers that cannot parse `safe` drop these two
+     lines and keep the plain centring above. */
+  overflow: auto;
+  padding: 32px 8px;
+  align-items: safe center; justify-content: safe center;
   pointer-events: auto;
   background: rgba(0,0,0,0.45);
 }
@@ -236,6 +274,7 @@ html, body {
 
 .panel-abs {
   position: relative;
+  flex: 0 0 auto;              /* never squash: #container-root scrolls instead */
   width: calc(176 * var(--gpx));
   height: calc(166 * var(--gpx));
   background: #c6c6c6;

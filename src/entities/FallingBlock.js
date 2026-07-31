@@ -65,7 +65,15 @@ export class FallingBlock extends Entity {
   land() {
     this.dead = true;
     const x = Math.floor(this.pos.x), z = Math.floor(this.pos.z);
-    const y = Math.round(this.pos.y);
+    // 06 §5.1 — the resting cell. round() (not floor) is deliberate: sub-unit
+    // supports (farmland 15/16, soul sand 14/16, bed, cake, grass path) leave
+    // pos.y at cell+0.56..cell+0.99 and the block belongs in the cell ABOVE.
+    // But collideAxis also clamps to the top of boxes TALLER than their cell
+    // (fence 1.5), which parks pos.y at cell+1.5 and rounds up two cells — so
+    // never round up past an empty cell.
+    let y = Math.round(this.pos.y);
+    const fy = Math.floor(this.pos.y);
+    if (y > fy && this.world.getBlock(x, fy, z) === B.AIR) y = fy;
     const cy = Math.min(127, Math.max(0, y));
     const occupant = this.world.getBlock(x, cy, z);
     const occBlk = BLOCKS[occupant];
@@ -115,8 +123,21 @@ export class FallingBlock extends Entity {
   }
 
   serialize() {
-    // written back as solid blocks on save (06 §18) — handled by saveManager;
-    // record kept for in-session chunk moves
-    return { type: 'falling_block', blockId: this.blockId, state: this.state, ...super.serialize() };
+    // The record IS written by saveManager.serializeChunk (it only drops player/
+    // arrow/thrown_*), so it must be restorable — Game.restoreEntity had no
+    // 'falling_block' branch and the block was destroyed by a save/reload
+    // round-trip (World already cleared its source cell). startY rides along so
+    // the 08 §8.6 anvil damage/degrade rolls survive mid-fall.
+    return {
+      type: 'falling_block', blockId: this.blockId, state: this.state,
+      startY: this.startY, ...super.serialize(),
+    };
+  }
+
+  static deserialize(world, rec) {
+    const e = new FallingBlock(world, rec.blockId, rec.pos[0], rec.pos[1], rec.pos[2], rec.state ?? 0);
+    if (rec.vel) e.vel.y = rec.vel[1];
+    e.startY = rec.startY ?? rec.pos[1];
+    return e;
   }
 }

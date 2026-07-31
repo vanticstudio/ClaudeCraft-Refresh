@@ -81,8 +81,34 @@ function floodInterior(world, sx, sy, sz, stepH) {
   }
   const w = (stepH[0] ? maxX - minX : maxZ - minZ) + 1;
   const h = maxY - minY + 1;
+  // §3.1 wants "a vertical RECTANGLE of obsidian enclosing an air interior", with
+  // the sides and the top & bottom rows obsidian "for the interior's full span".
+  // The bounding-box test alone accepted any obsidian-bounded cavity whose bbox
+  // fits, so an L-shaped pocket (one corner plugged) ignited as a portal.
+  if (cells.length !== w * h) return null;
   if (w < MIN_W || w > MAX_W || h < MIN_H || h > MAX_H) return null;
   return cells;
+}
+
+/**
+ * §3.1/§3.3 — write every interior cell with neighbour updates SUPPRESSED, then
+ * notify once over the finished region.
+ *
+ * A per-cell setBlock fans out World.neighborUpdates, which runs §3.3's collapse
+ * check against a half-built portal: mid-fill a cell legitimately has air on both
+ * in-plane sides, so every frame with interior width ≥ 4 wiped itself during its
+ * own ignition (4×3 → 3 of 12 cells survived, 10×10 → 15 of 100) and could never
+ * be repaired — nether_portal is hardness −1, unmineable and explosion-proof.
+ * setBlock's `noUpdates` branch starts AFTER the light edit and the remesh
+ * dirtying, so emission 11 and the mesh are unaffected; only onPlaced, fluid /
+ * gravity scheduling, neighbour updates and the redstone fan-out are skipped,
+ * none of which a portal cell needs.
+ */
+function fillPortal(world, cells, axis) {
+  for (const [x, y, z] of cells) {
+    world.setBlock(x, y, z, PORTAL, { state: axis, byPlayer: true, noUpdates: true });
+  }
+  for (const [x, y, z] of cells) world.neighborUpdates(x, y, z);
 }
 
 /**
@@ -97,7 +123,7 @@ export function tryIgnitePortal(game, hit) {
   if (!isInterior(world, ax, ay, az)) return false;
   const res = validateFrame(world, ax, ay, az);
   if (!res.ok) return false;
-  for (const [x, y, z] of res.cells) world.setBlock(x, y, z, PORTAL, { state: res.axis, byPlayer: true });
+  fillPortal(world, res.cells, res.axis);
   emitSound('block.portal.trigger', at(ax + 0.5, ay + 0.5, az + 0.5));
   return true;
 }
@@ -115,7 +141,14 @@ export function portalNeighborUpdate(world, x, y, z, state) {
     const up = world.getBlock(cell[0], cell[1] + 1, cell[2]);
     const dn = world.getBlock(cell[0], cell[1] - 1, cell[2]);
     const ok = id => id === OBSIDIAN || id === PORTAL;
-    return (ok(in1) || ok(in2)) && (ok(up) || ok(dn));
+    // §3.3 / §15 gate E7 — "breaking one frame obsidian collapses the portal".
+    // The old `(in1 || in2) && (up || dn)` can never fail on an INTACT portal:
+    // every cell always keeps a portal or obsidian on one in-plane side and one
+    // vertical side, so a lit portal was permanently indestructible (hardness −1,
+    // targetable:false, skipped by Game.explode). All four sides are required.
+    // Corner obsidian stays optional — corners are diagonal from every portal
+    // cell and never fire a neighbour update.
+    return ok(in1) && ok(in2) && ok(up) && ok(dn);
   };
   if (supported([x, y, z])) return;
   // collapse the connected portal region
@@ -140,6 +173,12 @@ export function portalNeighborUpdate(world, x, y, z, state) {
 const TRANSFER_AT = 80;
 const END_PORTAL = B.END_PORTAL;   // 162
 export function tickPortal(game) {
+  // §2.3 — dimension change is HOST-AUTHORITATIVE. A client runs its own
+  // Player.tick inside the predictor AND once per unacked input in the reconcile
+  // replay, so the timer raced ahead and the client drove a local
+  // changeActiveDimension the host never saw: flushAllChunks with no terrain
+  // workers, then STATE.LOADING with no host-driven exit — a permanent veil.
+  if (game.net?.isClient) return;
   const p = game.player;
   if (p.portalCooldown > 0) { p.portalCooldown--; p.portalTimer = 0; return; }
   // 11-END §5.4 — the end portal is INSTANT (no stand-in delay).
@@ -186,13 +225,45 @@ export function initiateEndTravel(game) {
   }
 }
 
+/**
+ * §3.6 — normalise a portal cell to its region's minimum corner (walk −Y, then
+ * the negative in-plane direction). The link cache is specified as "which
+ * destination portal a given SOURCE PORTAL built"; keying it on the player's
+ * floored position meant even a minimum 4×5 frame had 6 distinct keys and one
+ * more per feet-Y, so a round trip essentially never hit the cache.
+ */
+function portalAnchor(world, x, y, z) {
+  if (world.getBlock(x, y, z) !== PORTAL) return null;
+  const axis = world.getState(x, y, z) & 1;             // 0 = spans X, 1 = spans Z
+  const sx = axis === 0 ? 1 : 0, sz = axis === 0 ? 0 : 1;
+  let ay = y;
+  while (world.getBlock(x, ay - 1, z) === PORTAL) ay--;
+  let ax = x, az = z;
+  while (world.getBlock(ax - sx, ay, az - sz) === PORTAL) { ax -= sx; az -= sz; }
+  return [ax, ay, az];
+}
+
+// §3.5 — the 1-second #e0a0ff spawn-in burst at the SOURCE endpoint (the arrival
+// endpoint fires from Game's dimension-change completion).
+function portalBurst(game, x, y, z) {
+  const ps = game.particles;
+  if (!ps?.spawn || !ps.colored) return;
+  for (let i = 0; i < 20; i++) {
+    ps.spawn(ps.colored(0xe0a0ff, 0.08), x + (Math.random() - 0.5), y + Math.random() * 1.8,
+      z + (Math.random() - 0.5), 0, 0.02, 0, 20, 0);
+  }
+}
+
 /** §3.4/§3.5 — compute the scaled destination and change dimension. */
 export function initiatePortalTravel(game) {
   const p = game.player;
   const from = game.world.activeDim;
   const targetDim = from === 1 ? 0 : 1;                 // Nether ↔ Overworld
   const srcX = Math.floor(p.pos.x), srcY = Math.floor(p.pos.y), srcZ = Math.floor(p.pos.z);
-  const srcKey = linkKey(srcX, srcY, srcZ);
+  const anchor = portalAnchor(game.world, srcX, srcY, srcZ)
+    ?? portalAnchor(game.world, srcX, srcY + 1, srcZ)
+    ?? [srcX, srcY, srcZ];
+  const srcKey = linkKey(anchor[0], anchor[1], anchor[2]);
   let dstX, dstZ, dstY;
   const cached = dimPortalLinks(game, from)[srcKey];    // §3.6 reuse the paired portal
   if (cached) {
@@ -204,6 +275,7 @@ export function initiatePortalTravel(game) {
   }
   // stash the target (+ the source link) so the loading-gate build can pair them
   game.pendingPortalBuild = { dim: targetDim, x: dstX, y: dstY, z: dstZ, axis: 0, fromDim: from, srcKey };
+  portalBurst(game, p.pos.x, p.pos.y, p.pos.z);         // §3.5 source-side motes
   changeDimension(p, targetDim, { x: dstX + 0.5, y: dstY, z: dstZ + 0.5 });
 }
 
@@ -240,15 +312,33 @@ export function findOrCreatePortal(game, dstX, dstY, dstZ, link = null) {
   else { const r = buildDefaultPortal(game, dstX, dstY, dstZ); stand = r.stand; portal = r.portal; }
   // §3.6 — record the forward link so a repeat trip from the same source portal
   // reuses this exact destination (return trips fall back to the search above).
-  if (link) dimPortalLinks(game, link.fromDim)[link.srcKey] = { x: portal[0], y: portal[1], z: portal[2] };
+  if (link) {
+    const a = portalAnchor(world, portal[0], portal[1], portal[2]) ?? portal;
+    dimPortalLinks(game, link.fromDim)[link.srcKey] = { x: a[0], y: a[1], z: a[2] };
+  }
   return stand;
 }
 
 function standCellFor(world, [x, y, z]) {
-  // find the portal-column bottom, stand on the obsidian sill in front
+  // find the portal-column bottom
   let by = y;
   while (world.getBlock(x, by - 1, z) === PORTAL) by--;
-  return { x: x + 0.5, y: by, z: z + 0.5 };
+  // §3.5 step 1 — "a safe stand cell ADJACENT to that portal (feet on the frame
+  // bottom, facing into it)". Returning the portal cell itself means an arrival
+  // who stands still is still inside it when portalCooldown 300 drains, so the
+  // timer re-arms and bounces him back 19 s later. Step one cell out along the
+  // portal's facing normal (axis 0 spans X and faces ±Z, axis 1 the reverse).
+  const axis = world.getState(x, by, z) & 1;
+  const nx = axis === 0 ? 0 : 1, nz = axis === 0 ? 1 : 0;
+  const free = id => !BLOCKS[id]?.collidable;
+  for (const s of [1, -1]) {
+    const sx = x + nx * s, sz = z + nz * s;
+    if (free(world.getBlock(sx, by, sz)) && free(world.getBlock(sx, by + 1, sz)) &&
+        BLOCKS[world.getBlock(sx, by - 1, sz)]?.collidable) {
+      return { x: sx + 0.5, y: by, z: sz + 0.5 };
+    }
+  }
+  return { x: x + 0.5, y: by, z: z + 0.5 };   // nothing safe on either side
 }
 
 /**
@@ -256,21 +346,96 @@ function standCellFor(world, [x, y, z]) {
  * obsidian pad near dstY, with a clear standing platform in front so the player
  * never lands in lava/void. Returns the stand cell.
  */
+// §3.5 step 2 — candidate build columns, nearest first ("score by |y − dstY|
+// then distance to dstXZ"), sweeping outward to the same 128-block radius the
+// search uses. Module scope: no per-travel allocation.
+const BUILD_OFFSETS = (() => {
+  const o = [[0, 0]];
+  for (const r of [4, 8, 12, 16, 24, 32, 48, 64, 96, 128]) {
+    o.push([r, 0], [-r, 0], [0, r], [0, -r], [r, r], [-r, -r], [r, -r], [-r, r]);
+  }
+  return o;
+})();
+
+/**
+ * The volume buildDefaultPortal writes (pad + 4×5 frame + 4×2×3 platform),
+ * padded by one cell so lava ADJACENT to the carved pocket cannot flow back in.
+ * Bedrock only disqualifies where we actually write — the shell may legally sit
+ * inside the floor/roof slab.
+ */
+function siteClear(world, ax, ay, az) {
+  for (let dx = -2; dx <= 3; dx++) {
+    for (let dz = -2; dz <= 3; dz++) {
+      for (let dy = -2; dy <= 4; dy++) {
+        const id = world.getBlock(ax + dx, ay + dy, az + dz);
+        if (id === B.LAVA) return false;
+        if (id === B.BEDROCK && dx >= -1 && dx <= 2 && dz >= -1 && dz <= 2 && dy >= -1 && dy <= 3) return false;
+      }
+    }
+  }
+  return true;
+}
+
+/** Best y in one column: the first hit walking outward from y0 is the min |Δy|. */
+function columnSite(world, ax, az, y0) {
+  for (let d = 0; d <= 112; d++) {
+    if (y0 + d <= 118 && siteClear(world, ax, y0 + d, az)) return y0 + d;
+    if (d > 0 && y0 - d >= 6 && siteClear(world, ax, y0 - d, az)) return y0 - d;
+  }
+  return -1;
+}
+
+function findBuildSite(world, dstX, dstY, dstZ) {
+  const y0 = Math.max(6, Math.min(118, dstY));
+  let best = null;
+  for (const [ox, oz] of BUILD_OFFSETS) {
+    const ax = dstX + ox, az = dstZ + oz;
+    if (!world.isLoaded(ax - 2, az - 2) || !world.isLoaded(ax + 3, az + 3)) continue;
+    const ay = columnSite(world, ax, az, y0);
+    if (ay < 0) continue;
+    const score = Math.abs(ay - y0), dist = Math.abs(ox) + Math.abs(oz);
+    if (!best || score < best.score || (score === best.score && dist < best.dist)) {
+      best = { x: ax, y: ay, z: az, score, dist };
+    }
+    if (best.score <= 2) break;                    // near enough to dstY; stop
+  }
+  return best;
+}
+
 function buildDefaultPortal(game, dstX, dstY, dstZ) {
   const world = game.world;
-  const y = Math.max(6, Math.min(118, dstY));
+  // §3.5 step 2 requires the site scan; stamping at the raw scaled coordinate
+  // dropped the arrival into the lava sea (Nether y 15–20 is ~90% lava), inside
+  // a 4×2×3 air pocket that dim-1 FAST_LAVA refilled in about a second while
+  // portalCooldown 300 blocked the way back.
+  const site = findBuildSite(world, dstX, dstY, dstZ);
+  const x0 = site ? site.x : dstX, z0 = site ? site.z : dstZ;
+  const y = site ? site.y : Math.max(6, Math.min(118, dstY));
   const set = (x, yy, z, id, st = 0) => world.setBlock(x, yy, z, id, { state: st, byPlayer: true });
+  // Nothing qualified anywhere in range: keep the placement but wall the whole
+  // footprint AND its one-block shell in obsidian first, so fluids.wake has no
+  // lava source left to re-flow from (§15 "never in bedrock roof/floor or
+  // mid-lava").
+  if (!site) {
+    for (let dx = -2; dx <= 3; dx++) for (let dz = -2; dz <= 3; dz++) for (let dy = -2; dy <= 4; dy++) {
+      if (world.getBlock(x0 + dx, y + dy, z0 + dz) === B.LAVA) set(x0 + dx, y + dy, z0 + dz, OBSIDIAN);
+    }
+  }
   // obsidian floor pad under the whole footprint (frame + platform)
-  for (let dx = -1; dx <= 2; dx++) for (let dz = -1; dz <= 2; dz++) set(dstX + dx, y - 1, dstZ + dz, OBSIDIAN);
-  // frame: top & bottom rows + left & right columns (interior x = dstX..dstX+1, y..y+2)
-  for (let dx = -1; dx <= 2; dx++) { set(dstX + dx, y - 1, dstZ, OBSIDIAN); set(dstX + dx, y + 3, dstZ, OBSIDIAN); }
-  for (let dy = -1; dy <= 3; dy++) { set(dstX - 1, y + dy, dstZ, OBSIDIAN); set(dstX + 2, y + dy, dstZ, OBSIDIAN); }
-  // interior → portal blocks (axis 0 = spans X)
-  for (let dx = 0; dx <= 1; dx++) for (let dy = 0; dy <= 2; dy++) set(dstX + dx, y + dy, dstZ, PORTAL, 0);
+  for (let dx = -1; dx <= 2; dx++) for (let dz = -1; dz <= 2; dz++) set(x0 + dx, y - 1, z0 + dz, OBSIDIAN);
+  // frame: top & bottom rows + left & right columns (interior x = x0..x0+1, y..y+2)
+  for (let dx = -1; dx <= 2; dx++) { set(x0 + dx, y - 1, z0, OBSIDIAN); set(x0 + dx, y + 3, z0, OBSIDIAN); }
+  for (let dy = -1; dy <= 3; dy++) { set(x0 - 1, y + dy, z0, OBSIDIAN); set(x0 + 2, y + dy, z0, OBSIDIAN); }
+  // interior → portal blocks (axis 0 = spans X). Deferred notify (fillPortal):
+  // with §3.3's strict four-sided support rule a per-cell fan-out would collapse
+  // the region before the second column is written.
+  const cells = [];
+  for (let dx = 0; dx <= 1; dx++) for (let dy = 0; dy <= 2; dy++) cells.push([x0 + dx, y + dy, z0]);
+  fillPortal(world, cells, 0);
   // clear a 2-deep standing platform in front (+Z), floored with obsidian
   for (let dx = -1; dx <= 2; dx++) for (let dz = 1; dz <= 2; dz++) {
-    set(dstX + dx, y - 1, dstZ + dz, OBSIDIAN);
-    for (let dy = 0; dy <= 2; dy++) set(dstX + dx, y + dy, dstZ + dz, B.AIR);
+    set(x0 + dx, y - 1, z0 + dz, OBSIDIAN);
+    for (let dy = 0; dy <= 2; dy++) set(x0 + dx, y + dy, z0 + dz, B.AIR);
   }
-  return { stand: { x: dstX + 0.5, y, z: dstZ + 1.5 }, portal: [dstX, y, dstZ] };
+  return { stand: { x: x0 + 0.5, y, z: z0 + 1.5 }, portal: [x0, y, z0] };
 }

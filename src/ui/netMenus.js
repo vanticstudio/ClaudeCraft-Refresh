@@ -36,6 +36,8 @@ const ERR = {
   hostEnded: 'The host ended the session.',
   'relay-lost': 'Relay connection lost — session ended.',
   'relay-full': 'The relay is full.',
+  worldinit: 'The host sent a world this build could not open.',
+  module: 'Could not load the multiplayer module.',
 };
 
 export class NetMenus {
@@ -168,6 +170,12 @@ export class NetMenus {
   // client connection failure → error + back to title
   onClientError(reason) {
     this.hideAll();
+    // 01 §17.2 — the host path (main.js onQuit) disposes the world; this one did
+    // not, so a dropped client left every streamed chunk group, every puppet mesh
+    // and the whole DayNight/Particles rig parented to the PERSISTENT scene for
+    // the rest of the title-screen stay. disposeWorld runs BEFORE net is nulled
+    // so it still sees a consistent session.
+    this.game.disposeWorld();
     this.game.net = null;
     this.game.setState(STATE.TITLE);
     this.game.ui?.toast?.(ERR[reason] || ('Connection error: ' + reason));

@@ -33,7 +33,6 @@ export class RedstoneComponents {
     this.torchOff = new Map();     // cellKey → number[] of turn-OFF times (burnout window, §6.4)
     this.burnedOut = new Set();    // cellKey of torches currently burned out
     this.repPending = new Map();   // repeater cellKey → target bool (latched at schedule, §7)
-    this.sameTickInsert = new Set(); // dispenser/dropper cells that received an item this tick (§10.1)
   }
 
   get eng() { return this.game.redstone; }
@@ -213,7 +212,16 @@ export class RedstoneComponents {
       this.eng.onOutputChanged(x, y, z);
     }
   }
-  observerMoved(x, y, z) { this.world.scheduleTick(x, y, z, 2); }   // §6.6 pulse after a piston move
+  // §6.6 — "being moved by a piston counts as a trigger: pulse 2 gt after
+  // landing". The move preserves the state byte verbatim, so an observer moved
+  // mid-pulse arrives with bit3 still set and the +2 tick would END that pulse
+  // instead of starting a new one. Clear it (and tell the neighbours) first.
+  observerMoved(x, y, z) {
+    const w = this.world;
+    const st = w.getState(x, y, z);
+    if (obsPulsing(st)) { w.setState(x, y, z, st & ~0x08); this.eng.onOutputChanged(x, y, z); }
+    w.scheduleTick(x, y, z, 2);
+  }
 
   // =================================================== §7 repeater
   repeaterUse(x, y, z, st) {
@@ -299,9 +307,16 @@ export class RedstoneComponents {
     let R = this.containerBehind(bx, y, bz, back);
     if (R < 0) {
       const bid = w.getBlock(bx, y, bz);
-      if (bid === B.REDSTONE_WIRE) R = w.getState(bx, y, bz) & 0x0f;
-      else if (bid === B.REPEATER && repOn(w.getState(bx, y, bz))) R = 15;
-      else if (bid === B.COMPARATOR) R = cmpOut(w.getState(bx, y, bz));
+      const rst = w.getState(bx, y, bz);
+      if (bid === B.REDSTONE_WIRE) R = rst & 0x0f;
+      // §8 — R is a rear diode's OUTPUT *into* us, so it only counts when the
+      // diode faces this comparator: the rear cell sits at HFACE_OPP[hf] from
+      // us, so it points at us exactly when its own HFACE equals ours. Without
+      // the test a sideways repeater fed the comparator a phantom 15. (Mirrors
+      // comparatorSide's check; a diode that fails it is not conductive either,
+      // so it correctly falls through to R = 0.)
+      else if (bid === B.REPEATER && repOn(rst) && repHface(rst) === hf) R = 15;
+      else if (bid === B.COMPARATOR && cmpOut(rst) > 0 && cmpHface(rst) === hf) R = cmpOut(rst);
       else if (bid === B.REDSTONE_BLOCK) R = 15;
       else if (conductive(w, bx, y, bz)) R = weakPower(w, bx, y, bz);
       else R = 0;
@@ -362,8 +377,12 @@ export class RedstoneComponents {
   // =================================================== §12.1 redstone lamp
   lampNeighbor(x, y, z) {
     const w = this.world;
-    if (isActivated(w, x, y, z)) w.setBlock(x, y, z, B.REDSTONE_LAMP_LIT, { byPlayer: true });  // instant
-    else w.scheduleTick(x, y, z, 4);                                                            // off-delay
+    // §12.1 — only the LIT lamp needs the delayed off-check, and lampLitNeighbor
+    // already provides it. An unlit, unpowered lamp scheduling +4 here left a
+    // stale entry that survived the 86→87 id swap (scheduled ticks dispatch on
+    // the CURRENT id) and fired lampTick early, cutting the 4 gt off-delay that
+    // exists precisely so lamps hold through 1-tick gaps.
+    if (isActivated(w, x, y, z)) w.setBlock(x, y, z, B.REDSTONE_LAMP_LIT);   // instant
   }
   lampLitNeighbor(x, y, z) {
     const w = this.world;
@@ -373,7 +392,7 @@ export class RedstoneComponents {
   lampTick(x, y, z) {
     const w = this.world;
     if (!isActivated(w, x, y, z) && w.getBlock(x, y, z) === B.REDSTONE_LAMP_LIT)
-      w.setBlock(x, y, z, B.REDSTONE_LAMP, { byPlayer: true });
+      w.setBlock(x, y, z, B.REDSTONE_LAMP);       // no byPlayer: a lamp wall must not force N sync remeshes
   }
 
   // =================================================== §12.2 note block
@@ -435,6 +454,11 @@ export class RedstoneComponents {
     if (bid === B.PISTON || bid === B.STICKY_PISTON) {
       this.game.spawnItemById(bid, 1, bx + 0.5, by + 0.5, bz + 0.5);
       this.game.pistonMoving = true;                          // don't re-enter via the base
+      // 01 §4.5 — this runs from the PLAYER's break of the head, so it is on the
+      // synchronous-remesh exception (unlike the §5.5 power-driven writes in
+      // PistonMover). The outer break's rebuildNow already ran BEFORE onBroken
+      // fired (World.setBlock), so without byPlayer the vanished base would
+      // linger for a frame even inside the same chunk.
       w.setBlock(bx, by, bz, B.AIR, { byPlayer: true });
       this.game.pistonMoving = false;
     }
@@ -453,7 +477,7 @@ export class RedstoneComponents {
     const hx = x + d[0], hy = y + d[1], hz = z + d[2];
     if (w.getBlock(hx, hy, hz) === B.PISTON_HEAD) {
       this.game.pistonMoving = true;
-      w.setBlock(hx, hy, hz, B.AIR, { byPlayer: true });
+      w.setBlock(hx, hy, hz, B.AIR, { byPlayer: true });      // 01 §4.5 — player break, see headBroken
       this.game.pistonMoving = false;
     }
   }

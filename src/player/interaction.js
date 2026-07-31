@@ -9,10 +9,12 @@ import { raycastBlocks } from '../world/raycast.js';
 import { LivingEntity } from '../entities/Entity.js';
 import { EyeOfEnder } from '../entities/EyeOfEnder.js';   // 11-END §3
 import { EndCrystal } from '../entities/EndCrystal.js';   // 13-BOSSES §3
+import { beaconActive } from '../world/Beacon.js';        // 13-BOSSES §9.2 — on-GUI-open recheck
 import { emitSound, startLoop, at } from '../audio/engine.js';
 import { AABB } from '../math/aabb.js';
 import { KEYBINDS } from '../constants.js';
-import { cloneStack, tagsEqual, getEnchantLvl, unpackContainer } from '../items/tags.js';
+import { cloneStack, tagsEqual, getEnchantLvl, packContainer, unpackContainer } from '../items/tags.js';
+import { supportCell } from '../redstone/dirs.js';   // 07 §2 — ATTACH → support cell
 import { ENCH } from '../items/enchants.js';
 import { EFFECT, effectLevel, addEffect, applyInstant } from '../status/effects.js';
 import { POTIONS } from '../status/potions.js';
@@ -24,7 +26,59 @@ import { getDimension } from '../world/dimensions.js';
 import { faceToIndex as faceIndex } from '../net/protocol.js';   // 14 — face byte for blockEdit/useBlock
 
 const REPLACEABLE_TARGET = id => BLOCKS[id]?.replaceable;
+
+/**
+ * 18 §5.4 — "id = the placeable item that yields this block". Every id in
+ * items.js's NO_BLOCK_ITEM set has no block-item of its own, so `ITEMS.get(id)`
+ * on one of them is undefined and pick-block would silently no-op; the ones that
+ * DO have a yielding item are mapped here. Deliberately unmapped: air/water/lava/
+ * fire, nether_portal, spawner, end_portal and end_gateway — nothing places
+ * those, so §5.4's rule does not reach them and the `if (!item) return` fallback
+ * is the correct behaviour. Built lazily on first use so no module-evaluation
+ * order can ever have idOf() read a half-populated NAME_TO_ID.
+ */
+let PICK_AS = null;
+function pickAsId(hitId) {
+  if (!PICK_AS) {
+    PICK_AS = new Map([
+      // lit variants place from their base block-item (06 §1, 12 §1.1)
+      [B.FURNACE_LIT, B.FURNACE], [B.BLAST_FURNACE_LIT, B.BLAST_FURNACE],
+      [B.SMOKER_LIT, B.SMOKER], [B.REDSTONE_LAMP_LIT, B.REDSTONE_LAMP],
+      [B.PISTON_HEAD, B.PISTON],
+      // 06 §1 — farmland/dirt_path's palette equivalent is dirt
+      [B.FARMLAND, B.DIRT], [B.DIRT_PATH, B.DIRT],
+      // blocks whose yielding item is a plain item, not a block-item
+      [B.REDSTONE_WIRE, idOf('redstone')], [B.OAK_DOOR, idOf('oak_door')],
+      [B.BED_BLOCK, idOf('bed')], [B.NETHER_WART, idOf('nether_wart')],
+      [B.WHEAT_CROP, idOf('wheat_seeds')], [B.CARROT_CROP, idOf('carrot')],
+      [B.POTATO_CROP, idOf('potato')],
+    ]);
+  }
+  return PICK_AS.get(hitId) ?? hitId;
+}
 const FATIGUE_MULT = [0.3, 0.09, 0.0027, 0.00081];   // 09-POTIONS §3.3 (amp 0..3+)
+
+/**
+ * 12-VILLAGES §7.3 — the composter's compost-chance table, transcribed row for
+ * row from the spec (30/50/65/85%). Item id → P(this item adds a layer). Built
+ * lazily for the same reason as PICK_AS: idOf() must never read a half-populated
+ * NAME_TO_ID at module-evaluation time. Block-items share their block's id, so
+ * the B.* constants are the item ids for saplings/leaves/flowers/hay.
+ */
+let COMPOST_CHANCE = null;
+function compostChance(itemId) {
+  if (!COMPOST_CHANCE) {
+    COMPOST_CHANCE = new Map();
+    const row = (p, ids) => { for (const i of ids) COMPOST_CHANCE.set(i, p); };
+    row(0.30, [idOf('wheat_seeds'), B.OAK_SAPLING, B.BIRCH_SAPLING, B.SPRUCE_SAPLING,
+      B.OAK_LEAVES, B.BIRCH_LEAVES, B.SPRUCE_LEAVES, B.SHORT_GRASS, B.DEAD_BUSH]);
+    row(0.50, [idOf('sugar_cane'), B.CACTUS]);
+    row(0.65, [idOf('apple'), idOf('carrot'), idOf('potato'), idOf('wheat'),
+      B.PUMPKIN, B.DANDELION, B.POPPY, B.BROWN_MUSHROOM, B.RED_MUSHROOM]);
+    row(0.85, [idOf('bread'), idOf('baked_potato'), B.HAY_BALE]);
+  }
+  return COMPOST_CHANCE.get(itemId) ?? 0;
+}
 
 function gaussian(rng) {
   let u = 0, v = 0;
@@ -43,8 +97,16 @@ export class Interaction {
     this.swingTicks = 99;       // viewmodel swing progress (6-tick anim)
     this.currentHit = null;     // per-tick raycast result for highlight
     this.crackStage = -1;
-    this.prevMouseRight = false;
+    this.crackPos = null;       // 03 §15.4 — overlay cell, so a target change moves it
     this.pearlCooldown = 0;
+    // 03 §15.3 — "if the press tick targets an entity, that click is an attack and
+    // mining does not start until re-press". Latched for the whole hold: leftPressed
+    // is a one-tick edge, so without this the very next tick mines the wall behind
+    // the mob.
+    this.attackHold = false;
+    // 11-END §8.6 — post-eat item cooldown (chorus fruit's 20 t). Same idiom as
+    // pearlCooldown; every other food declares eatCooldown 0.
+    this.eatCooldown = 0;
     this.bowLoop = null;        // §3.3 item.bow.draw handle
     // 14-MULTIPLAYER §5.6 — the host reuses break/place/attack for a REMOTE player
     // by temporarily swapping the active player (all logic reads this.player).
@@ -85,6 +147,7 @@ export class Interaction {
     if (this.mineDelay > 0) this.mineDelay--;
     if (this.useDelay > 0) this.useDelay--;
     if (this.pearlCooldown > 0) this.pearlCooldown--;
+    if (this.eatCooldown > 0) this.eatCooldown--;
     if (this.swingTicks < 99) this.swingTicks++;
     // Dying returns before updateUseChannel ever runs, and usingItem is not
     // cleared until respawn() — without this the draw loop drones until then.
@@ -120,6 +183,10 @@ export class Interaction {
     // when the player clicks faster.
     if (input.leftPressed && p.creative) this.mineDelay = 0;
 
+    // §15.3 — the attack suppression lasts until the button is RELEASED, not just
+    // for the press tick.
+    if (!input.mouseLeft) this.attackHold = false;
+
     // attack on press (entity priority, 03 §14/§15.3)
     let attacked = false;
     if (input.leftPressed) {
@@ -127,12 +194,29 @@ export class Interaction {
       if (target) {
         this.attack(target);
         attacked = true;
+        this.attackHold = true;
         this.resetMining();
       }
     }
 
-    // mining while held (skipped the tick an attack fired)
-    if (input.mouseLeft && !attacked) this.updateMining();
+    // Mining while held. §15.3's "mining does not start until re-press" is what
+    // attackHold enforces — currentHit is a pure BLOCK ray, so without it the
+    // second tick of a hold mines the wall straight through the mob just punched.
+    // `leftPressed` is ORed in so a click whose down and up both land inside one
+    // 50 ms tick still mines: the level flag alone silently dropped the whole
+    // break (creative and hardness-0 blocks finish in a single tick) while the
+    // same click still attacked — proof the input had registered.
+    // 07-REDSTONE §12.2 — "plays when … left-click punch starts (plays the current
+    // note without incrementing)". The RMB arm is registered as onUse on B.NOTE_BLOCK;
+    // the punch arm had RedstoneComponents.notePunch defined with ZERO call sites,
+    // so punching a note block was silent. Press edge only, and before mining (a
+    // note block is hardness 0.8, so the punch never races its own break).
+    if (input.leftPressed && !attacked && this.currentHit && this.currentHit.id === B.NOTE_BLOCK) {
+      const h = this.currentHit;
+      this.game.redstoneComponents?.notePunch(h.x, h.y, h.z, this.world.getState(h.x, h.y, h.z));
+    }
+
+    if ((input.mouseLeft || input.leftPressed) && !attacked && !this.attackHold) this.updateMining();
     else this.resetMining();
 
     // use-item channel: eating / bow draw
@@ -142,15 +226,23 @@ export class Interaction {
     if ((input.rightPressed || (input.mouseRight && this.useDelay === 0)) && !p.usingItem) {
       this.use(input);
     }
-    this.prevMouseRight = input.mouseRight;
 
-    // crack overlay stage
-    const stage = this.targetPos && this.progress > 0
+    // crack overlay stage. 03 §15.4: "removed instantly on reset/target change" —
+    // so the CELL is part of the guard, not just the stage index. The old
+    // `crackPos !== undefined` clause was always false (crackPos was never
+    // assigned), which left the overlay parked on the previous block whenever the
+    // new target happened to land on the same stage (both in stage 0 after a
+    // target change is the common case).
+    const t = this.targetPos;
+    const stage = t && this.progress > 0
       ? Math.min(9, Math.floor(this.progress * 10)) : -1;
-    if (stage !== this.crackStage ||
-        (this.targetPos && this.crackPos !== undefined)) {
+    const moved = (!!t !== !!this.crackPos) ||
+      (t && this.crackPos &&
+       (t.x !== this.crackPos.x || t.y !== this.crackPos.y || t.z !== this.crackPos.z));
+    if (stage !== this.crackStage || moved) {
       this.crackStage = stage;
-      this.game.updateCrack?.(this.targetPos, stage);
+      this.crackPos = t ? { x: t.x, y: t.y, z: t.z } : null;
+      this.game.updateCrack?.(t, stage);
     }
   }
 
@@ -165,8 +257,10 @@ export class Interaction {
    */
   pickBlock(hit, ctrl) {
     const p = this.player;
-    // A lit furnace has no block-item of its own (06 §1) — pick the plain one.
-    const id = hit.id === B.FURNACE_LIT ? B.FURNACE : hit.id;
+    // 18 §5.4 — "the placeable item that yields this block". A lit furnace has no
+    // block-item of its own (06 §1) and neither do 13 other ids; PICK_AS maps
+    // each to the item that does yield it.
+    const id = pickAsId(hit.id);
     const item = ITEMS.get(id);
     if (!item) return;                       // air/water/lava/fire/crops: nothing to pick
     const stack = { id, count: item.stack ?? 64 };
@@ -193,12 +287,20 @@ export class Interaction {
   }
 
   /**
-   * 18 §5.4's Ctrl-modifier hook. Returns `undefined` today for every block:
-   * the `tags` object schema is 08-ENCHANTING's to define and CLAUDE.md §8.2
-   * freezes it BEFORE consumers build against it — so 18, which "only reads"
-   * tags (§0), cannot invent the shape here. Wire the read when 08 lands.
+   * 18 §5.4's Ctrl-modifier hook — "copy the block-entity/tags payload … so the
+   * placed copy is identical". 08 has since frozen the `tags` shape and 11 §9.4
+   * defined the one payload that exists in this build: a shulker box's 27 slots,
+   * packed by Game's break path and already restored by tryPlace. Every other
+   * block's block-entity content (chest/furnace/hopper) has no tags key to ride
+   * on, so §5.4's copy does not reach them and the plain pick stands.
    */
-  pickTags(_hit) { return undefined; }
+  pickTags(hit) {
+    if (hit.id !== B.SHULKER_BOX) return undefined;
+    const slots = this.game.getBlockEntity(hit.x, hit.y, hit.z)?.data?.slots;
+    if (!slots) return undefined;
+    const containerItems = packContainer(slots);
+    return containerItems.length ? { containerItems } : undefined;
+  }
 
   // ---------------------------------------------------------- attacking
 
@@ -210,8 +312,13 @@ export class Interaction {
       Math.min(e.x, e.x + d.x * 3) - 1, Math.min(e.y, e.y + d.y * 3) - 1, Math.min(e.z, e.z + d.z * 3) - 1,
       Math.max(e.x, e.x + d.x * 3) + 1, Math.max(e.y, e.y + d.y * 3) + 1, Math.max(e.z, e.z + d.z * 3) + 1);
     let best = null, bestT = maxT;
+    // 13-BOSSES §3 — "ANY damage instance (melee at any charge, arrow, snowball/
+    // egg, explosion) destroys it in one hit", and §3.1 makes melee the ONLY way
+    // to clear the two caged pillars (ranged shots hit the bars first). The end
+    // crystal is not a LivingEntity, so it advertises `damageable` instead —
+    // the same predicate Arrow/ThrownProjectile already use.
     for (const ent of this.world.getEntitiesInBox(box,
-        x => x instanceof LivingEntity && x !== this.player && !x.dead)) {
+        x => (x instanceof LivingEntity || x.damageable) && x !== this.player && !x.dead)) {
       const t = rayAABB(e, d, ent.getAABB());
       if (t !== null && t < bestT) { bestT = t; best = ent; }
     }
@@ -274,8 +381,12 @@ export class Interaction {
 
     // 08 §5.4.3 — Fire Aspect ignites on ANY landed melee hit (any charge),
     // 80 ticks/level. Applied after hurt() so a killing blow does not waste it.
+    // Optional-call: setOnFire lives on LivingEntity, and pickEntityTarget now
+    // also returns `damageable` non-living targets (13-BOSSES §3's end crystal).
+    // A ritual-invulnerable crystal returns false from hurt() and stays !dead,
+    // so this is reachable — every other target dies before the line.
     const fireAspect = getEnchantLvl(p.heldStack, ENCH.FIRE_ASPECT);
-    if (fireAspect > 0 && !target.dead) target.setOnFire(80 * fireAspect);
+    if (fireAspect > 0 && !target.dead) target.setOnFire?.(80 * fireAspect);
 
     if (crit) this.game.particles?.crit?.(target);
     if (sweeps) this.doSweep(victims, base, charge);
@@ -539,6 +650,9 @@ export class Interaction {
       if (item?.kind === 'food') {
         p.eat(item);
         p.consumeIn(hand, 1);
+        // 11-END §8.6 — chorus fruit's 20 t; every other food declares 0, so the
+        // channel reopens on the next tick exactly as before.
+        this.eatCooldown = item.eatCooldown ?? 0;
       }
       p.usingItem = null;
     }
@@ -632,52 +746,23 @@ export class Interaction {
     this.game.ui?.hud?.onHotbarChange?.();
   }
 
-  hasItem(name) {
-    const id = idOf(name);
-    return this.player.inventory.some(s => s && s.id === id && s.count > 0);
-  }
-
-  // 08 §7.4 — ammo search order: offhand → main hand → inventory 0–35 ascending.
-  findAmmo(name) {
-    const id = idOf(name);
-    const p = this.player;
-    if (p.offhand && p.offhand.id === id && p.offhand.count > 0) return 'off';
-    if (p.heldStack && p.heldStack.id === id && p.heldStack.count > 0) return 'main';
-    for (let i = 0; i < 36; i++) {
-      if (p.inventory[i] && p.inventory[i].id === id && p.inventory[i].count > 0) return i;
-    }
-    return null;
-  }
-
-  hasAmmo(name) { return this.findAmmo(name) !== null; }
-
-  // 09-POTIONS §15.3 — the first arrow-class stack (plain or tipped): offhand,
-  // then inventory 0→35. Returns { where, stack, potionId } or null.
+  // 08 §7.4 / AMENDS 05 §11 — the first arrow-class stack (plain or tipped) in
+  // scan order: offhand → MAIN HAND → inventory 0→35 ascending. The main-hand
+  // tier is the AMENDS order and outranks 09 §15.3's older "hotbar 0→8" prose,
+  // which premised itself on there being no offhand (CLAUDE.md §2). It only
+  // matters when a lower hotbar slot also holds arrows — bow in the offhand,
+  // plain arrows in slot 0, tipped in the selected slot: the tipped fire.
+  // Returns { where, stack, potionId } or null; `where` is 'off' or a numeric
+  // inventory slot, which is what releaseBow's decrement expects (main hand IS
+  // inventory[selectedSlot]).
   pickArrowStack() {
     const p = this.player, ARROW = idOf('arrow'), TIPPED = idOf('tipped_arrow');
     const ok = s => s && (s.id === ARROW || s.id === TIPPED) && s.count > 0;
     const pid = s => (s.id === TIPPED ? (s.tags?.potionId ?? null) : null);
     if (ok(p.offhand)) return { where: 'off', stack: p.offhand, potionId: pid(p.offhand) };
+    if (ok(p.heldStack)) return { where: p.selectedSlot, stack: p.heldStack, potionId: pid(p.heldStack) };
     for (let i = 0; i < 36; i++) if (ok(p.inventory[i])) return { where: i, stack: p.inventory[i], potionId: pid(p.inventory[i]) };
     return null;
-  }
-
-  takeItem(name) {
-    // 18 §5.3 — "using any item in creative leaves the source stack untouched".
-    // The arrow must still be PRESENT (creative removes depletion, not the
-    // requirement); only the decrement is skipped.
-    const where = this.findAmmo(name);
-    if (where === null) return false;
-    if (this.player.creative) return true;
-    const p = this.player;
-    if (where === 'off' || where === 'main') {
-      p.consumeIn(where, 1);
-    } else {
-      const s = p.inventory[where];
-      s.count--;
-      if (s.count <= 0) p.inventory[where] = null;
-    }
-    return true;
   }
 
   // ------------------------------------------- RMB (08 §7.3; AMENDS 03 §16.1)
@@ -799,7 +884,11 @@ export class Interaction {
       if (p.creative) return true;
       // 09-POTIONS §9.1 — the golden apple is always edible (bypasses the
       // full-hunger gate) so its Absorption + Regeneration are reachable when fed.
-      if ((held.alwaysEdible || p.foodLevel < 20) && !p.usingItem) {
+      // 11-END §8.6 — the post-eat item cooldown gate. Gated HERE rather than on
+      // the shared RMB gate in tick(): that one also throttles legitimate rapid
+      // re-clicks for placing, which 03 §16.1 permits. Still returns true, so the
+      // offhand does not act during the cooldown.
+      if ((held.alwaysEdible || p.foodLevel < 20) && !p.usingItem && this.eatCooldown === 0) {
         p.usingItem = { kind: 'eat', ticks: 0, hand };
       }
       return true;
@@ -878,8 +967,11 @@ export class Interaction {
         g.openContainer('shulker_box', hit.x, hit.y, hit.z);
         emitSound('block.chest.open', at(hit.x + 0.5, hit.y + 0.5, hit.z + 0.5));
         break;
-      // §7.3/§7.5 — composter and lectern have no player UI in this build (see DEVIATIONS).
-      case 'composter': case 'lectern': break;
+      // 12-VILLAGES §7.3 — the composter is a fill-in-place block, not a screen.
+      case 'composter': this.useComposter(hit); break;
+      // §7.5 — the lectern genuinely has no UI ("RMB does nothing"; written books
+      // are §OUT). It stays a deliberate no-op.
+      case 'lectern': break;
       // 07 §6-§12 — lever/button/repeater/comparator/note block: right-click is
       // the block's onUse (installed by redstone/components.js).
       case 'redstone': {
@@ -895,13 +987,68 @@ export class Interaction {
       }
       // 13-BOSSES §4 — RMB the dragon egg teleports it (installed onUse).
       case 'dragon_egg': block.onUse?.(this.world, hit.x, hit.y, hit.z); this.swing(); break;
-      // 13-BOSSES §9.4 — an ACTIVE beacon opens its power screen.
+      // 13-BOSSES §9.4 — an ACTIVE beacon opens its power screen. §9.2's heading
+      // is "every 80 ticks + ON GUI OPEN": Game.tickBeacon only ever runs the
+      // %80 pass, so a freshly placed beacon (onPlaced makes an empty block
+      // entity) refused to open at all for up to 4 s, and finishing a pyramid
+      // tier showed the stale tier — and with it the wrong enabled powers.
       case 'beacon': {
         const be = g.getBlockEntity(hit.x, hit.y, hit.z);
-        if (be?.data?.active) g.openContainer('beacon', hit.x, hit.y, hit.z);
+        if (!be?.data) break;
+        const s = beaconActive(this.world, hit.x, hit.y, hit.z);
+        const prev = be.data.active;
+        be.data.levels = s.levels;
+        be.data.active = s.active;
+        // §9.3's transition would otherwise be SWALLOWED: Game.tickBeacon only
+        // fires the verb when it observes the change itself, and we just wrote
+        // the new value. Guarded on a boolean prior so a fresh (field-less)
+        // block entity does not announce a deactivation it never had.
+        if (typeof prev === 'boolean' && s.active !== prev) {
+          emitSound(s.active ? 'block.beacon.activate' : 'block.beacon.deactivate',
+            at(hit.x + 0.5, hit.y + 0.5, hit.z + 0.5));
+        }
+        if (s.active) g.openContainer('beacon', hit.x, hit.y, hit.z);
         break;
       }
     }
+  }
+
+  /**
+   * 12-VILLAGES §7.3 — the composter. State nibble = fill level 0–8. RMB with a
+   * compostable item rolls its chance (§7.3's four-row table) and adds a layer;
+   * a success at level 7 sets 8 = READY. RMB a ready composter with anything (or
+   * an empty hand) dispenses 1 bone_meal and resets to 0. Villagers deliberately
+   * never operate it (§7.3), so this is the block's only driver.
+   */
+  useComposter(hit) {
+    const p = this.player, w = this.world;
+    const { x, y, z } = hit;
+    const st = w.getState(x, y, z);
+    const lvl = st & STATE_NIBBLE;
+    const keep = st & ~STATE_NIBBLE;          // bit7 stays waterlogging everywhere
+    if (lvl >= 8) {
+      w.setState(x, y, z, keep);
+      this.game.spawnItemByName('bone_meal', 1, x + 0.5, y + 1, z + 0.5);
+      emitSound('block.composter.ready', at(x + 0.5, y + 0.5, z + 0.5));
+      this.swing();
+      return;
+    }
+    const held = p.heldItem();
+    const chance = held ? compostChance(held.id) : 0;
+    if (chance === 0) return;                 // empty hand / non-compostable: no-op
+    // 18 §5.3 — consumeHeld is the single choke point and no-ops in creative, so
+    // a creative fill costs nothing while the world-side layer still lands (the
+    // same all-or-nothing shape as fillBucketStack's scoop).
+    p.consumeHeld(1);
+    this.swing();
+    // The world's seeded stream, not Math.random: this is gameplay, not cosmetic.
+    if (w.rng() >= chance) return;            // failed roll: item spent, no layer
+    const next = lvl + 1;
+    w.setState(x, y, z, keep | next);
+    // §12.3 — `block.composter.ready` covers "reached level 8" as well as the
+    // harvest; every lower layer is `block.composter.fill`.
+    emitSound(next >= 8 ? 'block.composter.ready' : 'block.composter.fill',
+      at(x + 0.5, y + 0.5, z + 0.5));
   }
 
   toggleDoor(x, y, z) {
@@ -1095,7 +1242,13 @@ export class Interaction {
     } else if (blockId === B.LADDER) {
       if (hit.face[1] !== 0 || pos.replaced) return false;
       state = hit.face[2] === 1 ? 1 : hit.face[2] === -1 ? 2 : hit.face[0] === 1 ? 3 : 4;
-    } else if (blockId === B.FURNACE || blockId === B.CHEST || blockId === B.ANVIL) {
+    } else if (blockId === B.FURNACE || blockId === B.CHEST || blockId === B.ANVIL ||
+               blockId === B.BLAST_FURNACE || blockId === B.SMOKER) {
+      // 12-VILLAGES §7.6/§7.7 — both are furnace variants and share 06 §5.5's
+      // "state bits 0–1: facing (set on place, faces the player)". Without them
+      // here every player-placed unit kept state 0, so furnaceTiles put the maw
+      // on +Z regardless of where the player stood. The _LIT ids are in
+      // NO_BLOCK_ITEM and never place from an item, so they need no branch.
       // front toward the player. 08 §2.2: the anvil's bits0–1 facing is visual
       // only; its bits2–3 damage stage starts at 0 on a fresh place ("stage
       // resets on re-place").
@@ -1106,6 +1259,48 @@ export class Interaction {
       const rs = this.redstonePlaceState(blockId, hit);
       if (rs < 0) return false;                       // e.g. a torch on a ceiling
       state = rs;
+      // 07-REDSTONE §4.1/§6/§7 — every needsSupport component sits on a
+      // conductive block or glass (vanilla's transparent-support subset, approx).
+      // Exactly the predicate components.js checkSupport uses, so placement and
+      // the pop rule can never disagree — and run AFTER `rs`, so an ATTACH
+      // component tests its real attach direction rather than the cell below.
+      // Nothing else pops these: World.neighborUpdates notifies only the SIX
+      // NEIGHBOURS of the changed cell, never the cell itself, so a lever stuck
+      // on leaves stayed there forever. Only ids 70–78 declare needsSupport in
+      // this range — pistons/observer/dispenser/dropper/hopper/lamp/note block
+      // and the redstone block are untouched.
+      const sup = block.needsSupport;
+      if (sup) {
+        // `rs & 7` is the ATTACH nibble (power.js attachOf); the torch's lit bit
+        // is 0x08 and is masked off here.
+        const [sx, sy, sz] = sup === 'attach' ? supportCell(rs & 7, x, y, z) : [x, y - 1, z];
+        const sid = w.getBlock(sx, sy, sz);
+        if (!BLOCKS[sid]?.conductive && sid !== B.GLASS) return false;
+      }
+    } else if (blockId === B.END_ROD) {
+      // 11-END §2.2 — "bits0–2 facing (0 up, 1 down, 2–5 N/E/S/W wall); placeable
+      // on any solid face (floor, ceiling AND walls — unlike torch)". The rod
+      // points AWAY from the clicked face, i.e. along the face normal, matching
+      // blocks.js's ROD_SUPPORT, which indexes the support cell OPPOSITE the
+      // facing: 2 = N(-Z), 3 = E(+X), 4 = S(+Z), 5 = W(-X). Without this every
+      // rod placed as state 0 and stood upright.
+      const f = hit.face;
+      state = f[1] === 1 ? 0 : f[1] === -1 ? 1
+        : f[2] === -1 ? 2 : f[0] === 1 ? 3
+        : f[2] === 1 ? 4 : 5;
+    } else if (block.shape === 'stairs') {
+      // 10-NETHER §1.1 — ChunkMesher.emitStairs reads bits0–1 facing + bit2 half
+      // and nothing ever wrote them, so an ascending staircase was unbuildable.
+      // The raised half sits on FACING_DIR[facing], and it must be AWAY from the
+      // player so you step UP walking forward — hence playerFacing() unmodified
+      // (NOT the +2 the furnace/chest branch uses, which points a FRONT at you).
+      // Top half on a bottom-face click or an upper-half side hit, as vanilla.
+      // `py` is the world-space impact point (raycast.js); 14 §4.5's host-apply
+      // path synthesises a hit without it, and NaN > 0.5 is false, so a remote
+      // side-face place lands bottom-half — the safe default, not a crash.
+      const topHalf = hit.face[1] === -1 ||
+        (hit.face[1] === 0 && (hit.py - hit.y) > 0.5);
+      state = this.playerFacing() | (topHalf ? 4 : 0);
     }
 
     if (block.canPlaceAt && !block.canPlaceAt(w, x, y, z, state)) return false;
@@ -1170,6 +1365,12 @@ export class Interaction {
       const hx = x + FACING_DIR[f][0], hz = z + FACING_DIR[f][2];
       if (!BLOCKS[w.getBlock(hx, y, hz)].replaceable) return false;
       if (!isSolidSupport(w.getBlock(x, y - 1, z)) || !isSolidSupport(w.getBlock(hx, y - 1, hz))) return false;
+      // 03 §16.2 — "not aabbOf(placePos).intersects(player.AABB or any mob AABB)".
+      // bed_block is collidable, and BOTH halves are placement cells, so both are
+      // tested: looking straight down and right-clicking otherwise wrote a bed
+      // through the player's own feet. (The door branch's single test above
+      // already covers a standing player/mob.)
+      if (this.entityBlocksPlacement(x, y, z) || this.entityBlocksPlacement(hx, y, hz)) return false;
       w.setBlock(x, y, z, B.BED_BLOCK, { state: f, byPlayer: true });
       w.setBlock(hx, y, hz, B.BED_BLOCK, { state: f | 4, byPlayer: true });
       this.emitPlace(B.BED_BLOCK, x, y, z);
@@ -1187,9 +1388,16 @@ export class Interaction {
   plantSeed(held, hit) {
     const w = this.world;
     if (hit.face[1] !== 1) return false;
-    if (w.getBlock(hit.x, hit.y, hit.z) !== B.FARMLAND) return false;
     const y = hit.y + 1;
     if (w.getBlock(hit.x, y, hit.z) !== B.AIR) return false;
+    // 10-NETHER §8.1 — item 390 nether_wart routes here too, and its substrate is
+    // soul_sand, not farmland. Ask the CROP for its own substrate rule instead of
+    // hard-coding one: cropDef's canPlaceAt is exactly the old FARMLAND test, and
+    // block 138's is `below === SOUL_SAND`. Hard-coding farmland made wart
+    // unplantable (and, worse, plantable on farmland, where 138's neighborUpdate
+    // popped it the same tick).
+    const crop = BLOCKS[held.plantsCrop];
+    if (crop.canPlaceAt && !crop.canPlaceAt(w, hit.x, y, hit.z, 0)) return false;
     w.setBlock(hit.x, y, hit.z, held.plantsCrop, { state: 0, byPlayer: true });
     this.emitPlace(held.plantsCrop, hit.x, y, hit.z);
     this.player.consumeHeld(1);
@@ -1226,31 +1434,45 @@ export class Interaction {
     return false;
   }
 
-  useBoneMeal(hit) {
+  /**
+   * 06 §5.11/5.12/5.15 fertilize, on BARE CELL COORDINATES and with no held-item
+   * side effects. Split out of useBoneMeal so 07-REDSTONE §11's dispenser table
+   * row ("bone_meal → apply fertilize to the front block") has an entry point:
+   * containersRedstone called game.tryBonemeal(fx, fy, fz), which existed
+   * nowhere, so a dispenser always default-dropped the bone meal instead.
+   * Returns true iff the target was fertilizable.
+   */
+  applyBoneMealAt(bx, by, bz) {
     const w = this.world;
-    const id = w.getBlock(hit.x, hit.y, hit.z);
+    const id = w.getBlock(bx, by, bz);
     const blk = BLOCKS[id];
     const rng = w.rng;
-    let used = false;
     if (id >= B.WHEAT_CROP && id <= B.POTATO_CROP) {
-      const st = w.getState(hit.x, hit.y, hit.z);
+      const st = w.getState(bx, by, bz);
       const stage = Math.min(7, (st & 7) + 2 + Math.floor(rng() * 4));
-      w.setState(hit.x, hit.y, hit.z, (st & 8) | stage);
-      used = true;
-    } else if (blk.species && blk.shape === 'cross') {           // sapling
-      if (rng() < 0.45) w.growTree(blk.species, hit.x, hit.y, hit.z);
-      used = true;
-    } else if (id === B.GRASS_BLOCK) {
+      w.setState(bx, by, bz, (st & 8) | stage);
+      return true;
+    }
+    if (blk.species && blk.shape === 'cross') {                  // sapling
+      if (rng() < 0.45) w.growTree(blk.species, bx, by, bz);
+      return true;
+    }
+    if (id === B.GRASS_BLOCK) {
       for (let i = 0; i < 8; i++) {
         const dx = Math.floor(rng() * 7) - 3, dz = Math.floor(rng() * 7) - 3;
-        const x = hit.x + dx, z = hit.z + dz;
-        if (w.getBlock(x, hit.y, z) === B.GRASS_BLOCK && w.getBlock(x, hit.y + 1, z) === B.AIR) {
+        const x = bx + dx, z = bz + dz;
+        if (w.getBlock(x, by, z) === B.GRASS_BLOCK && w.getBlock(x, by + 1, z) === B.AIR) {
           const plant = rng() < 0.9 ? B.SHORT_GRASS : (rng() < 0.5 ? B.DANDELION : B.POPPY);
-          w.setBlock(x, hit.y + 1, z, plant, { byPlayer: true });
+          w.setBlock(x, by + 1, z, plant, { byPlayer: true });
         }
       }
-      used = true;
+      return true;
     }
+    return false;
+  }
+
+  useBoneMeal(hit) {
+    const used = this.applyBoneMealAt(hit.x, hit.y, hit.z);
     if (used) {
       this.player.consumeHeld(1);
       this.swing();
@@ -1406,16 +1628,31 @@ export class Interaction {
       if (P.instant) applyInstant(p, P.effect, P.amp, 1.0, null);
       else addEffect(p, P.effect, P.amp, P.ticks);
     }
-    p.consumeIn(hand, 1);
-    const bottle = { id: idOf('glass_bottle'), count: 1 };
-    if (p.give(bottle) > 0) this.game.throwStack(bottle);
+    // 18 §5.3 / DEVIATIONS "creative item transactions are all-or-nothing" —
+    // cited by name, not by number: the rulings list is a single running
+    // sequence and "ruling 5" already belongs to the jack o'lantern entry.
+    // consumeIn no-ops in creative but give() did not, so a creative drink kept
+    // the potion AND minted a glass bottle every 32-tick channel. The effect
+    // still applies (that is the world-side result, like fillBucketStack's scoop).
+    if (!p.creative) {
+      p.consumeIn(hand, 1);
+      const bottle = { id: idOf('glass_bottle'), count: 1 };
+      if (p.give(bottle) > 0) this.game.throwStack(bottle);
+    }
   }
 
   // §13.1/§14.1 — throw a splash/lingering potion (speed 0.5, arc raised 20°,
   // gaussian inaccuracy). The bottle is lost.
   throwPotion(held, hand) {
     const p = this.player;
-    const potionId = held.tags?.potionId ?? 'water';
+    // The variant lives on the STACK (brewing.js writes tags.potionId there);
+    // `held` is the immutable ITEMS registry definition, which has no `tags`
+    // field at all — reading it off `held` pinned every throw to 'water', and
+    // ThrownPotion.impact short-circuits water into a plain splash, so 100% of
+    // splash/lingering potions were inert while still spending the bottle.
+    // `kind` on line below IS a genuine registry field, so it stays on `held`.
+    // Read before consumeIn below, which empties the stack.
+    const potionId = p.stackIn(hand)?.tags?.potionId ?? 'water';
     const form = held.kind === 'lingering_potion' ? 'lingering' : 'splash';
     const e = this.eyePos();
     const pitch = p.pitch + 20 * Math.PI / 180;         // raise the throw 20°
@@ -1439,9 +1676,15 @@ export class Interaction {
       x => x.type === 'area_effect_cloud' && !x.dead && x.effectPayload?.damage)   // dragon-breath clouds carry {damage}
       .find(c => { const dx = e.x - c.pos.x, dz = e.z - c.pos.z; return dx * dx + dz * dz <= c.radius * c.radius && Math.abs(e.y - c.pos.y) <= 2; });
     if (cloud) {
-      p.consumeIn(hand, 1);
-      const breath = { id: idOf('dragon_breath'), count: 1 };
-      if (p.give(breath) > 0) this.game.throwStack(breath);
+      // 18 §5.3 — all-or-nothing in creative (see fillBucketStack). The world-side
+      // effect below stays outside the guard, matching the DEVIATIONS entry
+      // "creative item transactions are all-or-nothing": the fluid is still
+      // scooped; the empty bucket just does not become full.
+      if (!p.creative) {
+        p.consumeIn(hand, 1);
+        const breath = { id: idOf('dragon_breath'), count: 1 };
+        if (p.give(breath) > 0) this.game.throwStack(breath);
+      }
       cloud.radius = Math.max(0, cloud.radius - 0.5);
       emitSound('item.bottle.fill', null);
       this.swing();
@@ -1449,9 +1692,15 @@ export class Interaction {
     }
     const hit = this.rayHit(this.reach(), { fluidMode: true });
     if (!hit || this.world.getBlock(hit.x, hit.y, hit.z) !== B.WATER) return;
-    p.consumeIn(hand, 1);
-    const water = { id: idOf('potion'), count: 1, tags: { potionId: 'water' } };
-    if (p.give(water) > 0) this.game.throwStack(water);
+    // 18 §5.3 — as above. Unguarded, this minted a water bottle every 4 ticks
+    // (fillBottle opens no use-channel, so RMB-held re-fires at 5 Hz) and, once
+    // all 36 slots were full, spat a live ItemEntity into the world five times a
+    // second for as long as the button was down.
+    if (!p.creative) {
+      p.consumeIn(hand, 1);
+      const water = { id: idOf('potion'), count: 1, tags: { potionId: 'water' } };
+      if (p.give(water) > 0) this.game.throwStack(water);
+    }
     emitSound('item.bottle.fill', null);
     this.swing();
   }

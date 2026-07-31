@@ -46,13 +46,40 @@ const LAYER_DEFS = [
   ['rough',       { oct: 5, freq: 1 / 140, pers: 0.55 }, false],
   ['mountain',    { oct: 4, freq: 1 / 380 }, true],
   ['river',       { oct: 3, freq: 1 / 850 }, false],
-  ['temp',        { oct: 3, freq: 1 / 1600 }, false],
-  ['humid',       { oct: 3, freq: 1 / 1300 }, false],
+  // UPDATE-worldgen-variety DEVIATES 02 §4.3 (temp 1/1600, humid 1/1300): the
+  // spec frequencies make one climate cell wider than a whole play session, so a
+  // 2048-block trek crossed ~1.3 temperature wavelengths and whole SEEDS came out
+  // mono-climate. 1/1000 and 1/850 shrink the cells ~1.6×/1.5× in linear extent so
+  // a ~1000-block walk reliably crosses 3–4 biomes. Same octaves/stride/memo, so
+  // cost is unchanged, and it makes §15's "all 11 biomes within 2,048 blocks"
+  // acceptance test EASIER, not harder.
+  ['temp',        { oct: 3, freq: 1 / 1000 }, false],
+  ['humid',       { oct: 3, freq: 1 / 850 }, false],
 ];
 
-// 02 §5.1 — base height spline over continentalness
+// 02 §4.3/§6.2 — climate contrast gain. DEVIATES from §4.3 (layer outputs consumed
+// raw): temp/humid are normalized fbm with measured sd ≈ 0.30 and p1/p99 of only
+// ∓0.6, so §6.2's ±1-scale thresholds (t < −0.45, t >= 0.40) starved the extreme
+// biomes — measured desert 1.64%, snowy_tundra 2.24%, savanna 2.24%, while
+// forest+birch took 19.9%. Gain 1.7 + clamp makes every column-visible threshold
+// fire at its intended rate. §6.2's threshold table is UNCHANGED; only its inputs
+// are rescaled. Applied here, once, so every consumer (selectBiome AND §10.6's
+// snow rule via colD.t) sees the identical value.
+// COUPLED: the altitude-cooling coefficient is in the same units as t, so it must
+// scale with the gain — biomes.js:selectBiome and features.js's snow pass both
+// hold 0.008 × 1.7 = 0.0136 and MUST NEVER DRIFT APART.
+const CLIMATE_GAIN = 1.7;
+const climate = v => { const g = v * CLIMATE_GAIN; return g < -1 ? -1 : g > 1 ? 1 : g; };
+
+// 02 §5.1 — base height spline over continentalness.
+// UPDATE-worldgen-variety DEVIATES from §5.1's table [46,48,54,62,66,69,72,74]:
+// that spline put land (h >= 63) at a measured 51.2% of columns, BELOW §15's own
+// 55–75% acceptance gate, and its inland half spanned only 66→74 over c 0→1 so
+// continentalness contributed almost no visible inland relief. New table lowers
+// the deep end (ocean depth, pairs with the seabed amplitude below), raises the
+// coast knee, and doubles the inland spread 8 → 12 blocks.
 const SPLINE_C = [-1.00, -0.50, -0.20, -0.10, 0.00, 0.30, 0.60, 1.00];
-const SPLINE_H = [46, 48, 54, 62, 66, 69, 72, 74];
+const SPLINE_H = [44, 47, 56, 64, 68, 72, 76, 80];
 function splineC(c) {
   if (c <= SPLINE_C[0]) return SPLINE_H[0];
   for (let i = 1; i < SPLINE_C.length; i++) {
@@ -68,15 +95,43 @@ function splineC(c) {
 // Returns { height (int 40..124), riv (river mask 0..1) }.
 export function composeColumn(c, e, r, m, rv) {
   const base = splineC(c);
-  const flatness = clamp01(0.5 * (e + 1));
+  // §5.2 DEVIATION (flatness/hillAmp): the spec's `clamp01(0.5*(e+1))` never
+  // saturates — measured erosion p5/p95 = ∓0.44, so flatness stayed in ≈[0.28,
+  // 0.72] and lerp(16,3) produced amp ≈8–11 EVERYWHERE: neither flat plains nor
+  // rugged country existed, just one uniform lumpiness. smoothstep over erosion's
+  // real ±5/95% points saturates both ends; amp 20 (not the audited 26) is the
+  // deliberately mild setting — 26 measured 9×9 buildable land down to ~56%, which
+  // starves village.js's `hmax - hmin > 3` slot test.
+  const flatness = smoothstep(-0.42, 0.42, e);
   const landMask = smoothstep(-0.10, 0.05, c);
-  const hillAmp = lerp(16, 3, flatness);
-  const hills = r * hillAmp * landMask;
-  const seabed = r * 2.5 * (1 - landMask);
-  const mtnMask = smoothstep(0.18, 0.55, c) * (1 - smoothstep(-0.35, 0.35, e));
-  const mtn = m * 52 * mtnMask;
+  const hillAmp = lerp(20, 2.5, flatness);
+  // §5.2 DEVIATION (landMask "kill relief at coast/ocean"): relief is ATTENUATED
+  // to 35%, not killed. Multiplying by raw landMask zeroed hills through the whole
+  // c ∈ [−0.10, 0.05] ring around every landmass, so shorelines were exactly the
+  // spline — a smooth contour with no coves, headlands, islets or cliffs. Only
+  // height moves; §7.2's submerged override and the fill-to-63 rule are untouched.
+  const hills = r * hillAmp * lerp(0.35, 1, landMask);
+  // §5.2 DEVIATION (r * 2.5 → r * 7): against a field with sd 0.25, amp 2.5 gave
+  // ±0.6 blocks — ~42% of the world was a flat shelf at the spline value with no
+  // trench, ridge or bank anywhere. Pairs with the lowered deep end of SPLINE_H.
+  const seabed = r * 7 * (1 - landMask);
+  // §5.2 DEVIATION (mtnMask knees 0.18/0.55 and −0.35/0.35; `m * 52`): c > 0.55 is
+  // only 1.5% of the world so the mask never approached 1, and the ridged layer's
+  // median 0.42 meant `m * 52` was a fat mid-band lift rather than peaks. Measured
+  // result: h >= 92 (the MOUNTAINS gate) on 1.03% of columns and h >= 104 (§10.6's
+  // snow-cap rule) on 0.18% — snow-capped peaks were effectively never seen. Wider
+  // knees + a (m − 0.28)/0.62 remap turn the ridged field into real summits over a
+  // low base. 56, not the audited 62, to keep the 124 clamp (flat plateaus) rare.
+  const mtnMask = smoothstep(0.10, 0.42, c) * (1 - smoothstep(-0.35, 0.20, e));
+  const mtn = clamp01((m - 0.28) / 0.62) * 56 * mtnMask;
   let height = base + hills + seabed + mtn;
-  const riv = 1 - smoothstep(0.025, 0.06, Math.abs(rv));
+  // §5.4 CONFORMANCE FIX (not a deviation): §5.4 asserts rivers are "width ≈ 4–10
+  // blocks" with "4–6 deep channels", but the shipped 0.025/0.06 knees against a
+  // river layer of sd 0.288 produced a measured MEDIAN band width of 40 blocks
+  // (max 195) covering 13.1% of a transect — flood plains that read as random
+  // inland seas. 0.004/0.011 restores the stated width. Bed target and the
+  // fill-to-63 rule below are untouched.
+  const riv = 1 - smoothstep(0.004, 0.011, Math.abs(rv));
   if (riv > 0 && height > 56) {
     const bedTarget = 59 - 2 * riv;
     height = Math.min(height, lerp(height, bedTarget, Math.min(1, riv * 1.6)));
@@ -210,8 +265,10 @@ export function createNoiseCtx(worldSeed) {
         const r  = bilerp(R[i00], R[i00 + 5], R[i00 + 1], R[i00 + 6], fx, fz);
         const m  = bilerp(M[i00], M[i00 + 5], M[i00 + 1], M[i00 + 6], fx, fz);
         const rv = bilerp(RV[i00], RV[i00 + 5], RV[i00 + 1], RV[i00 + 6], fx, fz);
-        const tv = bilerp(T[i00], T[i00 + 5], T[i00 + 1], T[i00 + 6], fx, fz);
-        const hv = bilerp(H[i00], H[i00 + 5], H[i00 + 1], H[i00 + 6], fx, fz);
+        // §4.3 gain applied HERE (the single read site) so selectBiome and the
+        // §10.6 snow rule that reads colD.t can never see different climates.
+        const tv = climate(bilerp(T[i00], T[i00 + 5], T[i00 + 1], T[i00 + 6], fx, fz));
+        const hv = climate(bilerp(H[i00], H[i00 + 5], H[i00 + 1], H[i00 + 6], fx, fz));
         const { height, riv } = composeColumn(c, e, r, m, rv);
         const ci = (z << 4) | x;
         h[ci] = height;

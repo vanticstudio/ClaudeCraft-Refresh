@@ -12,6 +12,15 @@ import { BLOCKS } from '../registry/blocks.js';
 import { emitSound, at } from '../audio/engine.js';
 import { makeAtlasMaterial } from './ItemEntity.js';
 
+// 01 §17.2 — shared 1³ box (models.js boxGeo's contract): a per-instance
+// BoxGeometry is never freed, so every strafing run leaked GL buffers. `shared`
+// opts it out of EntityManager's disposal sweep.
+let GEO = null;
+function fireballGeo() {
+  if (!GEO) { GEO = new THREE.BoxGeometry(1.0, 1.0, 1.0); GEO.userData.shared = true; }
+  return GEO;
+}
+
 export class DragonFireball extends Entity {
   constructor(world, x, y, z, dx, dy, dz, owner) {
     super(world, x, y, z);
@@ -65,7 +74,7 @@ export class DragonFireball extends Entity {
   }
 
   buildMesh() {
-    const m = new THREE.Mesh(new THREE.BoxGeometry(1.0, 1.0, 1.0), makeAtlasMaterial());
+    const m = new THREE.Mesh(fireballGeo(), makeAtlasMaterial());
     m.material.userData?.baseColor?.setRGB(0.6, 0.25, 0.75);
     const grp = new THREE.Group(); grp.add(m); return grp;
   }

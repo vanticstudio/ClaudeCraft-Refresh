@@ -14,10 +14,18 @@ let endGen = null;       // 11-END dim 2
 self.onmessage = (e) => {
   const msg = e.data;
   if (msg.type === 'init') {
-    gen = createGenerator(msg.seed);
-    netherGen = createNetherGenerator(msg.seed);   // §2.2 — disjoint stream namespace
-    endGen = createEndGenerator(msg.seed);         // 11-END §6 — 'end:' streams
-    self.postMessage({ type: 'ready', worldSpawn: gen.findWorldSpawn() });
+    // 01 §9 — this was the only code outside a try/catch: a throw in any of the
+    // three generator ctors or findWorldSpawn was completely unobservable and
+    // the main thread simply never saw `ready`. ChunkManager owns the 'fatal'
+    // branch and turns it into a return to TITLE.
+    try {
+      gen = createGenerator(msg.seed);
+      netherGen = createNetherGenerator(msg.seed);   // §2.2 — disjoint stream namespace
+      endGen = createEndGenerator(msg.seed);         // 11-END §6 — 'end:' streams
+      self.postMessage({ type: 'ready', worldSpawn: gen.findWorldSpawn() });
+    } catch (err) {
+      self.postMessage({ type: 'fatal', message: String((err && err.stack) || err) });
+    }
   } else if (msg.type === 'generate') {
     try {
       // §2.2 — dispatch gen by dimension.

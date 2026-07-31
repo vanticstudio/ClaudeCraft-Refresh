@@ -37,6 +37,17 @@ function pillarBeamTarget(worldSeed, k) {
   return p ? { x: p.x + 0.5, y: p.topY + 1, z: p.z + 0.5 } : { x: 0, y: 100, z: 0 };
 }
 
+// §3.1 — a fire block sits in each NATURAL/ritual crystal's own cell, purely
+// cosmetic ("our fire never spreads"). `noUpdates` skips fire's onPlaced
+// scheduleTick so 15-FIRE's engine never runs on it, and SKIP_IDS keeps the
+// dragon's own terrain carve from deleting it. Player-placed crystals are
+// explicitly excluded, so this is only ever called from the two spawn sites.
+function placeCrystalFire(world, cell) {
+  const x = Math.floor(cell.x), y = Math.floor(cell.y), z = Math.floor(cell.z);
+  if (world.getBlock(x, y, z) !== B.AIR) return;
+  world.setBlock(x, y, z, B.FIRE, { noUpdates: true });
+}
+
 // ==========================================================================
 // §6.1 — a head/body damage box that follows the dragon and forwards hits.
 // ==========================================================================
@@ -70,13 +81,16 @@ export class DragonPart extends LivingEntity {
     return new AABB(c.x - hw, c.y - hh, c.z - hd, c.x + hw, c.y + hh, c.z + hd);
   }
 
-  // Endermen use tryDodgeProjectile; the dragon reuses it (and tryDeflectArrow)
-  // to bounce arrows harmlessly while perched/breathing (§7.7).
-  tryDeflectArrow() {
+  // §7.6/§7.7 — a perched/breathing dragon DEFLECTS arrows (they take fire and
+  // bounce at −v×0.3); it does not dodge them. Arrow.tick tests tryDodgeProjectile
+  // FIRST, so defining both here shadowed the deflect branch and every arrow flew
+  // straight through instead of bouncing — the dodge hook is deliberately absent.
+  tryDeflectArrow(arrow) {
     const s = this.dragon?.state;
-    return s === 'PERCHED' || s === 'BREATH';
+    if (s !== 'PERCHED' && s !== 'BREATH') return false;
+    if (arrow) arrow.flame = true;      // §7.6 "it takes fire"
+    return true;
   }
-  tryDodgeProjectile() { return this.tryDeflectArrow(); }
 
   // §6.1/§7.7 — accept only player-driven melee/arrow or any explosion.
   hurt(amount, source = 'generic', opts = {}) {
@@ -137,6 +151,7 @@ export class EnderDragon extends LivingEntity {
 
     // damage bookkeeping
     this.poolIFrames = 0;
+    this.lastPoolAmount = 0;              // §6.2 — i-frame excess rule (05 §14)
     this.hurtSuppress = 0;
     this.healAccum = 0;
     this.linkedCrystal = null;
@@ -167,8 +182,18 @@ export class EnderDragon extends LivingEntity {
   // §6.2 — shared 10-tick i-frames, then health drain; perch tally; death gate.
   damagePool(amount) {
     if (this.dead || this.state === 'DYING') return;
-    if (this.poolIFrames > 0) return;
-    this.poolIFrames = 10;
+    // §6.2 — "i-frames per 05 §14 apply to the shared pool (10 ticks, excess rule
+    // intact)": inside the window a hit ≤ the stored amount is dropped, a bigger
+    // one applies only the excess and raises the stored amount (Entity.js:203).
+    if (this.poolIFrames > 0) {
+      if (amount <= this.lastPoolAmount) return;
+      const excess = amount - this.lastPoolAmount;
+      this.lastPoolAmount = amount;
+      amount = excess;
+    } else {
+      this.poolIFrames = 10;
+      this.lastPoolAmount = amount;
+    }
     this.hurtSuppress = 10;          // §6.4 — suppress contact for 10 t after a hit
     this.hurtTime = 10;
     this.health -= amount;
@@ -177,9 +202,11 @@ export class EnderDragon extends LivingEntity {
   }
 
   // ---------------------------------------------------------------- helpers
+  // 14 AMENDS 13 §7.5 — targeting/perch/charge must see EVERY player, not just
+  // the host's own. nearestPlayerTo already skips dead players and falls back to
+  // game.player in a solo world.
   nearestPlayer() {
-    const p = this.world.game?.player;
-    return (p && !p.dead) ? p : null;
+    return this.world.game?.nearestPlayerTo?.(this.bodyPos.x, this.bodyPos.y, this.bodyPos.z) ?? null;
   }
 
   nodePos(index) {
@@ -256,7 +283,17 @@ export class EnderDragon extends LivingEntity {
     }
   }
 
+  // §10.1 — the pillar count comes from the fight RECORD when there is one: a
+  // crystal whose chunk unloads is flagged dead and dropped from the entity map
+  // (01 §13.2), so a live scan reads 10 standing crystals as destroyed and flips
+  // ringR to the inner "all gone" ring. The scan stays as the fallback.
   countCrystals(game) {
+    const r = this.endFight?.ensureRecord?.();
+    if (r?.crystalsAlive) {
+      let n = 0;
+      for (const alive of r.crystalsAlive) if (alive) n++;
+      return n;
+    }
     let n = 0;
     for (const e of game.entities.entities.values())
       if (!e.dead && e.type === 'end_crystal' && !e.playerPlaced) n++;
@@ -265,10 +302,16 @@ export class EnderDragon extends LivingEntity {
 
   // §6.3 — nearest crystal within ±32 heals the dragon; linked-crystal death hurts.
   tickCrystalHealing(game) {
-    if (this.linkedCrystal && this.linkedCrystal.dead) {
+    // §6.3 — only a REAL destruction (hurt() ran) costs the dragon 10 HP and
+    // triggers §7.4's strafing run. A crystal that merely had its chunk unloaded
+    // is also `dead`, and would otherwise hand out free damage every time the
+    // arena unloaded behind a player on the outer islands.
+    if (this.linkedCrystal && this.linkedCrystal.destroyed) {
       this.linkedCrystal = null;
       this.damagePool(10);
       if (this.state !== 'DYING') this.setState('STRAFING');
+    } else if (this.linkedCrystal?.dead) {
+      this.linkedCrystal = null;                    // unloaded: just un-link
     }
     let best = null, bd = Infinity;
     const bx = this.bodyPos.x, by = this.bodyPos.y, bz = this.bodyPos.z;
@@ -424,7 +467,12 @@ export class EnderDragon extends LivingEntity {
       const inBody = box.intersects(bBox);
       if (!inHead && !inBody) continue;
       const dmg = inHead ? 10 : 5;
-      if (!e.hurt(dmg, 'mob', { attacker: this })) continue;
+      // 05 §14.2 — contact damage is armor-applicable ("Mob melee, player melee |
+      // yes | yes"); 13's only armor-bypass amendment is the breath cloud. Source
+      // 'mob' is absent from ARMOR_SOURCES, so it skipped both the reduction and
+      // the durability cost. opts.dirX stays undefined, so applyDamage still does
+      // NOT knock back — the direct-velocity launch below remains authoritative.
+      if (!e.hurt(dmg, 'melee', { attacker: this })) continue;
       let dx = e.pos.x - this.bodyPos.x, dz = e.pos.z - this.bodyPos.z;
       const l = Math.hypot(dx, dz) || 1;
       e.vel.x += (dx / l) * 2.0; e.vel.z += (dz / l) * 2.0; e.vel.y += 0.8;
@@ -476,8 +524,8 @@ export class EnderDragon extends LivingEntity {
     const r = this.endFight.ensureRecord();
     if (this.headPart) { this.headPart.dead = true; this.headPart.deathTime = 0; }
     if (this.bodyPart) { this.bodyPart.dead = true; this.bodyPart.deathTime = 0; }
-    game.ui?.bossBar?.remove(this.id);
-    if (this.object3d) { game.scene.remove(this.object3d); this.object3d = null; }
+    game.bossBarRemove?.(this.id);
+    this.disposeRender();
 
     activateExitPortal(game); r.exitPortalActive = true;
     if (this.firstKill) { game.world.setBlock(EGG_CELL.x, EGG_CELL.y, EGG_CELL.z, B.DRAGON_EGG); r.eggPlaced = true; }
@@ -489,8 +537,9 @@ export class EnderDragon extends LivingEntity {
 
   // §6.6 — boss bar (id keyed; add() is idempotent).
   tickBossBar(game) {
-    game.ui?.bossBar?.add(this.id, { name: 'Ender Dragon', color: '#ec00d1' });
-    game.ui?.bossBar?.set(this.id, this.health / 200);
+    // 14 §12 — through Game so the bar is mirrored to joined clients too.
+    game.bossBarAdd?.(this.id, 'Ender Dragon', '#ec00d1');
+    game.bossBarSet?.(this.id, this.health / 200);
   }
 
   // ---------------------------------------------------------------- render
@@ -511,6 +560,25 @@ export class EnderDragon extends LivingEntity {
       if (this.parts.wingL) this.parts.wingL.rotation.z = -flap;
       if (this.parts.wingR) this.parts.wingR.rotation.z = flap;
     }
+  }
+
+  // 01 §17.2 — the dragon is not an EntityManager member, so nothing else reaps
+  // its mesh: the scene survives world teardown and dimension changes, and both
+  // paths left a full model parented at the arena coordinates (leaking 4 box
+  // geometries + 2 materials per End round trip). finalize() and EndFight.dispose
+  // both route through here. Idempotent.
+  disposeRender() {
+    const o = this.object3d;
+    if (!o) return;
+    this.world.game?.scene?.remove(o);
+    o.traverse(m => {
+      if (!m.isMesh) return;
+      if (m.geometry && !m.geometry.userData?.shared) m.geometry.dispose();
+      const mats = Array.isArray(m.material) ? m.material : (m.material ? [m.material] : []);
+      for (const mat of mats) if (!mat.userData?.shared) mat.dispose();
+    });
+    this.object3d = null;
+    this.parts = null;
   }
 
   // §7.10 — a simplified dragon (body + neck + head + 2 wings). Model faces +Z.
@@ -614,9 +682,11 @@ export class EndFight {
 
     const world = this.game.world;
     const pills = pillarPositions(worldSeed);
+    r.crystalsAlive = pills.map(() => true);          // §10.1 — fresh fight record
     for (let k = 0; k < pills.length; k++) {
       const c = pills[k].crystal;
-      this.game.entities.add(new EndCrystal(world, c.x, c.y, c.z, { hasBase: true }));
+      this.game.entities.add(new EndCrystal(world, c.x, c.y, c.z, { hasBase: true, pillar: k }));
+      placeCrystalFire(world, c);                     // §3.1 cosmetic flame
     }
     const d = new EnderDragon(world, 0, 100, 0);
     d.endFight = this;
@@ -699,7 +769,9 @@ export class EndFight {
         this.game.particles?.explosion?.(p.x + 0.5, p.topY + 1, p.z + 0.5, 0);   // §7.11 power-0 flash
         regenerateSpike(this.game, worldSeed, k);
         this.game.entities.add(new EndCrystal(this.game.world, p.crystal.x, p.crystal.y, p.crystal.z,
-          { hasBase: true, ritualInvuln: true }));
+          { hasBase: true, ritualInvuln: true, pillar: k }));
+        placeCrystalFire(this.game.world, p.crystal);   // §3.1 cosmetic flame
+        if (r.crystalsAlive) r.crystalsAlive[k] = true;  // §10.1 — pillar restored
         seq.beamPillar = Math.min(9, k + 1);
       }
     }
@@ -729,6 +801,15 @@ export class EndFight {
   clearRitualInvuln() {
     for (const e of this.game.entities.entities.values())
       if (e.type === 'end_crystal' && e.ritualInvuln) e.ritualInvuln = false;
+  }
+
+  // 01 §17.2 — world teardown / dimension change. Game.disposeWorld already calls
+  // this (optional-call, so it was a silent no-op while the method was missing);
+  // the record in dimMeta keeps the fight state, so dropping the live dragon here
+  // only costs its mesh — maybeRespawnDragon rebuilds it from r.dragon on return.
+  dispose() {
+    this.liveDragon?.disposeRender();
+    this.liveDragon = null;
   }
 
   // On load: an alive-but-absent dragon is rebuilt from the record + re-added.

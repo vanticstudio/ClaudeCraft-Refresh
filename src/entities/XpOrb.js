@@ -19,6 +19,9 @@ function getOrbTexture() {
   orbTexture.magFilter = THREE.NearestFilter;
   orbTexture.minFilter = THREE.NearestFilter;
   orbTexture.colorSpace = THREE.NoColorSpace;
+  // 01 §17.2 — module singleton: EntityManager._disposeObject's sprite arm must
+  // free the per-instance SpriteMaterial but leave this texture alone.
+  orbTexture.userData.shared = true;
   return orbTexture;
 }
 
@@ -96,6 +99,8 @@ export class XpOrb extends Entity {
   }
 
   serialize() {
-    return { type: 'xp_orb', value: this.value, ...super.serialize() };
+    // 05 §15 — `age` drives the 6000-tick lifetime; without it every save/load
+    // restarted the clock and an uncollected orb could persist forever.
+    return { type: 'xp_orb', value: this.value, age: this.age, ...super.serialize() };
   }
 }

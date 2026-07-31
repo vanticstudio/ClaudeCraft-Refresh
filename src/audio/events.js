@@ -383,8 +383,11 @@ def('entity.blaze.shoot', {
 });
 
 // 11-END §16 — End sound events.
+// §2.13's whoosh pack has no default band: every call MUST name f0/f1, or the
+// filter ramp is fed NaN and the whole recipe throws (silencing its other layers
+// too). The six calls below were the ones that omitted them.
 def('eye_of_ender.launch', { bus: 'sfx', maxDist: 16, capKey: 'eye_launch', priority: P.NEAR, replicate: true,
-  recipe: (v, t, p, g) => { whoosh(v, t, { dur: 0.4, gain: 0.4 * g, pitch: p }); return chime(v, t + 0.05, { freq: 1400, ratio: 2.0, index: 3, dur: 0.25, gain: 0.25 * g, pitch: p }); } });
+  recipe: (v, t, p, g) => { whoosh(v, t, { f0: 600, f1: 2400, dur: 0.4, gain: 0.4 * g, pitch: p }); return chime(v, t + 0.05, { freq: 1400, ratio: 2.0, index: 3, dur: 0.25, gain: 0.25 * g, pitch: p }); } });
 def('eye_of_ender.drop', { bus: 'sfx', maxDist: 16, capKey: 'eye_drop', priority: P.NEAR, replicate: true,
   recipe: (v, t, p, g) => pluck(v, t, { freq: 420, dur: 0.12, gain: 0.35 * g, pitch: p }) });
 def('eye_of_ender.shatter', { bus: 'sfx', maxDist: 16, capKey: 'eye_shatter', priority: P.NEAR, replicate: true,
@@ -394,11 +397,13 @@ def('block.portal.fill', { bus: 'sfx', maxDist: 16, capKey: 'portal_fill', prior
 def('block.portal.activate', { bus: 'sfx', maxDist: 64, refDist: 8, cap: 1, capKey: 'portal_activate', priority: P.NEAR, replicate: false, distanceOnly: false,
   recipe: (v, t, p, g) => { drone(v, t, { freqs: [55, 82, 110], dur: 2.4, gain: 0.5 * g, lpFreq: 900 }); return sweep(v, t, { src: 'osc', wave: 'sawtooth', f0: 120, f1: 300, dur: 1.2, gain: 0.3 * g, pitch: p }); } });
 def('block.portal.travel', { bus: 'sfx', maxDist: 16, capKey: 'portal_travel', priority: P.PLAYER, replicate: false,
-  recipe: (v, t, p, g) => { sweep(v, t, { src: 'noise', f0: 2600, f1: 400, dur: 0.5, gain: 0.35 * g, pitch: p, filter: { Q: 2 } }); return whoosh(v, t, { dur: 0.5, gain: 0.3 * g, pitch: p }); } });
+  // §3.5 `world.portal.travel` = whoosh(300->2400->200 Hz, Q1.5); §2.13's whoosh
+  // owns a single ramp, so the rise lives here and the fall in the sweep layer.
+  recipe: (v, t, p, g) => { sweep(v, t, { src: 'noise', f0: 2600, f1: 400, dur: 0.5, gain: 0.35 * g, pitch: p, filter: { Q: 2 } }); return whoosh(v, t, { f0: 300, f1: 2400, Q: 1.5, dur: 0.5, gain: 0.3 * g, pitch: p }); } });
 def('gateway.beam', { bus: 'sfx', maxDist: 64, refDist: 8, capKey: 'gateway_beam', priority: P.NEAR, replicate: true,
   recipe: (v, t, p, g) => drone(v, t, { freqs: [110, 165, 220], dur: 1.6, gain: 0.4 * g, lpFreq: 1200 }) });
 def('gateway.travel', { bus: 'sfx', maxDist: 16, capKey: 'gateway_travel', priority: P.PLAYER, replicate: false,
-  recipe: (v, t, p, g) => { sweep(v, t, { src: 'noise', f0: 3200, f1: 500, dur: 0.4, gain: 0.35 * g, pitch: p * 1.2, filter: { Q: 2 } }); return whoosh(v, t, { dur: 0.4, gain: 0.3 * g, pitch: p * 1.2 }); } });
+  recipe: (v, t, p, g) => { sweep(v, t, { src: 'noise', f0: 3200, f1: 500, dur: 0.4, gain: 0.35 * g, pitch: p * 1.2, filter: { Q: 2 } }); return whoosh(v, t, { f0: 400, f1: 2000, dur: 0.4, gain: 0.3 * g, pitch: p * 1.2 }); } });
 def('chorus.grow', { bus: 'sfx', maxDist: 16, capKey: 'chorus_grow', priority: P.NEAR, replicate: true,
   recipe: (v, t, p, g) => pluck(v, t, { freq: 160, dur: 0.2, gain: 0.35 * g, pitch: p * 0.8 }) });
 def('chorus.teleport', { bus: 'sfx', maxDist: 24, capKey: 'chorus_tp', priority: P.NEAR, replicate: true,
@@ -418,9 +423,12 @@ def('shulker.hurt_closed', { bus: 'sfx', maxDist: 16, capKey: 'shulker_hurt', pr
 def('shulker_bullet.pop', { bus: 'sfx', maxDist: 16, capKey: 'bullet_pop', priority: P.NEAR, replicate: true,
   recipe: (v, t, p, g) => { blip(v, t, { wave: 'square', freq: 1400, dur: 0.04, gain: 0.3 * g }); return noiseBurst(v, t, { src: 'white', filter: 'bp', freq: 2600, Q: 1.5, dur: 0.08, gain: 0.25 * g, pitch: p }); } });
 def('elytra.deploy', { bus: 'sfx', maxDist: 16, capKey: 'elytra_deploy', priority: P.PLAYER, replicate: false,
-  recipe: (v, t, p, g) => whoosh(v, t, { dur: 0.3, gain: 0.4 * g, pitch: p }) });
+  recipe: (v, t, p, g) => whoosh(v, t, { f0: 300, f1: 1200, dur: 0.3, gain: 0.4 * g, pitch: p }) });
+// §3.5 elytra loop: "BP center 250 + 45xspeed Hz". f0 is the standing centre; the
+// per-frame speed drive rides `voice.mod.whooshFreq`, and the loop branch of §2.13
+// never reads f1.
 def('item.elytra.loop', { bus: 'sfx', loop: true, maxDist: 16, capKey: 'elytra_loop', priority: P.PLAYER, replicate: false,
-  recipe: (v, t, p, g) => whoosh(v, t, { dur: 0.5, gain: 0.3 * g, pitch: p, loop: true }) });
+  recipe: (v, t, p, g) => whoosh(v, t, { f0: 250, dur: 0.5, gain: 0.3 * g, pitch: p, loop: true }) });
 
 // 12-VILLAGES §12.3 — village sound events.
 def('block.bell.use', {
@@ -433,6 +441,20 @@ def('block.bell.use', {
 def('block.barrel.open', {
   bus: 'sfx', maxDist: 16, capKey: 'barrel', priority: P.NEAR, replicate: true,
   recipe: (v, t, p, g) => { sweep(v, t, { src: 'osc', wave: 'sawtooth', f0: 220, f1: 160, dur: 0.3, gain: 0.5 * g, pitch: p, filter: { type: 'lp', freq: 600, Q: 1 } }); return CORES.wood(v, t, p, 0.14 * g, STEP_DUR.wood); },
+});
+// 12-VILLAGES §12.3 — the composter's two events. `fill` is the dry rustle of a
+// successful layer; `ready` is the same body with a bright confirm on top, and
+// covers both "reached level 8" and the bone_meal harvest.
+def('block.composter.fill', {
+  bus: 'sfx', maxDist: 16, capKey: 'composter', priority: P.NEAR, replicate: true,
+  recipe: (v, t, p, g) => noiseBurst(v, t, { src: 'pink', filter: 'lp', freq: 900, Q: 0.6, dur: 0.16, gain: 0.34 * g, pitch: p }),
+});
+def('block.composter.ready', {
+  bus: 'sfx', maxDist: 16, capKey: 'composter', priority: P.NEAR, replicate: true,
+  recipe: (v, t, p, g) => {
+    noiseBurst(v, t, { src: 'pink', filter: 'lp', freq: 800, Q: 0.6, dur: 0.18, gain: 0.3 * g, pitch: p });
+    return chime(v, t + 0.05, { freq: 740, ratio: 2.0, index: 2, dur: 0.28, gain: 0.26 * g, pitch: p });
+  },
 });
 def('villager.trade', {
   bus: 'sfx', maxDist: 16, capKey: 'villager_trade', priority: P.NEAR, replicate: true,
@@ -451,8 +473,9 @@ def('mob.ender_dragon.ambient', { bus: 'sfx', maxDist: 96, refDist: 8, capKey: '
   recipe: (v, t, p, g) => { drone(v, t, { freqs: [70, 105], dur: 1.4, gain: 0.6 * g, lpFreq: 800 }); return sweep(v, t, { src: 'osc', wave: 'sawtooth', f0: 160, f1: 90, dur: 1.2, gain: 0.4 * g, pitch: p }); } });
 def('mob.ender_dragon.growl', { bus: 'sfx', maxDist: 96, refDist: 8, capKey: 'dragon_growl', priority: P.NEAR, replicate: true,
   recipe: (v, t, p, g) => drone(v, t, { freqs: [60, 90, 120], dur: 1.0, gain: 0.6 * g, lpFreq: 600 }) });
+// §3.4 dragon: "flap: whoosh(pink BP 160->60 Hz, 0.5 s)"
 def('mob.ender_dragon.flap', { bus: 'sfx', maxDist: 64, refDist: 6, capKey: 'dragon_flap', priority: P.FAR, replicate: true,
-  recipe: (v, t, p, g) => whoosh(v, t, { dur: 0.5, gain: 0.5 * g, pitch: p * 0.7 }) });
+  recipe: (v, t, p, g) => whoosh(v, t, { src: 'pink', f0: 160, f1: 60, dur: 0.5, gain: 0.5 * g, pitch: p * 0.7 }) });
 def('mob.ender_dragon.shoot', { bus: 'sfx', maxDist: 64, refDist: 6, capKey: 'dragon_shoot', priority: P.NEAR, replicate: true,
   recipe: (v, t, p, g) => { hiss(v, t, { freq: 2000, dur: 0.3, gain: 0.5 * g, pitch: p }); return sweep(v, t, { src: 'osc', wave: 'sawtooth', f0: 300, f1: 120, dur: 0.3, gain: 0.4 * g, pitch: p }); } });
 def('entity.dragon_fireball.explode', { bus: 'sfx', maxDist: 48, refDist: 4, capKey: 'dragon_fb', priority: P.NEAR, replicate: true,
@@ -1023,7 +1046,10 @@ const NOTE = {
   hat: (v, t, p, g) => hiss(v, t, { freq: 7000, Q: 2, filter: 'bp', dur: 0.045, gain: 0.4 * g, pitch: p }),
   bell: (v, t, p, g) => chime(v, t, { freq: FSHARP4 * 4 * p, ratio: 3.53, index: 4, dur: 0.9, gain: 0.4 * g }),
   basedrum: (v, t, p, g) => thud(v, t, { f0: 120, f1: 45, dur: 0.18, noiseGain: 0.5, gain: 0.6 * g, pitch: p }),
-  guitar: (v, t, p, g) => pluck(v, t, { freq: (FSHARP4 / 2) * p, dur: 0.7, gain: 0.5 * g, lp: 1200 }),
+  // §3.5: "pluckA buffer through LP 1.2 kHz (muted/damped), 1 octave down". The
+  // range is 92.5-370 Hz, so notes 0-3 would fall under pluck's 110 Hz auto-bass
+  // and swap bakes mid-scale — `bass: false` pins the whole range to pluckA.
+  guitar: (v, t, p, g) => pluck(v, t, { freq: (FSHARP4 / 2) * p, bass: false, dur: 0.7, gain: 0.5 * g, lp: 1200 }),
   iron_xylophone: (v, t, p, g) => chime(v, t, { freq: FSHARP4 * p, ratio: 2.0, index: 3, dur: 0.6, gain: 0.4 * g }),
   pling: (v, t, p, g) => {
     chime(v, t, { freq: FSHARP4 * p, ratio: 1.0, index: 1, dur: 0.3, gain: 0.4 * g });
@@ -1117,7 +1143,8 @@ def('mending.repair', {
 // recipe-call time — never hoisted to module scope.
 function loopBuffer(v, t, name, gain, opts = {}) {
   const src = v.ctx.createBufferSource();
-  src.buffer = BUFFERS[name];
+  const buf = BUFFERS[name];
+  src.buffer = buf;
   src.loop = true;
   const g = v.ctx.createGain();
   g.gain.setValueAtTime(0, t);
@@ -1133,7 +1160,11 @@ function loopBuffer(v, t, name, gain, opts = {}) {
     src.connect(g);
   }
   g.connect(v.envGain);
-  src.start(t);
+  // Random start offset, same rule as primitives.js's startOffset(): a looping
+  // source wraps at loopEnd so any offset is legal, and the two fluid cluster
+  // voices Ambience can start on ONE sampling pass (jitter: 0, playbackRate 1,
+  // same buffer) would otherwise be sample-identical and sum coherently at +6 dB.
+  src.start(t, buf ? Math.random() * buf.duration : 0);
   v.nodes.push(src);
   v.mod.loopGain = g.gain;
   return Infinity;

@@ -20,11 +20,18 @@ const SCALES = {
   phrygianFragment: [0, 1, 5, 7, 8],
 };
 
-// §4.1 mood table: condition priority is resolved in selectMood()
+// §4.1 mood table: condition priority is resolved in selectMood().
+// `melody: null` is load-bearing, not decorative — the FORM section says WHEN a
+// melody may play, the mood says WHETHER one exists at all (nether/boss: none).
+// `accent` is the mood-driven half of §4.1: the nether's metal clank every 4-9 s
+// and the End's bell dyads every 3-8 s run in EVERY section, unlike §4.2's
+// B-section chime accents (FORM[2].accents), which stay section-driven.
 const MOODS = {
   boss: { scale: 'phrygianFragment', bpm: 84, melody: null, padLp: 700, gain: 0.28 },
-  nether: { scale: 'phrygianFragment', bpm: 40, melody: null, padLp: 600, gain: 0.22 },
-  end: { scale: 'lydian', bpm: 50, melody: 'chime', padLp: 900, gain: 0.2, sparse: true },
+  nether: { scale: 'phrygianFragment', bpm: 40, melody: null, padLp: 600, gain: 0.22,
+    accent: { every: [4, 9], ratio: 2.76, degrees: [0, 7] } },   // metal clank on root/5th
+  end: { scale: 'lydian', bpm: 50, melody: 'chime', padLp: 900, gain: 0.2, restProb: 0.85,
+    accent: { every: [3, 8], dyad: true } },                     // sparse bell dyads
   underground: { scale: 'dorian', bpm: 56, melody: 'pluck', padLp: 1200, gain: 0.22, restProb: 0.8, busLp: 1500 },
   'overworld-night': { scale: 'minorPentatonic', bpm: 56, melody: 'chime', padLp: 900, gain: 0.25 },
   'overworld-day': { scale: 'majorPentatonic', bpm: 72, melody: 'pluck', padLp: 1200, gain: 0.25 },
@@ -69,8 +76,6 @@ export class Music {
     this.nextPieceAt = 0;         // ctx.currentTime deadline (§4.3 scarcity)
     this.scheduledUpTo = 0;
     this.mood = 'overworld-day';
-    this.pendingMood = null;
-    this.enabled = true;
     this.suspended = false;       // musicMode 'full' hands the bus to §4A
     this.busLp = null;
     this.ambientDucked = false;   // §4.1 boss mood ducks ambientBus -12 dB
@@ -198,8 +203,12 @@ export class Music {
       chord: 'I', chordBarsLeft: 0,
       melodyDegree: Math.floor(rng() * scale.length),
       activeBars: 0, restBars: 0,
+      nextAccentAt: 0,                  // §4.1 mood accents run on a deadline
       velocity: 0.18 + (rng() - 0.5) * 0.1,
     };
+    // First mood accent lands one interval into the piece, never on bar 0.
+    const acc = spec.accent;
+    if (acc) this.piece.nextAccentAt = this.piece.startTime + acc.every[0] + rng() * (acc.every[1] - acc.every[0]);
     this.scheduledUpTo = this.piece.startTime;
     this.pieceIndex++;
   }
@@ -243,8 +252,11 @@ export class Music {
     }
     pc.chordBarsLeft--;
 
-    if (form.melody) this.scheduleMelodyBar(t, pc, form);
-    if (form.accents) this.scheduleAccents(t, pc);
+    // §4.1: a mood with no melody voice (nether "low drones only, no melody
+    // line"; boss "pulsing low drone + noiseBurst hits") stays drone-only in
+    // every section — the FORM flag alone is not permission to play a tune.
+    if (form.melody && pc.spec.melody) this.scheduleMelodyBar(t, pc, form);
+    if (form.accents || pc.spec.accent) this.scheduleAccents(t, pc);
     if (pc.mood === 'boss') this.scheduleRhythm(t, pc);
 
     pc.bar++;
@@ -264,10 +276,13 @@ export class Music {
     const freqs = [midiToFreq(tone(0) - 12), midiToFreq(tone(2)), midiToFreq(tone(4))];
     const dur = pc.barDur * pc.chordBarsLeft || pc.barDur * 2;
 
+    // §4.2 pad gain is 0.25; §4.1 lets a mood override it (the End's bell dyads
+    // sit "over a near-silent drone"), so the level is per-mood, not a literal.
+    const padGain = pc.spec.gain ?? 0.25;
     const mix = ctx.createGain();
     mix.gain.setValueAtTime(0, t);
-    mix.gain.linearRampToValueAtTime(0.25, t + 0.8);                 // 0.8 s crossfade in
-    mix.gain.setValueAtTime(0.25, t + dur);
+    mix.gain.linearRampToValueAtTime(padGain, t + 0.8);              // 0.8 s crossfade in
+    mix.gain.setValueAtTime(padGain, t + dur);
     mix.gain.linearRampToValueAtTime(0, t + dur + 0.8);
     const lp = ctx.createBiquadFilter();
     lp.type = 'lowpass'; lp.frequency.value = pc.spec.padLp;
@@ -325,12 +340,26 @@ export class Music {
     }
   }
 
-  // §4.1 end/underground accents: sparse bell dyads / distant chimes
+  // §4.1 end bell dyads / nether metal clanks, plus §4.2's B-section accents.
   scheduleAccents(t, pc) {
-    if (pc.rng() > 0.35) return;
+    const acc = pc.spec.accent;
+    if (acc) {
+      // Mood accents are specified in SECONDS ("every 4-9 s"), so they fire on a
+      // deadline: at the nether's 40 BPM one bar is 6 s, and a per-bar dice roll
+      // cannot express an interval finer than the bar.
+      if (t < pc.nextAccentAt) return;
+      pc.nextAccentAt = t + acc.every[0] + pc.rng() * (acc.every[1] - acc.every[0]);
+    } else if (pc.rng() > 0.35) return;
+
     const sc = pc.scale;
-    const base = pc.root + sc[Math.floor(pc.rng() * sc.length)] + 36;
-    this.playChime(pc, t + pc.rng() * pc.barDur, midiToFreq(base), 0.12);
+    // §4.1 nether: "pitched to scale root/5th" — otherwise any degree in the pool
+    const semi = acc?.degrees ? acc.degrees[Math.floor(pc.rng() * acc.degrees.length)]
+      : sc[Math.floor(pc.rng() * sc.length)];
+    const base = pc.root + semi + 36;
+    const at = t + pc.rng() * pc.barDur;
+    this.playChime(pc, at, midiToFreq(base), 0.12, acc?.ratio);
+    // §4.1 end: "chime pairs (root + tritone or maj7)"
+    if (acc?.dyad) this.playChime(pc, at + 0.06, midiToFreq(base + (pc.rng() < 0.5 ? 6 : 11)), 0.09);
   }
 
   // §4.2 boss rhythm: noiseBurst hits on beats 1 and 3 — a pulse, not a drum kit
@@ -352,9 +381,10 @@ export class Music {
     else pluck(v, at, { freq, dur, gain });
   }
 
-  playChime(pc, at, freq, gain) {
+  playChime(pc, at, freq, gain, ratio = 3.53) {
+    if (this.voices >= 8) return;                 // §4.2 self-budget
     const v = this.tempVoice(pc, at + 1.6);
-    chime(v, at, { freq, ratio: 3.53, index: 3, dur: 1.6, gain });
+    chime(v, at, { freq, ratio, index: 3, dur: 1.6, gain });
   }
 
   // Music sources are fire-and-forget onto the music bus and do NOT consume the
@@ -395,5 +425,10 @@ export class Music {
       this.stop(2);
       this.nextPieceAt = this.ctx.currentTime + 2;
     }
+    // §4.3's other half: "on boss end, 2 s fade out, then a fresh scarcity
+    // timer" — without this the boss piece plays its full ~90 s form over an
+    // empty arena. stop() already arms nextPieceAt with the scarcity gap, so
+    // unlike the entry branch above this one must NOT overwrite it.
+    if (this.piece && this.piece.mood === 'boss' && m !== 'boss') this.stop(2);
   }
 }

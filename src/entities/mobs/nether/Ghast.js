@@ -27,12 +27,15 @@ export class Ghast extends Mob {
   tick() {
     this.baseTick();
     if (this.dead) { this.deathTime++; return; }
+    // 05 §14 — a custom tick() still owes the base contract: without tickTimers()
+    // invulnTicks never decays and a single hit makes the ghast unkillable.
+    this.tickTimers();
     this.tickEnvironment();
     if (this.dead) return;
     if (this.tickDespawn?.()) return;
     if (this.attackCooldown > 0) this.attackCooldown--;
 
-    const p = this.world.game?.player;
+    const p = this.nearestPlayer();
     const dist = p ? this.distTo(p) : 999;
 
     // flight drift (buoyant random walk), gently avoiding solid ahead
@@ -44,8 +47,9 @@ export class Ghast extends Mob {
     const s = 0.03;
     this.pos.x += this.driftDir.x * s; this.pos.y += this.driftDir.y * s; this.pos.z += this.driftDir.z * s;
 
-    // shoot goal
-    if (p && dist <= 64 && this.attackCooldown === 0) {
+    // shoot goal — §7.3 "canStart: player within 64, LOS (opaque-only raycast)".
+    // The else branch below then aborts a charge the moment LOS breaks.
+    if (p && dist <= 64 && this.canSee(p) && this.attackCooldown === 0) {
       // face target
       this.yaw = Math.atan2(-(p.pos.x - this.pos.x), -(p.pos.z - this.pos.z));
       if (this.charge === 0) emitSound('entity.ghast.warn', at(this.pos.x, this.pos.y, this.pos.z));
@@ -58,7 +62,6 @@ export class Ghast extends Mob {
     } else {
       this.charge = 0;
     }
-    this.age++;
   }
 
   // §7.3 "gently avoiding solid blocks (steer away when a short forward raycast

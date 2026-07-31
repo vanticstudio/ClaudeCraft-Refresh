@@ -4,9 +4,11 @@ import { DB_NAME, DB_VERSION, SAVE_VERSION, AUTOSAVE_INTERVAL } from '../constan
 export class SaveManager {
   constructor() {
     this.db = null;
-    this.savedChunkKeys = new Set();
     this.meta = null;
     this.savedChunkKeys = new Set();
+    // 17-SHIP §1.6 — set when IndexedDB is unavailable (private mode, blocked
+    // storage). main.js toasts it; the session runs, it just never persists.
+    this.unavailable = false;
     this.autosaveCounter = 0;
     this.saving = false;
     // 10-NETHER §2.4 — the dimension whose chunks are currently resident. Game
@@ -18,8 +20,19 @@ export class SaveManager {
   keyFor(bareKey, dim) { return dim + ':' + bareKey; }
 
   open() {
-    return new Promise((resolve, reject) => {
-      const req = indexedDB.open(DB_NAME, DB_VERSION);
+    return new Promise(resolve => {
+      // 17-SHIP §1.6 — blocked storage must DEGRADE, not abort the boot: a
+      // rejection here left `await save.open()` unhandled in main.js and the
+      // player looking at a blank page. Resolve with an unusable-but-valid
+      // manager instead; every write path already guards on `this.db`.
+      const bail = err => {
+        console.warn('[save] storage unavailable — this session will not persist', err);
+        this.db = null; this.meta = null; this.unavailable = true;
+        this.savedChunkKeys.clear();
+        resolve(this);
+      };
+      let req;
+      try { req = indexedDB.open(DB_NAME, DB_VERSION); } catch (err) { bail(err); return; }
       req.onupgradeneeded = e => {
         const db = e.target.result;
         if (!db.objectStoreNames.contains('meta')) db.createObjectStore('meta');
@@ -42,21 +55,29 @@ export class SaveManager {
           }
           resolve(this);
         };
-        tx.onerror = () => reject(tx.error);
+        tx.onerror = () => bail(tx.error);
       };
-      req.onerror = () => reject(req.error);
+      req.onerror = () => bail(req.error);
     });
   }
 
   hasWorld() { return this.meta !== null; }
   hasChunk(key) { return this.savedChunkKeys.has(this.keyFor(key, this.activeDim)); }
 
+  // 01 §16.2 — contract is "resolve(null) on failure, never reject". db.transaction()
+  // throws synchronously (InvalidStateError) if the connection was closed under us —
+  // a UA storage eviction or tab discard — which rejected the promise straight past
+  // the null path every other error here takes. Catch it and honour the contract.
   loadChunk(key) {
+    if (!this.db) return Promise.resolve(null);
     return new Promise(resolve => {
-      const tx = this.db.transaction('chunks', 'readonly');
-      const req = tx.objectStore('chunks').get(this.keyFor(key, this.activeDim));
-      req.onsuccess = () => resolve(req.result ?? null);
-      req.onerror = () => resolve(null);
+      try {
+        const tx = this.db.transaction('chunks', 'readonly');
+        const req = tx.objectStore('chunks').get(this.keyFor(key, this.activeDim));
+        req.onsuccess = () => resolve(req.result ?? null);
+        req.onerror = () => resolve(null);
+        tx.onerror = tx.onabort = () => resolve(null);
+      } catch { resolve(null); }
     });
   }
 
@@ -102,8 +123,14 @@ export class SaveManager {
     for (const e of chunk.entities) {
       if (e === game.player || e.dead) continue;
       const rec = e.serialize?.();
+      // 09-POTIONS §16 / DEVIATIONS §09.3 — in-flight thrown potions AND their lingering
+      // clouds are deliberately dropped on save. area_effect_cloud was persisted
+      // anyway but has no restore branch (Game.restoreEntity fell through to
+      // createMob → "unknown type" warn every reload), and its serialize() omits
+      // effectPayload/radiusOnUse/radiusPerTick so a rehydrated cloud would come back
+      // inert and shrink at the wrong rate. Skip the write to match the decision.
       if (rec && rec.type && rec.type !== 'player' && rec.type !== 'arrow' &&
-          !rec.type.startsWith('thrown')) {
+          rec.type !== 'area_effect_cloud' && !rec.type.startsWith('thrown')) {
         entities.push(rec);
       }
     }
@@ -146,7 +173,7 @@ export class SaveManager {
     // production build reached serializeChunk(chunk, undefined) here and threw on
     // every chunk-unload / dimension-flush write → silent chunk loss. `this.game`
     // is wired in startWorld and is the authoritative source in every build.
-    const game = chunk?.gameRef ?? this.game ?? (typeof window !== 'undefined' ? window.game : null);
+    const game = this.game ?? (typeof window !== 'undefined' ? window.game : null);
     if (!game) return;
     if (game.net?.isClient) return;   // 14 §9.1 — see saveAll: clients persist no world data
 
@@ -156,14 +183,24 @@ export class SaveManager {
       const tx = this.db.transaction('chunks', 'readwrite');
       tx.objectStore('chunks').put(record, key);
       this.savedChunkKeys.add(key);
-      tx.oncomplete = () => { chunk.modified = false; };
+      // AMENDS 01 §16.2 ("clears only on oncomplete") — put() takes the structured
+      // clone SYNCHRONOUSLY, so an edit landing before the commit would be cleared
+      // by oncomplete yet absent from the record on disk, and never rewritten.
+      // Clear at clone time; restore the flag only if the write fails to land.
+      chunk.modified = false;
+      tx.onerror = tx.onabort = () => { chunk.modified = true; };
     } catch (err) {
       console.warn('[save] chunk write failed', err);
     }
   }
 
-  // meta + all modified chunks in one transaction (01 §16.2)
-  saveAll(game, { sync = false } = {}) {
+  // meta + all modified chunks in one transaction (01 §16.2).
+  // Resolves true on commit, false on a failed/aborted transaction, undefined when
+  // there was nothing to do (client / no db / overlapping save). 17-SHIP §1.4 — the
+  // old `{ sync }` option was dead (IndexedDB has no synchronous API; see
+  // DEVIATIONS L-6) and has been deleted rather than left advertising a quit-path
+  // flush that never existed.
+  saveAll(game) {
     // 14 §9.1 — "Clients save nothing but localStorage identity/settings." A joined
     // client's world is the HOST's, replicated over the wire; writing its chunks and
     // meta into THIS browser's IndexedDB overwrites the player's own single-player
@@ -181,22 +218,45 @@ export class SaveManager {
       if (chunk.modified && chunk.blocks) dirty.push(chunk);
     }
     return new Promise(resolve => {
-      const tx = this.db.transaction(['meta', 'chunks'], 'readwrite');
-      tx.objectStore('meta').put(this.buildMeta(game), 'world');
-      const store = tx.objectStore('chunks');
-      for (const chunk of dirty) {
-        const key = this.keyFor(chunk.key, chunk.dim);
-        store.put(this.serializeChunk(chunk, game), key);
-        this.savedChunkKeys.add(key);
-      }
-      tx.oncomplete = () => {
-        for (const chunk of dirty) chunk.modified = false;
-        this.meta = this.buildMeta(game);
+      // `saving` must be releasable on EVERY exit. It used to be cleared after
+      // `this.meta = this.buildMeta(game)` in oncomplete, so a Save & Quit that
+      // disposed the world while the transaction was in flight made buildMeta throw
+      // on `game.world.seedString` and latched the flag true for the page session —
+      // every later autosave/quit/portal checkpoint then wrote nothing.
+      let settled = false;
+      const fail = err => {
+        if (settled) return;
+        settled = true;
+        console.warn('[save] transaction failed', err);
+        for (const chunk of dirty) chunk.modified = true;   // rewrite them next pass
         this.saving = false;
-        resolve();
+        resolve(false);
       };
-      tx.onerror = () => { this.saving = false; resolve(); };
-      tx.onabort = () => { this.saving = false; resolve(); };
+      try {
+        const tx = this.db.transaction(['meta', 'chunks'], 'readwrite');
+        tx.objectStore('meta').put(this.buildMeta(game), 'world');
+        const store = tx.objectStore('chunks');
+        for (const chunk of dirty) {
+          const key = this.keyFor(chunk.key, chunk.dim);
+          store.put(this.serializeChunk(chunk, game), key);
+          this.savedChunkKeys.add(key);
+          chunk.modified = false;   // at clone time — see saveChunkNow
+        }
+        tx.oncomplete = () => {
+          settled = true;
+          // the world may already be disposed (quit racing the commit)
+          try {
+            if (game.world && game.player) this.meta = this.buildMeta(game);
+          } catch (err) { console.warn('[save] meta refresh failed', err); }
+          this.saving = false;
+          resolve(true);
+        };
+        tx.onerror = () => fail(tx.error);
+        tx.onabort = () => fail(tx.error);
+      } catch (err) {
+        // db.transaction() after a versionchange close, or a throwing serialize()
+        fail(err);
+      }
     });
   }
 
@@ -212,6 +272,7 @@ export class SaveManager {
       this.db?.close();
       this.db = null;
       this.meta = null;
+      this.saving = false;   // a save in flight against the closed db can never settle
       this.savedChunkKeys.clear();
       const req = indexedDB.deleteDatabase(DB_NAME);
       req.onsuccess = req.onerror = req.onblocked = () => resolve();

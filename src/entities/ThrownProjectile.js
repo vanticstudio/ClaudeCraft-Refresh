@@ -39,12 +39,20 @@ export class ThrownProjectile extends Entity {
     sweep.max[0] = Math.max(sweep.max[0], sweep.max[0] + v.x) + 0.3;
     sweep.max[1] = Math.max(sweep.max[1], sweep.max[1] + v.y) + 0.3;
     sweep.max[2] = Math.max(sweep.max[2], sweep.max[2] + v.z) + 0.3;
+    // 05 §11 — "closest entity whose AABB (inflated 0.3) intersects segment".
+    // getEntitiesInBox returns chunk-scan/spawn order, so the minimum has to be
+    // taken explicitly (Arrow.tick does the same). `e.damageable` admits the
+    // non-living end crystal, which a snowball/egg must destroy (13 §3).
     const candidates = this.world.getEntitiesInBox(sweep, e =>
-      e instanceof LivingEntity && !e.dead &&
+      (e instanceof LivingEntity || e.damageable) && !e.dead &&
       (this.age > 5 || e !== this.owner));
-    const entityHit = candidates.length ? candidates[0] : null;
+    let entityHit = null, bestD = Infinity;
+    for (const e of candidates) {
+      const d = this.distTo(e.pos);
+      if (d < bestD) { bestD = d; entityHit = e; }
+    }
 
-    if (entityHit && (!blockHit || this.distTo(entityHit.pos) < blockHit.t)) {
+    if (entityHit && (!blockHit || bestD < blockHit.t)) {
       this.impact(null, entityHit);
       return;
     }
@@ -72,8 +80,17 @@ export class ThrownProjectile extends Entity {
     if (entityHit) {
       const d = Math.hypot(this.vel.x, this.vel.z) || 1;
       if (this.kind === 'snowball' || this.kind === 'egg') {
-        entityHit.hurt(0, 'melee', { dirX: this.vel.x / d, dirZ: this.vel.z / d, attacker: this.owner });
-        entityHit.applyKnockback?.(0.4, this.vel.x / d, this.vel.z / d);
+        // 05 §14.3 owns the single 0.4 impulse and hurt() applies it from opts
+        // (Entity.js applyDamage) — a second explicit applyKnockback stacked on
+        // top gave v/4 + 0.6·dir instead of v/2 + 0.4·dir (×1.5 horizontally),
+        // and was skipped entirely on a target already in i-frames.
+        // …but hurt() BAILS on a zero-damage strike inside the target's i-frame
+        // window (`amount <= lastHurtAmount` is always true for 0), so in that
+        // one case the impulse it carries never reaches applyDamage. Apply it
+        // directly there, and only there — a fresh hit already got it.
+        const inIFrames = entityHit.invulnTicks > 0;
+        const landed = entityHit.hurt(0, 'melee', { dirX: this.vel.x / d, dirZ: this.vel.z / d, attacker: this.owner });
+        if (!landed && inIFrames) entityHit.applyKnockback?.(0.4, this.vel.x / d, this.vel.z / d);
       }
     }
     if (this.kind === 'egg') {

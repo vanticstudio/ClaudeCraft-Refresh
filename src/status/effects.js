@@ -112,8 +112,18 @@ export function serializeEffects(entity) {
   for (const [id, fx] of entity.effects) out.push({ id, amplifier: fx.amplifier, duration: fx.duration, ambient: fx.ambient });
   return out;
 }
-export function applyEffectsData(entity, arr) {
+// `replace` = 14 §5's "authoritative overwrite of client copy": ids absent from
+// `arr` are REMOVED, so a host that cleared its effects (respawn, milk) actually
+// clears the client's copy instead of leaving it to run out on its own. Removal
+// goes through removeEffect so onEffectRemoved still fires (absorption reset,
+// invisibility un-hide). Save-path callers keep the additive default — the
+// entity they load into starts with an empty map.
+export function applyEffectsData(entity, arr, replace = false) {
   if (!Array.isArray(arr)) return;
+  if (replace && entity.effects) {
+    const keep = new Set(arr.map(e => e && e.id));
+    for (const id of [...entity.effects.keys()]) if (!keep.has(id)) removeEffect(entity, id);
+  }
   for (const e of arr) {
     if (e && typeof e.id === 'number') entity.effects.set(e.id, { amplifier: e.amplifier | 0, duration: e.duration | 0, ambient: !!e.ambient });
   }

@@ -26,13 +26,21 @@ export function outerColumn(s, x, z, d) {
   if (n * t <= 0.28) return null;
   const m = (n * t - 0.28) / 0.72;
   const surfY = Math.round(55 + 10 * fbm2(s.outerT, x, z, 3, 1 / 70));
-  return { surfY, botY: Math.max(0, surfY - Math.round(3 + 24 * m)) };
+  // `m` is carried out so §12.1's city gate reads the SAME island mass that sets
+  // the column's thickness here (3 + 24m) instead of re-deriving the noise.
+  return { surfY, botY: Math.max(0, surfY - Math.round(3 + 24 * m)), m };
+}
+
+// Outer-island column at (wx,wz) — { surfY, botY, m } — or null. §12.1's city
+// gate needs surface AND mass, so both callers stay on one evaluation.
+export function endColumnAt(s, wx, wz) {
+  const d = Math.hypot(wx, wz);
+  if (d < 1000) return null;
+  return outerColumn(s, wx, wz, d);
 }
 
 // Outer-island surface Y at a column, or null. (End cities gate on land here.)
 export function endSurfaceAt(s, wx, wz) {
-  const d = Math.hypot(wx, wz);
-  if (d < 1000) return null;
-  const col = outerColumn(s, wx, wz, d);
+  const col = endColumnAt(s, wx, wz);
   return col ? col.surfY : null;
 }

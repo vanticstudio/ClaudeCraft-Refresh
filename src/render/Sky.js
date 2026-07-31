@@ -27,13 +27,22 @@ export class Sky {
     this.zenith = new THREE.Color('#78A7FF');
     this.horizon = new THREE.Color('#C6DBFF');
     const domeMat = new THREE.ShaderMaterial({
-      uniforms: { uZenith: { value: this.zenith }, uHorizon: { value: this.horizon } },
+      // 11-END §7 — uStatic drives the End's void-purple grain: without it the
+      // static #100A18→#1B1426 gradient bands visibly on large displays.
+      uniforms: {
+        uZenith: { value: this.zenith }, uHorizon: { value: this.horizon },
+        uStatic: { value: 0 },
+      },
       vertexShader: `varying vec3 vDir; void main(){ vDir = normalize(position);
         gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
-      fragmentShader: `uniform vec3 uZenith; uniform vec3 uHorizon; varying vec3 vDir;
+      fragmentShader: `uniform vec3 uZenith; uniform vec3 uHorizon; uniform float uStatic;
+        varying vec3 vDir;
         void main(){
-          if (vDir.y < 0.0) { gl_FragColor = vec4(uHorizon * 0.8, 1.0); return; }
-          gl_FragColor = vec4(mix(uHorizon, uZenith, clamp(vDir.y * 1.4, 0.0, 1.0)), 1.0);
+          vec3 c = (vDir.y < 0.0)
+            ? uHorizon * 0.8
+            : mix(uHorizon, uZenith, clamp(vDir.y * 1.4, 0.0, 1.0));
+          float h = fract(sin(dot(vDir.xy, vec2(613.7, 379.1))) * 43758.5453);
+          gl_FragColor = vec4(c + (h - 0.5) * 0.035 * uStatic, 1.0);
         }`,
       side: THREE.BackSide, depthWrite: false, fog: false,
     });
@@ -185,7 +194,9 @@ export class Sky {
     this.rainMat = new THREE.MeshBasicMaterial({
       map: rainTex, transparent: true, depthWrite: false, side: THREE.DoubleSide,
     });
-    this.rain = new THREE.InstancedMesh(new THREE.PlaneGeometry(0.04 * 8, 0.6), this.rainMat, 750);
+    // 04 §12.3 — 750 quads, each 0.04 m × 0.6 m. Snow reuses the quad at a
+    // non-uniform scale (see update()).
+    this.rain = new THREE.InstancedMesh(new THREE.PlaneGeometry(0.04, 0.6), this.rainMat, 750);
     this.rain.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.rain.count = 0;
     this.rain.frustumCulled = false;
@@ -207,6 +218,9 @@ export class Sky {
   setMoonPhase(phase) {
     this.moonTex.offset.set((phase % 4) / 4, phase < 4 ? 0.5 : 0);
   }
+
+  // 11-END §7 — 1 in the End (grain on), 0 everywhere else. Driven by DayNight.
+  setStatic(v) { this.dome.material.uniforms.uStatic.value = v; }
 
   // Called every frame by DayNight
   update({ camera, angle, zenith, horizon, starAlpha, sunAlpha, sunrise,
@@ -249,7 +263,11 @@ export class Sky {
     this.cloudDrift += 0.02 * dtSec * 20;
     this.clouds.position.x = Math.floor(camera.position.x / 12) * 12;
     this.clouds.position.z = Math.floor(camera.position.z / 12) * 12;
-    this.cloudTex.offset.set((this.clouds.position.x + this.cloudDrift) / 3072, this.clouds.position.z / 3072);
+    // §13 "world-anchored": rotation.x = −π/2 maps the plane's local +Y to world
+    // −Z, so v = (plane.z − worldZ + 1536)/3072 and the offset that cancels
+    // plane.z is NEGATIVE. With +plane.z the field slid 2 texels (24 m) per 12 m
+    // of +Z travel; X already cancels because it is not mirrored.
+    this.cloudTex.offset.set((this.clouds.position.x + this.cloudDrift) / 3072, -this.clouds.position.z / 3072);
     this.cloudMat.color.setScalar(cloudTint);
 
     // env lights
@@ -274,10 +292,23 @@ export class Sky {
         if (camY - 8 + d.y < ground || d.y < 0) d.y = 16;
         const px = wx + (snow ? Math.sin(d.drift + d.y) * 0.5 : 0);
         const py = camY - 8 + d.y;
-        if (py < ground) continue;
+        // Above a column taller than camY+8 the respawn above fires every frame
+        // and py never clears `ground`. A bare `continue` would leave the
+        // instance on its LAST matrix — identity (a full-size streak at the world
+        // origin) if it never passed, or frozen mid-air if it once did. Write a
+        // zero-scale matrix so the instance is culled instead of stale.
+        if (py < ground) {
+          this._s.setScalar(0);
+          this._m4.compose(this._v.set(0, 0, 0), this._q.identity(), this._s);
+          this.rain.setMatrixAt(i, this._m4);
+          continue;
+        }
         this._v.set(px, py, wz);
         this._q.setFromAxisAngle(UP, Math.atan2(camX - px, camZ - wz));
-        this._s.setScalar(snow ? 0.5 : 1);
+        // 04 §12.3 — the quad is built at the spec's 0.04 × 0.6 m rain streak.
+        // Snow is a 0.08 m SQUARE flake, so it scales non-uniformly off the same
+        // geometry (0.04×2 = 0.08 wide, 0.6×0.1333 = 0.08 tall).
+        if (snow) this._s.set(2, 0.1333, 1); else this._s.setScalar(1);
         this._m4.compose(this._v, this._q, this._s);
         this.rain.setMatrixAt(i, this._m4);
       }
@@ -291,6 +322,24 @@ export class Sky {
     this.rain.parent?.remove(this.rain);
     this.sunLight.parent?.remove(this.sunLight);
     this.ambient.parent?.remove(this.ambient);
+    // three frees GL objects only on an explicit dispose(); detaching is not
+    // enough. Title → play → Save&Quit → Continue builds a fresh Sky each time
+    // (Game.disposeWorld → new DayNight), so without this every cycle retains a
+    // complete dome/sun/moon/star/band/cloud/rain set for the life of the page.
+    for (const root of [this.group, this.clouds, this.rain]) {
+      root.traverse(o => {
+        if (!(o.isMesh || o.isPoints || o.isInstancedMesh)) return;
+        o.geometry.dispose();
+        o.material.map?.dispose();     // no-op for the two ShaderMaterials
+        o.material.dispose();
+      });
+    }
+    // The traverse above frees the rain quad's GEOMETRY and MATERIAL, but an
+    // InstancedMesh also owns `instanceMatrix` — a separate InstancedBufferAttribute
+    // (750 mat4s, DynamicDrawUsage) whose GL buffer the renderer only releases on
+    // the mesh's own dispose(), via the 'dispose' event WebGLObjects listens for.
+    // Without this, one buffer is stranded per Title → World → Quit cycle.
+    this.rain.dispose();
   }
 }
 

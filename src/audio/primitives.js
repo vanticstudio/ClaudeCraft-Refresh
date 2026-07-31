@@ -245,6 +245,12 @@ function bufSource(ctx, name, rate, loop = false) {
 // Random slice of the noise bed, so no two bursts are the same sample run (§2.3).
 const offsetOf = buf => Math.random() * Math.max(0, buf.duration - 1.05);
 
+// §2.3/§2.8's random offset is NOT conditioned on `loop` — a looping source wraps
+// at loopEnd, so any offset inside the buffer is legal and two loops started from
+// the same JS task (two fluid clusters found on one sampling pass, four TNT fuses
+// lit together) decorrelate instead of summing coherently at +6 dB.
+const startOffset = (buf, loop) => (loop ? Math.random() * buf.duration : offsetOf(buf));
+
 // ---------------------------------------------------------------- primitives
 
 // §2.3 noiseBurst — digs, steps, breaks, rattles
@@ -258,7 +264,7 @@ export function noiseBurst(voice, t0, p) {
   const g = ar(ctx, t0, p.gain, p.attack ?? 0.002, p.dur, voice.envGain, !!p.loop);
   src.connect(filt); filt.connect(g);
   if (p.loop) { voice.mod = voice.mod || {}; voice.mod.burstGain = g.gain; }
-  src.start(t0, p.loop ? 0 : offsetOf(src.buffer));
+  src.start(t0, startOffset(src.buffer, p.loop));
   const stop = t0 + p.dur + 0.02;
   if (!p.loop) src.stop(stop);
   voice.nodes.push(src);
@@ -290,7 +296,10 @@ export function thud(voice, t0, p) {
 // §2.5 pluck — Karplus-Strong, baked; pitch comes free via playbackRate
 export function pluck(voice, t0, p) {
   const ctx = voice.ctx, pitch = p.pitch ?? 1;
-  const bass = p.bass || p.freq < 110;
+  // `??`, not `||`: the 110 Hz auto-pick is a DEFAULT, and a caller that wants one
+  // bake across its whole range (§3.5's note-block guitar, 92.5-370 Hz) must be
+  // able to say `bass: false` without the auto-pick flipping it back mid-scale.
+  const bass = p.bass ?? (p.freq < 110);
   const base = bass ? 55 : 220;
   const src = bufSource(ctx, bass ? 'pluckBass' : 'pluckA', (p.freq / base) * pitch);
   const dur = p.dur ?? 0.5;
@@ -345,7 +354,7 @@ export function sweep(voice, t0, p) {
     filt.frequency.setValueAtTime(p.f0 * pitch, t0);
     filt.frequency.exponentialRampToValueAtTime(Math.max(1, p.f1 * pitch), t0 + dur);
     src.connect(filt); filt.connect(g);
-    src.start(t0, p.loop ? 0 : offsetOf(src.buffer));
+    src.start(t0, startOffset(src.buffer, p.loop));
     if (!p.loop) src.stop(t0 + dur + 0.02);
     voice.nodes.push(src);
   } else {
@@ -382,7 +391,7 @@ export function crackle(voice, t0, p) {
   if (!p.loop) expOut(g.gain, t0 + 0.01, p.gain, p.dur);
   g.connect(voice.envGain);
   src.connect(filt); filt.connect(g);
-  src.start(t0, p.loop ? 0 : offsetOf(src.buffer));
+  src.start(t0, startOffset(src.buffer, p.loop));
   const stop = t0 + (p.dur ?? 1) + 0.02;
   if (!p.loop) src.stop(stop);
   voice.nodes.push(src);
@@ -412,7 +421,11 @@ export function drone(voice, t0, p) {
     osc.frequency.value = p.freqs[i] * pitch;
     osc.connect(mix);
     osc.start(t0);
-    if (!p.loop && p.dur) osc.stop(t0 + p.dur + 0.6);
+    // §2.9's release is setTargetAtTime(0, tEnd, 0.4); +1.6 s = 4 tau (e^-4 =
+    // 0.018, inaudible) and matches the releaseAt this returns below. The old
+    // +0.6 cut the saws at 1.5 tau — still at 0.22 of gain, an audible step —
+    // and left the voice `busy` for a further second with nothing playing.
+    if (!p.loop && p.dur) osc.stop(t0 + p.dur + 1.6);
     voice.nodes.push(osc);
   }
   if (p.lfo) {
@@ -424,7 +437,7 @@ export function drone(voice, t0, p) {
     lfo.connect(amt);
     amt.connect(p.lfo.target === 'gain' ? mix.gain : filt.frequency);
     lfo.start(t0);
-    if (!p.loop && p.dur) lfo.stop(t0 + p.dur + 0.6);
+    if (!p.loop && p.dur) lfo.stop(t0 + p.dur + 1.6);
     voice.nodes.push(lfo);
   }
   voice.mod = voice.mod || {};
@@ -488,7 +501,7 @@ export function hiss(voice, t0, p) {
   if (!p.loop) g.gain.linearRampToValueAtTime(0, t0 + p.dur);   // §2.11 linear decay
   g.connect(voice.envGain);
   src.connect(filt); filt.connect(g);
-  src.start(t0, p.loop ? 0 : offsetOf(src.buffer));
+  src.start(t0, startOffset(src.buffer, p.loop));
   const stop = t0 + (p.dur ?? 1) + 0.02;
   if (!p.loop) src.stop(stop);
   voice.nodes.push(src);
@@ -523,12 +536,17 @@ export function gulp(voice, t0, p) {
 export function whoosh(voice, t0, p) {
   const ctx = voice.ctx, pitch = p.pitch ?? 1;
   const dur = p.dur;
+  // §2.13's pack names f0/f1 with no defaults. AudioParam's IDL takes a RESTRICTED
+  // float, so a missing one would throw TypeError on NaN and take the whole recipe
+  // (every layer of it) down with it — these fallbacks are the belt to the recipes'
+  // braces, never a substitute for a recipe passing its own band.
+  const f0 = p.f0 ?? 900, f1 = p.f1 ?? 300;
   const src = bufSource(ctx, p.src || 'white', pitch, !!p.loop);
   const filt = ctx.createBiquadFilter();
   filt.type = 'bandpass';
   filt.Q.value = p.Q ?? 0.8;
-  filt.frequency.setValueAtTime(p.f0 * pitch, t0);
-  if (!p.loop) filt.frequency.exponentialRampToValueAtTime(Math.max(1, p.f1 * pitch), t0 + dur);
+  filt.frequency.setValueAtTime(f0 * pitch, t0);
+  if (!p.loop) filt.frequency.exponentialRampToValueAtTime(Math.max(1, f1 * pitch), t0 + dur);
   const g = ctx.createGain();
   g.gain.setValueAtTime(0, t0);
   if (p.loop) {
@@ -539,7 +557,7 @@ export function whoosh(voice, t0, p) {
   }
   g.connect(voice.envGain);
   src.connect(filt); filt.connect(g);
-  src.start(t0, p.loop ? 0 : offsetOf(src.buffer));
+  src.start(t0, startOffset(src.buffer, p.loop));
   const stop = t0 + (p.loop ? 1 : dur) + 0.02;
   if (!p.loop) src.stop(stop);
   voice.nodes.push(src);

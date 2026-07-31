@@ -4,7 +4,7 @@
 import { BLOCKS, B, WATERLOGGED, STATE_NIBBLE, isWaterCellAt, isWaterSourceAt } from '../registry/blocks.js';
 import { emitSound, at } from '../audio/engine.js';
 import { getDimension } from './dimensions.js';
-import { removeFire } from './fire.js';
+import { removeFire, solidTopBelow } from './fire.js';
 
 // 01 §6.3 fluid mix: hiss + the stone-family place, per 16 §5.2.
 function emitQuench(x, y, z) {
@@ -56,6 +56,12 @@ export class Fluids {
     // They need naming: both carry a 2/16 collision box (07 §13.2 "Solid"), so
     // the `!blk.collidable` test below excludes them.
     if (id === B.REPEATER || id === B.COMPARATOR) return true;
+    // 09 AMENDS 06 §6.1 — a block-entity carrier is never fluid-destructible.
+    // §7.2 dropped the brewing stand's collision box, which silently qualified it
+    // for the `!blk.collidable` test below: a bucket spill or a rain-fed stream
+    // deleted the station and spilled its bottles. Same rule PistonMover already
+    // applies (breaksWhenPushed treats blockEntity carriers as immovable).
+    if (blk.blockEntity) return false;
     // fluid-destructible: pops with drops when flooded (06 §6.1)
     return !blk.collidable && !blk.fluid && blk.shape !== 'none';
   }
@@ -226,8 +232,13 @@ export class Fluids {
           if (isWaterSourceAt(world.getBlock(x + dx, y, z + dz),
                               world.getState(x + dx, y, z + dz))) sources++;
         }
+        // 06 §6.2's predicate is solidOrSource(below), not opaque-or-source: glass,
+        // ice and leaves are full non-opaque cubes that dam water (canReplace
+        // rejects them), so a 2×2 pool in a glass depression never regenerated.
+        // solidTopBelow is this codebase's own "full solid cube" test (fire.js
+        // §1.2, and isSolidSupport names glass explicitly).
         const belowId = world.getBlock(x, y - 1, z);
-        const belowSolid = BLOCKS[belowId].opaque ||
+        const belowSolid = solidTopBelow(world, x, y, z) ||
           isWaterSourceAt(belowId, world.getState(x, y - 1, z));
         if (sources >= 2 && belowSolid) {
           world.setState(x, y, z, 0);
@@ -245,8 +256,13 @@ export class Fluids {
         (belowBlk.fluid && belowBlk.fluid !== fluid))) {
       // can flow down → do NOT also spread sideways (06 §6.2)
       this.setFluid(x, y - 1, z, outId, FALLING);
-    } else if (belowBlk.collidable || belowBlk.opaque || belowBlk.fluid === fluid ||
-               (world.getState(x, y - 1, z) & WATERLOGGED) || y === 0) {
+    } else {
+      // Anything the down-flow branch cannot enter IS a dam, so lateral spread is
+      // the correct fallback. The old explicit disjunction missed exactly one id:
+      // a dry LADDER (canReplace rejects it by name, yet it is non-collidable,
+      // non-opaque and has no `.fluid`), so a fluid resting on one fell through
+      // BOTH branches and its tick became a permanent no-op — it neither fell nor
+      // spread, forever. Every case the disjunction did list still lands here.
       const out = this.strength(id, world.getState(x, y, z), fluid) - drop;
       if (out > 0) {
         for (const [dx, dz] of H4) {

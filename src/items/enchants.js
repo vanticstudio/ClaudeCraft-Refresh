@@ -46,7 +46,12 @@ export const LAPIS_ID = 343;
 // Tokens name the "Table" / "Anvil+" column entries. `book` is handled by the
 // callers (§4.3 step 2 treats a book as applicable to everything), not here.
 
-const isArmor = it => it?.kind === 'armor';
+// §4.4/§5.1 enumerate "the 16 armor pieces". 11-END's elytra is a 17th item that
+// merely BORROWS armorSlot 1 to occupy the chest slot at 0 armor points — it is
+// not an armor piece for enchanting, so Protection/Thorns must not reach it (a
+// 0-point elytra would otherwise carry a full Protection IV's EPF). Unbreaking
+// and Mending still reach it through the `durable` token.
+const isArmor = it => it?.kind === 'armor' && !it.elytra;
 const TARGETS = {
   armor: it => isArmor(it),
   helmet: it => isArmor(it) && it.armorSlot === 0,
@@ -223,7 +228,8 @@ export function tableEligible(stack) {
   if (!it) return false;
   if (stack?.tags?.enchants?.length) return false;
   if (it.id === BOOK_ID) return true;
-  if (it.kind === 'armor' || it.kind === 'bow' || it.kind === 'shears') return true;
+  // `!it.elytra` per isArmor above — §4.4's enumeration is the 16 armor pieces.
+  if ((it.kind === 'armor' && !it.elytra) || it.kind === 'bow' || it.kind === 'shears') return true;
   return ['sword', 'pickaxe', 'axe', 'shovel', 'hoe'].includes(it.toolClass);
 }
 

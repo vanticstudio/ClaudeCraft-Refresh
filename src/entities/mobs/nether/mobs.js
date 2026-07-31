@@ -37,12 +37,16 @@ export class Blaze extends Mob {
   }
   tick() {
     this.baseTick(); if (this.dead) { this.deathTime++; return; }
+    // 05 §14 — a custom tick() still owes the base contract: without tickTimers()
+    // invulnTicks never decays and the first hit i-frames the blaze forever.
+    this.tickTimers();
+    this.updateMedium();                 // or inWater/inLava never leave their ctor false
     this.tickEnvironment(); if (this.dead) return;
     if (this.tickDespawn?.()) return;
     // §7.4 water contact hurts 1/tick
-    if (this.inWater && this.age % 1 === 0) this.hurt(1, 'drown', {});
+    if (this.inWater) this.hurt(1, 'drown', {});
     if (this.attackCooldown > 0) this.attackCooldown--;
-    const p = this.world.game?.player;
+    const p = this.nearestPlayer();
     const dist = p ? this.distTo(p) : 999;
     // §7.4 melee touch — any entity contacting the blaze's box takes 6 and ignites
     if (p && !p.dead
@@ -69,7 +73,6 @@ export class Blaze extends Mob {
       this.charge = 0;
       this.pos.y += Math.sin(this.age * 0.2) * 0.01;   // bob
     }
-    this.age++;
   }
   // §7.4 hover AI — stays airborne near its target: closes in, backs off when
   // crowded, holds a little above the target's head, bobs. No A*, no gravity.
@@ -109,6 +112,10 @@ export class ZombifiedPiglin extends Mob {
     super(world, x, y, z);
     this.type = 'zombified_piglin';
     this.hostile = false;                // neutral until provoked
+    this.despawns = true;                // 05 §4 / 10 §7.2 — `hostile` only flips
+                                         // for the anger window, but this mob is
+                                         // part of the capped Nether roster and
+                                         // must still despawn like one
     this.undead = true; this.fireImmune = true;
     this.width = 0.6; this.height = 1.95;
     this.health = this.maxHealth = 20; this.naturalArmor = 2;
@@ -122,8 +129,9 @@ export class ZombifiedPiglin extends Mob {
   armorPoints() { return this.naturalArmor; }
   onHurt(amount, source, opts) {
     super.onHurt?.(amount, source, opts);
-    // §7.6 provocation: anger self + the pack within 20 blocks
-    if (opts?.attacker === this.world.game?.player) {
+    // §7.6 provocation: anger self + the pack within 20 blocks. 14 AMENDS 05 §6 —
+    // any player, not just the host's own.
+    if (opts?.attacker && this.world.game?.isPlayer?.(opts.attacker)) {
       this.provoke();
       for (const e of this.world.getEntitiesInBox(
         this._angerBox(), e => e.type === 'zombified_piglin' && !e.dead)) e.provoke?.();
@@ -145,7 +153,12 @@ export class ZombifiedPiglin extends Mob {
     if (r() < 0.025) out.push(r() < 0.5 ? { name: 'gold_ingot', count: 1 } : { name: 'gold_nugget', count: 1 });
     return out;
   }
-  buildMesh() { return humanoidModel('zombie_skin', 'zombie_face', {}); }
+  // buildMODEL, not buildMesh: humanoidModel returns { group, parts } (models.js
+  // §16.3), and it is Mob.buildMesh that unwraps .group and stores .parts for limb
+  // animation. Overriding buildMesh handed that plain object straight to
+  // entity.object3d, so updateRender's `this.object3d.position.set(...)` threw on
+  // the first frame after a spawn — killing render() before renderer.render().
+  buildModel() { return humanoidModel('zombie_skin', 'zombie_face', {}); }
 }
 
 // -------------------------------------------------- §7.7 Wither Skeleton
@@ -155,6 +168,7 @@ export class WitherSkeleton extends Mob {
     this.type = 'wither_skeleton';
     this.hostile = true; this.undead = true; this.fireImmune = true;
     this.width = 0.7; this.height = 2.4;
+    this.tall3 = true;                   // §7.7 "A* node clearance requires 3 cells tall (like enderman, 05 §7)"
     this.health = this.maxHealth = 20;
     this.attackDamage = 8; this.attackReach = 2.0;
     this.walkSpeed = 0.125; this.chaseSpeed = 0.125;
@@ -183,21 +197,35 @@ export class MagmaCube extends Mob {
     super(world, x, y, z);
     this.type = 'magma_cube';
     this.hostile = true; this.fireImmune = true;
-    this.size = opts.size ?? (1 + Math.floor(world.rng() * 3) * 2 % 4 || 1);  // 1/2/4-ish
-    if (![1, 2, 4].includes(this.size)) this.size = [1, 2, 4][Math.floor(world.rng() * 3)];
-    const s = this.size * 0.51;
-    this.width = s; this.height = s;
-    this.health = this.maxHealth = this.size * this.size;
-    this.attackDamage = this.size + 2;
+    // §7.5 "sizes 1 / 2 / 4 (small/medium/big)" — uniform. (The old expression
+    // parsed as 1 + ((floor(rng*3)*2) % 4), which can only yield 1 or 3.)
     this.detectionRange = 16;
-    this.xpValue = this.size === 4 ? 4 : this.size === 2 ? 2 : 1;
+    this.setSize(opts.size ?? [1, 2, 4][Math.floor(world.rng() * 3)]);
     this.hopTimer = 20 + Math.floor(world.rng() * 40);
+  }
+  // §7.5 — every size-derived stat in one place so deserialize can re-apply it.
+  setSize(n) {
+    this.size = n;
+    const s = n * 0.51;
+    this.width = s; this.height = s;
+    this.health = this.maxHealth = n * n;
+    this.attackDamage = n + 2;
+    this.xpValue = n === 4 ? 4 : n === 2 ? 2 : 1;
+  }
+  // `size` is not in Mob.serialize, so without this a saved big cube reloaded at a
+  // re-rolled size with health/damage/hitbox from the wrong tier.
+  serialize() { return { ...super.serialize(), size: this.size }; }
+  deserialize(rec) {
+    if (rec.size) this.setSize(rec.size);   // before super: it restores health last
+    super.deserialize(rec);
   }
   tick() {
     this.baseTick(); if (this.dead) { this.deathTime++; return; }
+    this.tickTimers();                   // 05 §14 — i-frames must decay
+    this.updateMedium();
     this.tickEnvironment(); if (this.dead) return;
     if (this.tickDespawn?.()) return;
-    const p = this.world.game?.player;
+    const p = this.nearestPlayer();
     if (this.onGround && --this.hopTimer <= 0) {
       this.hopTimer = 40 + Math.floor(this.world.rng() * 60);
       let dx = this.world.rng() * 2 - 1, dz = this.world.rng() * 2 - 1;
@@ -210,7 +238,6 @@ export class MagmaCube extends Mob {
     // contact damage
     if (p && this.distTo(p) < this.width) p.hurt(this.size + 2, 'melee', { attacker: this });
     this.applyLocomotion?.();
-    this.age++;
   }
   onDeath(source, opts) {
     // §7.5 split into 2-4 of the next size down
@@ -235,6 +262,7 @@ export class Piglin extends Mob {
     super(world, x, y, z);
     this.type = 'piglin';
     this.hostile = false;                // hostile to gold-less players; simplified
+    this.despawns = true;                // 05 §4 — see ZombifiedPiglin
     this.width = 0.6; this.height = 1.95;
     this.health = this.maxHealth = 16;
     this.attackDamage = 8; this.attackReach = 2.0;
@@ -245,7 +273,7 @@ export class Piglin extends Mob {
   }
   tick() {
     // §7.8 hostile to a player not wearing gold armour, within 16
-    const p = this.world.game?.player;
+    const p = this.nearestPlayer();
     if (p && this.distTo(p) < 16) {
       const gold = p.armor?.some?.(a => a && /^golden_/.test(ITEMS.get(a.id)?.name ?? ''));
       this.hostile = !gold;
@@ -262,5 +290,6 @@ export class Piglin extends Mob {
     super.tick();
   }
   dropTable() { return this.world.rng() < 0.2 ? [{ name: 'gold_nugget', count: 1 }] : []; }
-  buildMesh() { return humanoidModel('zombie_skin', 'zombie_face', {}); }
+  // See ZombifiedPiglin above — buildModel, so Mob.buildMesh unwraps .group.
+  buildModel() { return humanoidModel('zombie_skin', 'zombie_face', {}); }
 }

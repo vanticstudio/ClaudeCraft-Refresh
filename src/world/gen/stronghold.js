@@ -278,13 +278,19 @@ function buildPlan(ws) {
   const rng = splitmix32(strongholdSeed(ws));
   rng(); rng(); rng();                       // mirror §4.2's 3 draws; the plan continues the stream
 
-  const pieces = [], placed = [], chests = [], allSockets = [];
+  const pieces = [], chests = [], allSockets = [];
   const counts = { corridor: 0, turn: 0, altar: 0, fountain: 0, library: 0, crossing: 0, portal: 0, start: 0 };
   const hit = (a, b) => a.x0 <= b.x1 && a.x1 >= b.x0 && a.z0 <= b.z1 && a.z1 >= b.z0 && a.y0 <= b.y1 && a.y1 >= b.y0;
-  const fits = p => !placed.some(q => hit(p.inner, q)) &&
+  // §4.4 — an inner-vs-inner test alone lets a later piece's 1-block SHELL land
+  // inside an earlier piece's carved interior (stampChunk rasterises in plan order,
+  // so the brick wins and seals corridor cells / the start piece's dig shaft). Also
+  // reject outer-vs-inner both ways. Legal parent→child attachments still pass: a
+  // child's outer begins exactly on the parent's wall plane, one cell OUTSIDE the
+  // parent's inner box, on both the far-exit and side-exit paths.
+  const fits = p => !pieces.some(q => hit(p.inner, q.inner) || hit(p.outer, q.inner) || hit(p.inner, q.outer)) &&
     p.outer.y0 >= Y_MIN && p.outer.y1 <= Y_MAX &&
     Math.hypot((p.outer.x0 + p.outer.x1) / 2 - SX, (p.outer.z0 + p.outer.z1) / 2 - SZ) <= RADIUS;
-  const commit = p => { pieces.push(p); placed.push(p.inner); counts[p.type] = (counts[p.type] || 0) + 1; if (p.chests) for (const c of p.chests) chests.push(c); };
+  const commit = p => { pieces.push(p); counts[p.type] = (counts[p.type] || 0) + 1; if (p.chests) for (const c of p.chests) chests.push(c); };
 
   const start = makeStart(SX, SZ, rot); commit(start);
   const cross = makeCrossing(start.exits[0]); commit(cross);        // start always exits into a crossing
@@ -349,7 +355,6 @@ function stampChunk(plan, blocks, cx, cz, spawns, states) {
 }
 
 // ------------------------------------------------------------------ public API
-const cache = new Map();   // worldSeed → stamper (LRU-2)
 
 /**
  * Build a stamper bound to worldSeed. The plan is built lazily + cached, so create
@@ -371,10 +376,7 @@ export function createStrongholdStamper(worldSeed) {
   };
 }
 
-/** Convenience free-function wrapper (caches the stamper per worldSeed). */
-export function stampStronghold(worldSeed, blocks, cx, cz, spawns, states) {
-  const ws = typeof worldSeed === 'number' ? (worldSeed >>> 0) : hashString(String(worldSeed ?? ''));
-  let st = cache.get(ws);
-  if (!st) { st = createStrongholdStamper(ws); cache.set(ws, st); if (cache.size > 2) cache.delete(cache.keys().next().value); }
-  st.stampChunk(blocks, cx, cz, spawns, states);
-}
+// A `stampStronghold(worldSeed, ...)` free-function wrapper used to live here with
+// its OWN seed→stamper cache and zero importers. Two caches for one
+// determinism-contracted generator is a drift hazard; terrain.js holds the single
+// stamper per worldgen run (terrain.js:11/21/77), which is the contract.
