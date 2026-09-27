@@ -1,5 +1,13 @@
 // Culled-face chunk mesher with per-vertex AO + smooth light (01 §8).
-// Runs on the main thread against a 3×3 LIT neighborhood (01 §8.6).
+// OVERHAUL §G — greedy quad merging: full-cube faces whose 4-corner light, AO,
+// tile and biome tint all match are merged into rects (flat plains drop from
+// ~1 quad/block to ~1 quad/rect). Merged quads emit TILE-LOCAL uvs (0..span)
+// plus the tile's atlas origin (aTileUV) and a span attribute (aSpan); the
+// chunk shader folds them back with fract(). Every other shape emitter is
+// byte-identical to 01 §8 and rides the absolute-UV path (aSpan 1,1).
+// Runs on the main thread against a 3×3 LIT neighborhood (01 §8.6), and — via
+// loadSnapshot/buildFromSnapshot — inside meshWorker.js from plain typed-array
+// hood snapshots (OVERHAUL §W).
 import * as THREE from 'three';
 import { BLOCKS, B, WATERLOGGED, STATE_NIBBLE, WALL_DIR } from '../registry/blocks.js';
 import {
@@ -9,14 +17,22 @@ import { doorBox } from '../registry/blocks.js';
 // 07-REDSTONE §4.5 — the 16 power-tinted dust tile variants, and the ONE
 // connection-graph implementation (§4.2). The mesher never re-derives the graph:
 // shape and logic must agree by construction.
-import { DUST_DOT_TILE, DUST_LINE_TILE } from '../assets/atlas.js';
+import { DUST_DOT_TILE, DUST_LINE_TILE, cellX, cellY } from '../assets/atlas.js';
 import { dustConnections, CONN } from '../redstone/dust.js';
 // 07-REDSTONE §2 — ATTACH 0-5 → the vector from a component TO its support.
 // redstone_torch encodes ATTACH in bits0-2 (§13.3), NOT 06 §3's torch nibble.
 // FACE6_DIR is the piston/piston_head extension direction (§13.3 rows 79-81).
 import { ATTACH_DIR, FACE6_DIR } from '../redstone/dirs.js';
-import { MAX_Y, chunkKey } from '../constants.js';
+import { MAX_Y, chunkKey, TILE_PX, ATLAS_GUTTER, ATLAS_SIZE } from '../constants.js';
 import { ChunkState } from '../world/Chunk.js';
+import { biomeTint } from './biomeTints.js';
+
+// Greedy-merged quads span (w, h) cells; vertex UVs stop EPS short of the span
+// so fract() samples the LAST texel exactly (fract(1.0) would wrap to 0).
+const UV_EPS = 1 / 256;
+// aSpan sentinel: non-merged faces carry (1,1) (sum 2.0); merged faces carry
+// (w+Δ, h+Δ) (sum ≥ 2.02) — the shader's step() test tells the paths apart.
+const SPAN_EPS = 0.01;
 
 // ---------------------------------------------------------------- builders
 
@@ -26,11 +42,19 @@ class Builder {
     this.pos = new Float32Array(this.cap * 3);
     this.nrm = new Float32Array(this.cap * 3);
     this.uv = new Float32Array(this.cap * 2);
+    this.span = new Float32Array(this.cap * 2);
+    this.tileUV = new Float32Array(this.cap * 2);
     this.col = new Uint8Array(this.cap * 4);
+    this.tnt = new Uint8Array(this.cap * 3);
     this.idxCap = 8192;
     this.idx = new Uint32Array(this.idxCap);
     this.v = 0;
     this.i = 0;
+    // per-quad state (see quad()'s reset): span sentinels, merged-tile origin,
+    // biome tint. Non-greedy emitters never touch these and ride the defaults.
+    this.su = 1; this.sv = 1;
+    this.tu = 0; this.tv = 0;
+    this.tr = 255; this.tg = 255; this.tb = 255;
   }
   reset() { this.v = 0; this.i = 0; }
   ensure(nv, ni) {
@@ -39,7 +63,10 @@ class Builder {
       this.pos = grow(this.pos, this.cap * 3);
       this.nrm = grow(this.nrm, this.cap * 3);
       this.uv = grow(this.uv, this.cap * 2);
+      this.span = grow(this.span, this.cap * 2);
+      this.tileUV = grow(this.tileUV, this.cap * 2);
       this.col = grow(this.col, this.cap * 4);
+      this.tnt = grow(this.tnt, this.cap * 3);
     }
     if (this.i + ni > this.idxCap) {
       this.idxCap = Math.max(this.idxCap * 2, this.i + ni);
@@ -47,11 +74,14 @@ class Builder {
     }
   }
   vertex(x, y, z, nx, ny, nz, u, v, r, g, b, a = 255) {
-    const p = this.v * 3, q = this.v * 2, k = this.v * 4;
+    const p = this.v * 3, q = this.v * 2, k = this.v * 4, m = this.v * 3;
     this.pos[p] = x; this.pos[p + 1] = y; this.pos[p + 2] = z;
     this.nrm[p] = nx; this.nrm[p + 1] = ny; this.nrm[p + 2] = nz;
     this.uv[q] = u; this.uv[q + 1] = v;
+    this.span[q] = this.su; this.span[q + 1] = this.sv;
+    this.tileUV[q] = this.tu; this.tileUV[q + 1] = this.tv;
     this.col[k] = r; this.col[k + 1] = g; this.col[k + 2] = b; this.col[k + 3] = a;
+    this.tnt[m] = this.tr; this.tnt[m + 1] = this.tg; this.tnt[m + 2] = this.tb;
     return this.v++;
   }
   quad(v0, v1, v2, v3, flipped) {
@@ -59,17 +89,50 @@ class Builder {
     if (flipped) { a[i] = v1; a[i + 1] = v2; a[i + 2] = v3; a[i + 3] = v1; a[i + 4] = v3; a[i + 5] = v0; }
     else { a[i] = v0; a[i + 1] = v1; a[i + 2] = v2; a[i + 3] = v0; a[i + 4] = v2; a[i + 5] = v3; }
     this.i += 6;
+    // reset per-quad state — emitters that set tint/span/tile never leak it
+    this.su = 1; this.sv = 1;
+    this.tu = 0; this.tv = 0;
+    this.tr = 255; this.tg = 255; this.tb = 255;
   }
+  /** Exact-size copies for BufferAttribute construction. */
   toGeometry() {
     if (this.v === 0) return null;
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(this.pos.slice(0, this.v * 3), 3));
     g.setAttribute('normal', new THREE.BufferAttribute(this.nrm.slice(0, this.v * 3), 3));
     g.setAttribute('uv', new THREE.BufferAttribute(this.uv.slice(0, this.v * 2), 2));
+    g.setAttribute('aSpan', new THREE.BufferAttribute(this.span.slice(0, this.v * 2), 2));
+    g.setAttribute('aTileUV', new THREE.BufferAttribute(this.tileUV.slice(0, this.v * 2), 2));
     g.setAttribute('color', new THREE.BufferAttribute(this.col.slice(0, this.v * 4), 4, true));
-    g.setIndex(new THREE.BufferAttribute(this.idx.slice(0, this.i), 1));
+    g.setAttribute('tint', new THREE.BufferAttribute(this.tnt.slice(0, this.v * 3), 3, true));
+    g.setIndex(new THREE.BufferAttribute(indexTyped(this.idx, this.i), 1));
     return g;
   }
+  /** Plain arrays for the mesh-worker transfer (same data, no three.js). */
+  toRaw() {
+    if (this.v === 0) return null;
+    return {
+      pos: this.pos.slice(0, this.v * 3),
+      nrm: this.nrm.slice(0, this.v * 3),
+      uv: this.uv.slice(0, this.v * 2),
+      span: this.span.slice(0, this.v * 2),
+      tileUV: this.tileUV.slice(0, this.v * 2),
+      col: this.col.slice(0, this.v * 4),
+      tint: this.tnt.slice(0, this.v * 3),
+      idx: indexTyped(this.idx, this.i),
+    };
+  }
+}
+
+// Uint16 indices whenever the bucket stays under the 64k limit (nearly always
+// with greedy merging) — half the index bandwidth of Uint32 for free.
+function indexTyped(src, n) {
+  if (n < 65536) {
+    const out = new Uint16Array(n);
+    for (let k = 0; k < n; k++) out[k] = src[k];
+    return out;
+  }
+  return src.slice(0, n);
 }
 
 function grow(arr, n) {
@@ -96,6 +159,7 @@ export class ChunkMesher {
       getBlock: (x, y, z) => this.blockAt(x, y, z),
       getState: (x, y, z) => this.stateAt(x, y, z),
     };
+    this.center = null;        // snapshot-mode center chunk shim (loadSnapshot)
   }
 
   // 9 chunks, index (dcx+1)*3 + (dcz+1); all must be ≥ LIT (01 §8.6).
@@ -116,7 +180,22 @@ export class ChunkMesher {
     return true;
   }
 
+  // OVERHAUL §W — worker mode: install a plain-data snapshot of the 3×3 hood
+  // (9 × {blocks, states, skyLight, blockLight, biomes}, typed arrays). The
+  // hood accessors only touch those five fields, so shims stand in for Chunk
+  // objects and three.js never enters the worker.
+  loadSnapshot(snap) {
+    for (let i = 0; i < 9; i++) this.hood[i] = snap.hood[i];
+    this.center = snap.center;
+    return true;
+  }
+
   chunkOf(wx, wz) { return this.hood[((wx >> 4) + 1) * 3 + ((wz >> 4) + 1)]; }
+
+  // OVERHAUL §B — biome id per column (heightMap/biomes layout: z<<4 | x).
+  biomeAt(wx, wz) {
+    return this.chunkOf(wx, wz).biomes[((wz & 15) << 4) | (wx & 15)] ?? 3;
+  }
 
   blockAt(wx, wy, wz) {
     if (wy < 0) return B.BEDROCK;
@@ -172,8 +251,32 @@ export class ChunkMesher {
   // Build all three bucket geometries for the center chunk of the hood.
   build(world, chunk) {
     if (!this.captureHood(world, chunk)) return null;
+    return this.toGeometries(this.buildCenter(chunk));
+  }
+
+  // OVERHAUL §W — worker entry: build from a plain-data snapshot; returns
+  // transferable raw arrays (three.js never enters the worker) plus the
+  // chunk's Y bounds (computed worker-side on the shim).
+  buildFromSnapshot(snap) {
+    this.loadSnapshot(snap);
+    const raw = this.buildCenter(snap.center);
+    raw.minY = this.minY;
+    raw.maxY = this.maxY;
+    return raw;
+  }
+
+  toGeometries(raw) {
+    return {
+      opaque: raw.opaque && rawToGeometry(raw.opaque),
+      cutout: raw.cutout && rawToGeometry(raw.cutout),
+      water: raw.water && rawToGeometry(raw.water),
+    };
+  }
+
+  buildCenter(chunk) {
     builders.opaque.reset(); builders.cutout.reset(); builders.water.reset();
     this.minY = 127; this.maxY = 0;
+    this.center = chunk;
 
     const blocks = chunk.blocks, states = chunk.states;
     for (let i = 0; i < 32768; i++) {
@@ -183,7 +286,9 @@ export class ChunkMesher {
       const blk = BLOCKS[id];
       const st = states[i];
       switch (blk.shape) {
-        case 'cube': this.emitCube(x, y, z, blk, st); break;
+        // OVERHAUL §G — full cubes (incl. the spawner cage cube) are emitted by
+        // the dedicated greedy pass below; the scan skips them.
+        case 'cube': case 'spawner': break;
         case 'liquid': this.emitLiquid(x, y, z, blk); break;
         case 'cross': this.emitCross(x, y, z, blk, st); break;
         case 'hash': this.emitHash(x, y, z, blk, st); break;
@@ -241,8 +346,6 @@ export class ChunkMesher {
         // "custom: 14/16 top box", so the render box matches its collisionBox.
         case 'soul_sand': this.emitBox(x, y, z, blk, st, [0, 0, 0, 1, 14 / 16, 1], true); break;
         case 'stairs': this.emitStairs(x, y, z, blk, st); break;
-        // §6 — the spawner cage is a full cube in the cutout bucket.
-        case 'spawner': this.emitCube(x, y, z, blk, st); break;
         case 'portal': this.emitPortal(x, y, z, blk, st); break;
         // 11-END §2.2 — custom End shapes.
         case 'iron_bars': this.emitPane(x, y, z, blk, st); break;
@@ -268,12 +371,14 @@ export class ChunkMesher {
       if (st & WATERLOGGED) this.emitWaterlogged(x, y, z, blk);
     }
 
+    this.emitCubesGreedy(chunk);
+
     if (this.minY > this.maxY) { this.minY = 0; this.maxY = 0; }
     chunk.minY = this.minY; chunk.maxY = this.maxY;
     return {
-      opaque: builders.opaque.toGeometry(),
-      cutout: builders.cutout.toGeometry(),
-      water: builders.water.toGeometry(),
+      opaque: builders.opaque.toRaw(),
+      cutout: builders.cutout.toRaw(),
+      water: builders.water.toRaw(),
     };
   }
 
@@ -282,32 +387,150 @@ export class ChunkMesher {
     if (y1 > this.maxY) this.maxY = Math.min(127, Math.ceil(y1));
   }
 
-  // ------------------------------------------------------------ cube path
+  // ------------------------------------------- OVERHAUL §G — greedy cubes
+  // Full-cube faces (incl. the spawner cage) with rect merging. Per face
+  // direction and 16×16 layer, every visible cell computes its 4-corner AO +
+  // smooth light once (identical math to the old emitCubeFace) and interns a
+  // merge key of (tile, tint, corners); cells with the SAME key merge into
+  // rects. Light uniformity inside a rect is guaranteed by the key, so a
+  // rect's corners reuse the START cell's per-corner values — bit-identical
+  // output to the unmerged path, minus an order of magnitude of quads on
+  // flat terrain. The ice DOWN-face drop (emitCube's 04 §12.5 guard) and the
+  // bucket routing carry over unchanged.
 
-  emitCube(x, y, z, blk, st) {
-    const builder = builders[blk.bucket] || builders.opaque;
+  emitCubesGreedy(chunk) {
+    this.keyMap = new Map();
+    const blocks = chunk.blocks, states = chunk.states;
     for (let f = 0; f < 6; f++) {
       const n = FACE_NORMALS[f];
-      const nx = x + n[0], ny = y + n[1], nz = z + n[2];
-      // 04 §12.5 / 15 §12.3 — ice is a translucent CUBE in the same bucket as
-      // the water it froze from, so a frozen ocean cell used to emit TWO quads:
-      // the ice top at y+1 and the ice bottom at y, one block apart. That bucket
-      // is transparent + depthWrite:false + DoubleSide and is never sorted per
-      // triangle, so for a viewer above, the far (dark, FACE_SHADE 0.5) bottom
-      // blends OVER the near bright top across most of a cell — but in the
-      // parallax sliver at each block edge the bottom quad belongs to a
-      // NEIGHBOURING cell emitted earlier, so there the order is accidentally
-      // right. That is the bright lattice on block boundaries whose width grows
-      // with view obliquity. Nothing is lost by dropping the DOWN face: the
-      // water below already suppresses its own top face (`capped`, emitLiquid /
-      // emitWaterlogged), and DoubleSide still shows the top face from beneath.
-      // DOWN only — the side faces are COPLANAR with the water's, not parallel,
-      // so they do not lattice, and culling them would open a see-through band
-      // along the sheet edge where the open water's surface sits at 0.875.
-      if (f === 3 && builder === builders.water && this.isWaterCell(nx, ny, nz)) continue;
-      if (!this.faceVisible(blk, this.blockAt(nx, ny, nz))) continue;
-      this.emitCubeFace(builder, x, y, z, f, this.tileFor(blk, st, f));
+      const axis = n[0] !== 0 ? 0 : n[1] !== 0 ? 1 : 2;
+      const [t1, t2] = FACE_TANGENTS[f];
+      for (let d = 0; d < 16; d++) this.greedyLayer(blocks, states, f, axis, t1, t2, d);
     }
+    this.keyMap = null;
+  }
+
+  greedyLayer(blocks, states, f, axis, t1, t2, d) {
+    const mKey = GREEDY_KEYS;                 // Int32Array(256); 0 = no face
+    mKey.fill(0);
+    const n = FACE_NORMALS[f];
+    const hood = this.hood;                   // local refs for the hot loop
+    for (let b = 0; b < 16; b++) {
+      const rowBase = b << 4;
+      for (let a = 0; a < 16; a++) {
+        // mask grid (a along t1, b along t2) → cell coords
+        const x = axis === 0 ? d : a;
+        const y = axis === 1 ? d : (axis === 2 ? b : a);
+        const z = axis === 2 ? d : b;
+        const ci = (y << 8) | (z << 4) | x;
+        const id = blocks[ci];
+        if (id === 0) continue;
+        const blk = BLOCKS[id];
+        if (blk.shape !== 'cube' && blk.shape !== 'spawner') continue;
+        const builder = builders[blk.bucket] || builders.opaque;
+        const nx = x + n[0], ny = y + n[1], nz = z + n[2];
+        // 04 §12.5 — ice's DOWN face against open water is dropped (see the
+        // emitCube history comment; ice is the only water-bucket cube).
+        if (f === 3 && builder === builders.water && this.isWaterCell(nx, ny, nz)) continue;
+        if (!this.faceVisible(blk, this.blockAt(nx, ny, nz))) continue;
+        this.cornerLight(x, y, z, f, n);
+        // OVERHAUL §B — biome tint rides the merge key (grass tops + foliage);
+        // tint changes at biome borders break merges exactly there.
+        let tr = 255, tg = 255, tb = 255;
+        if (blk.tint === 'grass_top') {
+          if (f === 2) {
+            const t = biomeTint(this.biomeAt(x, z)).grass;
+            tr = t[0]; tg = t[1]; tb = t[2];
+          }
+        } else if (blk.tint === 'foliage') {
+          const t = biomeTint(this.biomeAt(x, z)).foliage;
+          tr = t[0]; tg = t[1]; tb = t[2];
+        }
+        const k0 = (CSKY[0] << 10) | (CBLK[0] << 2) | CAO[0];
+        const k1 = (CSKY[1] << 10) | (CBLK[1] << 2) | CAO[1];
+        const k2 = (CSKY[2] << 10) | (CBLK[2] << 2) | CAO[2];
+        const k3 = (CSKY[3] << 10) | (CBLK[3] << 2) | CAO[3];
+        const tile = this.tileFor(blk, states[ci], f);
+        // blk.id in the key: no two cube blocks share a tile today, but the
+        // bucket lives on the interned tuple — a future tile-sharing pair
+        // would otherwise merge across a bucket boundary.
+        const key = tile + ',' + blk.id + ',' + tr + ',' + tg + ',' + tb + ','
+          + k0 + ',' + k1 + ',' + k2 + ',' + k3;
+        let tuple = this.keyMap.get(key);
+        if (tuple === undefined) {
+          tuple = {
+            tile, tr, tg, tb, bld: builder,
+            sky: [CSKY[0], CSKY[1], CSKY[2], CSKY[3]],
+            blk: [CBLK[0], CBLK[1], CBLK[2], CBLK[3]],
+            ao: [CAO[0], CAO[1], CAO[2], CAO[3]],
+          };
+          this.keyMap.set(key, tuple);
+        }
+        mKey[rowBase | a] = 1;
+        GREEDY_TUPLES[rowBase | a] = tuple;
+      }
+    }
+    // 0fps greedy rect expansion: grow w along t1, then h along t2.
+    for (let b = 0; b < 16; b++) {
+      for (let a = 0; a < 16; ) {
+        if (!mKey[b << 4 | a]) { a++; continue; }
+        const tuple = GREEDY_TUPLES[b << 4 | a];
+        let w = 1;
+        while (a + w < 16 && mKey[b << 4 | (a + w)] && GREEDY_TUPLES[b << 4 | (a + w)] === tuple) w++;
+        let h = 1;
+        outer: while (b + h < 16) {
+          for (let ww = 0; ww < w; ww++) {
+            const m = (b + h) << 4 | (a + ww);
+            if (!mKey[m] || GREEDY_TUPLES[m] !== tuple) break outer;
+          }
+          h++;
+        }
+        for (let hh = 0; hh < h; hh++) {
+          for (let ww = 0; ww < w; ww++) mKey[(b + hh) << 4 | (a + ww)] = 0;
+        }
+        this.emitCubeRect(f, axis, t1, t2, d, a, b, w, h, tuple);
+        a += w;
+      }
+    }
+  }
+
+  emitCubeRect(f, axis, t1, t2, d, a, b, w, h, tuple) {
+    const builder = tuple.bld;
+    builder.ensure(4, 6);
+    const n = FACE_NORMALS[f];
+    const x = axis === 0 ? d : a;
+    const y = axis === 1 ? d : (axis === 2 ? b : a);
+    const z = axis === 2 ? d : b;
+    const uvr = this.tileUV, t4 = tuple.tile * 4;
+    const shade = FACE_SHADE[f];
+    // span sentinels + merged-tile origin — the shader's fract() path keys
+    // off the span sum (see materials.js), so single-tile rects (1,1) use it
+    // too and non-greedy emitters' absolute UVs are untouched.
+    builder.su = w + SPAN_EPS; builder.sv = h + SPAN_EPS;
+    builder.tu = uvr[t4]; builder.tv = uvr[t4 + 1];
+    builder.tr = tuple.tr; builder.tg = tuple.tg; builder.tb = tuple.tb;
+    // texture repeats once per merged cell: u runs along UV_U_T[f]'s axis
+    // (which of the two tangent axes FACE_UVS varies u on), v along UV_V_T's.
+    const uS = (UV_U_T[f] === t1 ? w : h) - UV_EPS;
+    const vS = (UV_V_T[f] === t1 ? w : h) - UV_EPS;
+    const verts = V4;
+    for (let c = 0; c < 4; c++) {
+      const co = FACE_CORNERS[f][c];
+      const sco = SCRATCH3;
+      sco[0] = co[0]; sco[1] = co[1]; sco[2] = co[2];
+      sco[t1] = co[t1] ? w : 0;
+      sco[t2] = co[t2] ? h : 0;
+      const uu = FACE_UVS[f][c][0], vv = FACE_UVS[f][c][1];
+      verts[c] = builder.vertex(
+        x + sco[0], y + sco[1], z + sco[2], n[0], n[1], n[2],
+        uu ? uS : 0, vv ? vS : 0,
+        tuple.sky[c], tuple.blk[c],
+        Math.round(255 * AO_CURVE[tuple.ao[c]] * shade),
+      );
+    }
+    builder.quad(verts[0], verts[1], verts[2], verts[3],
+      tuple.ao[0] + tuple.ao[2] > tuple.ao[1] + tuple.ao[3]);
+    this.trackY(y, y + 1);
   }
 
   faceVisible(a, bId) {
@@ -328,16 +551,13 @@ export class ChunkMesher {
     return !this.occludesAt(wx, wy, wz);
   }
 
-  emitCubeFace(builder, x, y, z, f, tile) {
-    builder.ensure(4, 6);
-    const n = FACE_NORMALS[f];
+  // OVERHAUL §G — the 01 §8.3 per-corner AO + smooth-light math, extracted
+  // from the old emitCubeFace so the greedy mask can key on it. Fills the
+  // module-scratch CSKY/CBLK/CAO arrays (corner order = FACE_CORNERS[f]);
+  // light channels are pre-quantized to the vCol scale (×17).
+  cornerLight(x, y, z, f, n) {
     const bx = x + n[0], by = y + n[1], bz = z + n[2];
     const [t1a, t2a] = FACE_TANGENTS[f];
-    const uvr = this.tileUV, t4 = tile * 4;
-    const u0 = uvr[t4], v0 = uvr[t4 + 1], u1 = uvr[t4 + 2], v1 = uvr[t4 + 3];
-    const shade = FACE_SHADE[f];
-    const ao = AO4; const verts = V4;
-
     for (let c = 0; c < 4; c++) {
       const co = FACE_CORNERS[f][c];
       const s1 = co[t1a] ? 1 : -1;
@@ -352,7 +572,7 @@ export class ChunkMesher {
       const side1 = this.opaqueAt(c1x, c1y, c1z) ? 1 : 0;
       const side2 = this.opaqueAt(c2x, c2y, c2z) ? 1 : 0;
       const cornerOcc = this.opaqueAt(c3x, c3y, c3z) ? 1 : 0;
-      ao[c] = (side1 && side2) ? 0 : 3 - (side1 + side2 + cornerOcc);
+      CAO[c] = (side1 && side2) ? 0 : 3 - (side1 + side2 + cornerOcc);
 
       // smooth light: average the same 4 cells, skipping opaque ones
       let skySum = 0, blkSum = 0, cnt = 0;
@@ -365,21 +585,14 @@ export class ChunkMesher {
       if (!(side1 && side2) && !cornerOcc) {
         skySum += this.skyAt(c3x, c3y, c3z); blkSum += this.blockLightAt(c3x, c3y, c3z); cnt++;
       }
-      let skyV, blkV;
-      if (cnt === 0) { skyV = this.skyAt(bx, by, bz); blkV = this.blockLightAt(bx, by, bz); }
-      else { skyV = skySum / cnt; blkV = blkSum / cnt; }
-
-      const uu = FACE_UVS[f][c][0], vv = FACE_UVS[f][c][1];
-      verts[c] = builder.vertex(
-        x + co[0], y + co[1], z + co[2],
-        n[0], n[1], n[2],
-        u0 + (u1 - u0) * uu, v0 + (v1 - v0) * vv,
-        Math.round(skyV * 17), Math.round(blkV * 17),
-        Math.round(255 * AO_CURVE[ao[c]] * shade),
-      );
+      if (cnt === 0) {
+        CSKY[c] = this.skyAt(bx, by, bz) * 17;
+        CBLK[c] = this.blockLightAt(bx, by, bz) * 17;
+      } else {
+        CSKY[c] = Math.round(skySum / cnt * 17);
+        CBLK[c] = Math.round(blkSum / cnt * 17);
+      }
     }
-    builder.quad(verts[0], verts[1], verts[2], verts[3], ao[0] + ao[2] > ao[1] + ao[3]);
-    this.trackY(y, y + 1);
   }
 
   // ------------------------------------------------------------ liquids
@@ -400,6 +613,8 @@ export class ChunkMesher {
     // ice with a see-through band between them and a doubled blend from above.
     const capped = water && this.blockAt(x, y + 1, z) === B.ICE;
     const h = (capped || sameFluid(x, y + 1, z)) ? 1 : 0.875;
+    // OVERHAUL §B — water takes its biome color; lava stays intrinsic
+    const wTint = water ? biomeTint(this.biomeAt(x, z)).water : null;
     for (let f = 0; f < 6; f++) {
       // with h = 1 the top face is coplanar with the ice's bottom face: z-fight.
       if (f === 2 && capped) continue;
@@ -411,7 +626,7 @@ export class ChunkMesher {
       else if (sameFluid(nx, ny, nz) || this.occludesAt(nx, ny, nz)) continue;
       this.emitFlatFace(builder, x, y, z, f, blk.tileIndex[f], h,
         this.skyAt(nx, ny, nz), this.blockLightAt(nx, ny, nz),
-        Math.round((blk.fluidAlpha ?? 1) * 255));
+        Math.round((blk.fluidAlpha ?? 1) * 255), wTint);
     }
   }
 
@@ -421,14 +636,17 @@ export class ChunkMesher {
    * in the water bucket.
    */
   emitWaterlogged(x, y, z, blk) {
-    // §12.2 full-cube rule: a chest emits NO water of its own — the water is
-    // logically present but visually inside the cube, and neighbouring water
-    // culls toward it via isWaterCell, so it sits flush with no phantom sleeve.
-    if (blk.shape === 'cube') return;
+    // §12.2 full-cube rule: a chest (or the spawner cage cube) emits NO water of
+    // its own — the water is logically present but visually inside the cube, and
+    // neighbouring water culls toward it via isWaterCell, so it sits flush with
+    // no phantom sleeve.
+    if (blk.shape === 'cube' || blk.shape === 'spawner') return;
 
     const builder = builders.water;
     const water = BLOCKS[B.WATER];
     const alpha = Math.round((water.fluidAlpha ?? 1) * 255);
+    // OVERHAUL §B — waterlogged geometry wears the same biome water color.
+    const wTint = biomeTint(this.biomeAt(x, z)).water;
     const aboveWater = this.isWaterCell(x, y + 1, z);
     // 04 §12.5 — the same cap emitLiquid applies: ice above is a full cube in
     // THIS bucket and now culls its down face toward a water cell, so raise the
@@ -441,7 +659,7 @@ export class ChunkMesher {
     // top face at the standard lowered source surface, only if nothing above
     if (!aboveWater && !capped) {
       this.emitFlatFace(builder, x, y, z, 2, water.tileIndex[2], 0.875,
-        this.skyAt(x, y + 1, z), this.blockLightAt(x, y + 1, z), alpha);
+        this.skyAt(x, y + 1, z), this.blockLightAt(x, y + 1, z), alpha, wTint);
     }
     // sides at the exact cell-boundary plane
     for (const f of [0, 1, 4, 5]) {
@@ -449,17 +667,19 @@ export class ChunkMesher {
       const nx = x + n[0], ny = y + n[1], nz = z + n[2];
       if (!this.waterFaceVisible(nx, ny, nz)) continue;   // §12.3, the one helper
       this.emitFlatFace(builder, x, y, z, f, water.tileIndex[f], sideTop,
-        this.skyAt(nx, ny, nz), this.blockLightAt(nx, ny, nz), alpha);
+        this.skyAt(nx, ny, nz), this.blockLightAt(nx, ny, nz), alpha, wTint);
     }
     // bottom
     if (this.waterFaceVisible(x, y - 1, z)) {
       this.emitFlatFace(builder, x, y, z, 3, water.tileIndex[3], 1,
-        this.skyAt(x, y - 1, z), this.blockLightAt(x, y - 1, z), alpha);
+        this.skyAt(x, y - 1, z), this.blockLightAt(x, y - 1, z), alpha, wTint);
     }
   }
 
-  // Flat-lit cube face with a scaled top (liquids)
-  emitFlatFace(builder, x, y, z, f, tile, h, skyV, blkV, alpha = 255) {
+  // Flat-lit cube face with a scaled top (liquids).
+  // OVERHAUL §B — `tint` is an [r,g,b] biome color (water surfaces) or null;
+  // it rides the builder's per-quad state (quad() resets it).
+  emitFlatFace(builder, x, y, z, f, tile, h, skyV, blkV, alpha = 255, tint = null) {
     builder.ensure(4, 6);
     const n = FACE_NORMALS[f];
     const uvr = this.tileUV, t4 = tile * 4;
@@ -467,6 +687,7 @@ export class ChunkMesher {
     const shade = FACE_SHADE[f];
     const r = Math.round(skyV * 17), g = Math.round(blkV * 17);
     const b = Math.round(255 * shade);
+    if (tint) { builder.tr = tint[0]; builder.tg = tint[1]; builder.tb = tint[2]; }
     const verts = V4;
     for (let c = 0; c < 4; c++) {
       const co = FACE_CORNERS[f][c];
@@ -649,9 +870,13 @@ export class ChunkMesher {
    */
   emitDustQuad(bld, tile, x0, z0, x1, z1, yy, px0, py0, px1, py1, swap, r, g) {
     bld.ensure(4, 6);
-    const cx = (tile & 31) * 16, cy = (tile >> 5) * 16;
-    const u0 = (cx + px0 + 0.5) / 512, u1 = (cx + px1 - 0.5) / 512;
-    const v0 = (cy + py0 + 0.5) / 512, v1 = (cy + py1 - 0.5) / 512;
+    // OVERHAUL §A — cell/gutter atlas layout: px coords are tile-local 16ths,
+    // scaled by the tile resolution (K = TILE_PX/16); the half-texel inset and
+    // /ATLAS_SIZE replace the old /512 literals.
+    const K = TILE_PX / 16;
+    const cx = cellX(tile) + ATLAS_GUTTER, cy = cellY(tile) + ATLAS_GUTTER;
+    const u0 = (cx + px0 * K + 0.5) / ATLAS_SIZE, u1 = (cx + px1 * K - 0.5) / ATLAS_SIZE;
+    const v0 = (cy + py0 * K + 0.5) / ATLAS_SIZE, v1 = (cy + py1 * K - 0.5) / ATLAS_SIZE;
     const a = bld.vertex(x0, yy, z1, 0, 1, 0, swap ? u1 : u0, swap ? v0 : v1, r, g, 255);
     const b = bld.vertex(x1, yy, z1, 0, 1, 0, u1, v1, r, g, 255);
     const c = bld.vertex(x1, yy, z0, 0, 1, 0, swap ? u0 : u1, swap ? v1 : v0, r, g, 255);
@@ -977,8 +1202,38 @@ export class ChunkMesher {
   }
 }
 
-const AO4 = [0, 0, 0, 0];
 const V4 = [0, 0, 0, 0];
+
+// OVERHAUL §G — greedy scratch: per-corner light (cornerLight), the 16×16
+// layer mask, per-cell merge tuples, and a reused position scratch. All
+// module-level, so a build() allocates nothing in the hot path beyond the
+// keyMap/tuple objects (which the worker's GC absorbs off-thread).
+const CSKY = new Uint8Array(4);
+const CBLK = new Uint8Array(4);
+const CAO = new Uint8Array(4);
+const GREEDY_KEYS = new Int32Array(256);
+const GREEDY_TUPLES = new Array(256);
+const SCRATCH3 = [0, 0, 0];
+// FACE_UVS varies u along this tangent axis per face (±X faces run u along Z,
+// every other face along X or Y per faceTables) — greedy spans resolve the
+// u/v repeat counts from these.
+const UV_U_T = [2, 2, 0, 0, 0, 0];
+const UV_V_T = [1, 1, 2, 2, 2, 2];
+
+// OVERHAUL §W — wrap worker-transferred raw arrays into a BufferGeometry.
+// Zero copies: the transferred ArrayBuffers ARE the attribute buffers.
+export function rawToGeometry(raw) {
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(raw.pos, 3));
+  g.setAttribute('normal', new THREE.BufferAttribute(raw.nrm, 3));
+  g.setAttribute('uv', new THREE.BufferAttribute(raw.uv, 2));
+  g.setAttribute('aSpan', new THREE.BufferAttribute(raw.span, 2));
+  g.setAttribute('aTileUV', new THREE.BufferAttribute(raw.tileUV, 2));
+  g.setAttribute('color', new THREE.BufferAttribute(raw.col, 4, true));
+  g.setAttribute('tint', new THREE.BufferAttribute(raw.tint, 3, true));
+  g.setIndex(new THREE.BufferAttribute(raw.idx, 1));
+  return g;
+}
 
 // Manual bounding sphere from tracked Y bounds (01 §8.5)
 export function setChunkBoundingSphere(geometry, minY, maxY) {

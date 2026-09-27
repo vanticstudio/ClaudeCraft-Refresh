@@ -1,9 +1,16 @@
-// 512×512 texture atlas: 32×32 grid of 16×16 procedurally painted tiles
-// (01 §7). Tile order is fixed by TILE_NAMES below; index 0 is the magenta
-// 'missing' checker fallback.
+// OVERHAUL §A — HD texture atlas: a 32×32 grid of 40px cells on a 1280² canvas;
+// each cell holds a 32px painted tile padded by a 4px edge-replicated gutter so
+// the mipmap chain can average across cell borders without cross-tile bleed.
+// Public API is unchanged from 01 §7 (canvas, texture, TILE, tileUV,
+// atlasDataURL, animate) plus setRenderer() for the staged-animation path.
+// Tile order is fixed by TILE_NAMES below; index 0 is the magenta 'missing'
+// checker fallback.
 import * as THREE from 'three';
 import { PAINTERS, ANIMATED } from './tilePainters.js';
 import { xmur3, mulberry32 } from '../math/rng.js';
+import {
+  TILE_PX, ATLAS_GUTTER, ATLAS_CELL, ATLAS_COLS, ATLAS_SIZE,
+} from '../constants.js';
 
 // Canonical order: blocks, destroy stages, then item sprites (alphabetical).
 const BLOCK_TILES = [
@@ -93,17 +100,44 @@ export const TILE_NAMES = ['missing', ...BLOCK_TILES, ...DESTROY_TILES, ...ITEM_
 export const DUST_DOT_TILE = Uint16Array.from({ length: 16 }, (_, p) => TILE_NAMES.indexOf('dust_dot_' + p));
 export const DUST_LINE_TILE = Uint16Array.from({ length: 16 }, (_, p) => TILE_NAMES.indexOf('dust_line_' + p));
 
+// Cell origin of tile t on the atlas canvas (top-left of its 40px cell). The
+// painted tile itself starts GUTTER pixels inside — everything UV-facing uses
+// cellToInner below, everything pixel-facing (DOM icons, glint compositing)
+// uses these plus TILE_PX.
+export const cellX = t => (t & (ATLAS_COLS - 1)) * ATLAS_CELL;
+export const cellY = t => (t >> 5) * ATLAS_CELL;
+
 function paintMissing(ctx, x0, y0) {
+  const s = TILE_PX, h = s >> 1;
   ctx.fillStyle = '#f800f8';
-  ctx.fillRect(x0, y0, 16, 16);
+  ctx.fillRect(x0, y0, s, s);
   ctx.fillStyle = '#000000';
-  ctx.fillRect(x0, y0, 8, 8);
-  ctx.fillRect(x0 + 8, y0 + 8, 8, 8);
+  ctx.fillRect(x0, y0, h, h);
+  ctx.fillRect(x0 + h, y0 + h, h, h);
+}
+
+// Replicate each painted tile's edge texels outward into its gutter so mip
+// levels blend into copies of the tile's own border (never a neighbour's).
+function stampGutters(ctx) {
+  const g = ATLAS_GUTTER, s = TILE_PX;
+  for (let t = 0; t < TILE_NAMES.length; t++) {
+    const x0 = cellX(t) + g, y0 = cellY(t) + g;
+    // rows/cols (drawImage self-copy is legal: regions don't overlap)
+    ctx.drawImage(ctx.canvas, x0, y0, s, 1, x0, y0 - g, s, g);              // top
+    ctx.drawImage(ctx.canvas, x0, y0 + s - 1, s, 1, x0, y0 + s, s, g);      // bottom
+    ctx.drawImage(ctx.canvas, x0, y0, 1, s, x0 - g, y0, g, s);              // left
+    ctx.drawImage(ctx.canvas, x0 + s - 1, y0, 1, s, x0 + s, y0, g, s);      // right
+    // corners (1×1 pixel stretched into each corner block)
+    ctx.drawImage(ctx.canvas, x0, y0, 1, 1, x0 - g, y0 - g, g, g);
+    ctx.drawImage(ctx.canvas, x0 + s - 1, y0, 1, 1, x0 + s, y0 - g, g, g);
+    ctx.drawImage(ctx.canvas, x0, y0 + s - 1, 1, 1, x0 - g, y0 + s, g, g);
+    ctx.drawImage(ctx.canvas, x0 + s - 1, y0 + s - 1, 1, 1, x0 + s, y0 + s, g, g);
+  }
 }
 
 export function buildAtlas() {
   const canvas = document.createElement('canvas');
-  canvas.width = canvas.height = 512;
+  canvas.width = canvas.height = ATLAS_SIZE;
   // §6 — willReadFrequently: the edge-light/bevel passes do ~300 small
   // getImageData/putImageData round-trips during the bake; a GPU-backed canvas
   // pays a sync stall for each (~1.5 s total). CPU-backed, the whole bake stays
@@ -114,48 +148,141 @@ export function buildAtlas() {
   for (let t = 0; t < TILE_NAMES.length; t++) {
     const name = TILE_NAMES[t];
     TILE[name] = t;
-    const x0 = (t & 31) * 16, y0 = (t >> 5) * 16;
+    const x0 = cellX(t) + ATLAS_GUTTER, y0 = cellY(t) + ATLAS_GUTTER;
     if (name === 'missing') { paintMissing(ctx, x0, y0); continue; }
     const painter = PAINTERS[name];
     if (!painter) { paintMissing(ctx, x0, y0); continue; }
-    painter(ctx, x0, y0, mulberry32(xmur3(name)()));
+    // Animated tiles' build-time paint is frame 0 of ANIMATED — seeded exactly
+    // like animate()'s step-0 repaint (name+':0') so the first animation step
+    // does not pop the texture.
+    const seed = ANIMATED[name] ? name + ':0' : name;
+    painter(ctx, x0, y0, mulberry32(xmur3(seed)()));
   }
+  stampGutters(ctx);
 
+  // OVERHAUL §A — mipmapped filtering: crisp nearest magnification up close,
+  // bilinear-blended mip levels in the distance (kills the old full-tile
+  // shimmer). Anisotropy is raised by main.js once the renderer exists.
   const texture = new THREE.CanvasTexture(canvas);
   texture.magFilter = THREE.NearestFilter;
-  texture.minFilter = THREE.NearestFilter;   // no mipmap variant
-  texture.generateMipmaps = false;
+  texture.minFilter = THREE.NearestMipmapLinearFilter;
+  texture.generateMipmaps = true;
   texture.colorSpace = THREE.NoColorSpace;   // gamma-space pipeline (01 §1)
   texture.flipY = false;                     // v measured from canvas top
 
-  // Precomputed UV rects with half-texel inset (01 §7.2): [u0,v0,u1,v1] × 1024
+  // Precomputed UV rects with half-texel inset (01 §7.2): [u0,v0,u1,v1] × 1024.
+  // Rects address the INNER tile; the gutter is never sampled by the static
+  // path, it only feeds the mip chain.
   const tileUV = new Float32Array(1024 * 4);
   for (let t = 0; t < 1024; t++) {
-    const col = t & 31, row = t >> 5;
-    tileUV[t * 4 + 0] = (col * 16 + 0.5) / 512;
-    tileUV[t * 4 + 1] = (row * 16 + 0.5) / 512;
-    tileUV[t * 4 + 2] = (col * 16 + 15.5) / 512;
-    tileUV[t * 4 + 3] = (row * 16 + 15.5) / 512;
+    const x0 = cellX(t) + ATLAS_GUTTER, y0 = cellY(t) + ATLAS_GUTTER;
+    tileUV[t * 4 + 0] = (x0 + 0.5) / ATLAS_SIZE;
+    tileUV[t * 4 + 1] = (y0 + 0.5) / ATLAS_SIZE;
+    tileUV[t * 4 + 2] = (x0 + TILE_PX - 0.5) / ATLAS_SIZE;
+    tileUV[t * 4 + 3] = (y0 + TILE_PX - 0.5) / ATLAS_SIZE;
   }
 
   const atlasDataURL = canvas.toDataURL('image/png');
 
-  // Swap animated tiles between their two frames every 5 ticks by repainting
-  // their atlas slots; all chunk geometry picks the change up for free.
-  let lastFrame = 0;
-  function animate(tick) {
-    const frame = ((tick / 5) | 0) & 1;
-    if (frame === lastFrame || tick % 5 !== 0) return;
-    lastFrame = frame;
-    for (const [name, frames] of Object.entries(ANIMATED)) {
+  // ---------------------------------------------------------- animation
+  // OVERHAUL §A — staged animation. Frame painters run into a tiny staging
+  // canvas; renderer.copyTextureToTexture then pushes JUST the changed tiles
+  // into the atlas texture. The old path re-uploaded the whole 512² canvas
+  // every 5 ticks; the new one uploads N × 32² px and never regenerates mips
+  // in the hot path (a periodic full refresh below re-syncs the mip chain).
+  const ANIM_ENTRIES = Object.entries(ANIMATED)
+    .filter(([name]) => TILE[name] !== undefined);
+  const animCanvas = document.createElement('canvas');
+  animCanvas.width = Math.max(1, ANIM_ENTRIES.length) * TILE_PX;
+  animCanvas.height = TILE_PX;
+  const animCtx = animCanvas.getContext('2d', { willReadFrequently: true });
+  const animTexture = new THREE.CanvasTexture(animCanvas);
+  animTexture.magFilter = THREE.NearestFilter;
+  animTexture.minFilter = THREE.NearestFilter;
+  animTexture.generateMipmaps = false;
+  animTexture.colorSpace = THREE.NoColorSpace;
+  animTexture.flipY = false;
+
+  let renderer = null;          // set via setRenderer(); copies start after
+  let lastStep = -1;
+  const FULL_REFRESH_TICKS = 1200;   // 60 s — re-upload canvas + rebuild mips
+
+  function paintFrames(step) {
+    for (let i = 0; i < ANIM_ENTRIES.length; i++) {
+      const [name, frames] = ANIM_ENTRIES[i];
+      const f = frames[((step % frames.length) + frames.length) % frames.length] ?? frames[0];
+      const ax = i * TILE_PX, ay = 0;
       const t = TILE[name];
-      if (t === undefined) continue;
-      const x0 = (t & 31) * 16, y0 = (t >> 5) * 16;
-      ctx.clearRect(x0, y0, 16, 16);
-      frames[frame](ctx, x0, y0, mulberry32(xmur3(name + ':' + frame)()));
+      const x0 = cellX(t) + ATLAS_GUTTER, y0 = cellY(t) + ATLAS_GUTTER;
+      // Stable per-frame seeds (step % N): the painters' wrap-around phases
+      // (water sine, lava drift, flame heights) then loop exactly as authored
+      // instead of re-rolling their noise lattice every 250 ms — and the
+      // build-time frame-0 paint (seeded name+':0' above) matches frame 0
+      // here, so there is no one-time texture pop on the first animation tick.
+      const seed = name + ':' + (((step % frames.length) + frames.length) % frames.length);
+      // staging cell (source of the GPU push) AND the main canvas cell (so the
+      // periodic full refresh — and mips derived from the canvas — see the
+      // same current frame).
+      animCtx.clearRect(ax, ay, TILE_PX, TILE_PX);
+      f(animCtx, ax, ay, mulberry32(xmur3(seed)()));
+      ctx.clearRect(x0, y0, TILE_PX, TILE_PX);
+      f(ctx, x0, y0, mulberry32(xmur3(seed)()));
     }
-    texture.needsUpdate = true;
+    // The framebuffer copy path reads the STAGING TEXTURE from GPU memory, so
+    // the CPU-side repaint above must actually reach it: initTexture processes
+    // the version bump and re-uploads the tiny (N·32×32) staging canvas
+    // BEFORE any copy runs. (needsUpdate alone would queue an upload that
+    // nothing ever binds — the staging texture lives in no material.)
+    if (renderer) {
+      renderer.initTexture(animTexture);
+      for (let i = 0; i < ANIM_ENTRIES.length; i++) {
+        const t = TILE[ANIM_ENTRIES[i][0]];
+        const ax = i * TILE_PX;
+        const x0 = cellX(t) + ATLAS_GUTTER, y0 = cellY(t) + ATLAS_GUTTER;
+        renderer.copyTextureToTexture(animTexture, texture,
+          { min: { x: ax, y: 0 }, max: { x: ax + TILE_PX, y: TILE_PX } },
+          { x: x0, y: y0 });
+        // copyTextureToTexture regenerates the dst mip chain whenever
+        // dst.generateMipmaps — so the chain stays in sync with level 0 here
+        // (a 1280² mip rebuild per step is ~0.5 ms GPU; accepted). The
+        // periodic full refresh below remains as a belt-and-braces re-sync.
+      }
+    }
   }
 
-  return { canvas, texture, TILE, tileUV, atlasDataURL, animate };
+  function animate(tick) {
+    if (tick % 5 !== 0) return;
+    const step = (tick / 5) | 0;
+    if (step === lastStep) return;
+    lastStep = step;
+    paintFrames(step);
+    if (step % FULL_REFRESH_TICKS === 0) texture.needsUpdate = true;   // mip re-sync
+  }
+
+  // setRenderer — OVERHAUL §A: the staged copy reads the SOURCE from GPU
+  // memory (framebuffer path), so the staging texture must be uploaded before
+  // the first copy — initTexture does exactly that, once, here. paintFrames
+  // re-uploads it per step (it is N·32² px — negligible). Anisotropy is raised
+  // here too — oblique-angle shimmer the mip chain can't fix alone (capped by
+  // the driver's maximum).
+  return {
+    canvas, texture, TILE, tileUV, atlasDataURL, animate,
+    setRenderer(r) {
+      renderer = r;
+      texture.anisotropy = Math.min(8, r.capabilities.getMaxAnisotropy());
+      if (ANIM_ENTRIES.length) r.initTexture(animTexture);
+    },
+    // OVERHAUL §O — mipmaps toggle (settings). Toggling re-uploads the whole
+    // canvas once — a settings action, never a per-frame path.
+    setMipmaps(on) {
+      if (on) {
+        texture.generateMipmaps = true;
+        texture.minFilter = THREE.NearestMipmapLinearFilter;
+      } else {
+        texture.generateMipmaps = false;
+        texture.minFilter = THREE.NearestFilter;
+      }
+      texture.needsUpdate = true;
+    },
+  };
 }

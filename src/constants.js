@@ -29,27 +29,47 @@ export let RENDER_RADIUS = 8;
 export const SIM_RADIUS = 6;
 export let UNLOAD_RADIUS = 11;
 export function setRenderRadius(r) {
-  RENDER_RADIUS = Math.max(4, Math.min(16, r | 0));
+  // OVERHAUL §B — slider widened to 4–20. All per-frame/per-tick costs stay
+  // budget-clamped, so high radii degrade gracefully (longer streaming fills,
+  // not frame spikes). Fog derives from RENDER_RADIUS per frame in DayNight.
+  RENDER_RADIUS = Math.max(4, Math.min(20, r | 0));
   GENERATE_RADIUS = RENDER_RADIUS + 1;
   UNLOAD_RADIUS = RENDER_RADIUS + 3;
   return RENDER_RADIUS;
 }
 export const WORKER_COUNT = 2;
+// OVERHAUL §W — meshing pool: chunk meshing moves off the main thread into its
+// own worker pool (terrain gen already has WORKER_COUNT workers). Sized from
+// hardwareConcurrency with a sane floor; the main-thread synchronous path
+// (player edits) is kept for zero-latency feedback and as a fallback.
+export const MESH_WORKER_COUNT =
+  (typeof navigator !== 'undefined' && navigator.hardwareConcurrency > 4)
+    ? Math.min(4, Math.max(2, (navigator.hardwareConcurrency - 2) >> 1))
+    : 2;
 // 01 §9 — a terrain worker that never reports `ready` (blocked Worker
 // constructor, a throw inside its init branch) used to park the player on
 // "Building terrain…" forever with nothing able to observe it. ChunkManager arms
 // this as a watchdog on initWorkers and clears it on the ready message; it is
 // deliberately generous, since a cold first generate on a slow machine is slow.
 export const WORKER_READY_TIMEOUT_MS = 20000;
-export const MAX_JOBS_IN_FLIGHT = 16;
-export const REMESH_FRAME_BUDGET_MS = 6;
-export const REMESH_FRAME_MAX = 4;
+export const MAX_JOBS_IN_FLIGHT = 24;
+// OVERHAUL §W — background remeshing now drains through the worker pool; the
+// main-thread budget only governs the synchronous fallback + player edits.
+export const REMESH_FRAME_BUDGET_MS = 3;
+export const REMESH_FRAME_MAX = 2;
 export const INITIAL_MESH_PER_TICK = 8;   // during LOADING screen (01 §4.4)
 
 // --- Atlas (01 §7) ---
-export const ATLAS_SIZE = 512;
-export const TILE_PX = 16;
-export const ATLAS_COLS = 32;             // 32×32 grid of 16px tiles
+// OVERHAUL §A — HD texture pack: 32px tiles on a 32×32 grid, each tile padded
+// with a GUTTER of edge-replicated texels so the mipmap chain can blur across
+// cell boundaries without bleeding into neighbours (MC-style mipmapping with
+// atlas padding). ATLAS_SIZE = ATLAS_COLS × CELL; uv rects in atlas.js always
+// address the inner TILE_PX² region, never the gutter.
+export const TILE_PX = 32;
+export const ATLAS_GUTTER = 4;
+export const ATLAS_CELL = TILE_PX + ATLAS_GUTTER * 2;   // 40
+export const ATLAS_COLS = 32;             // 32×32 grid of 40px cells → 1280²
+export const ATLAS_SIZE = ATLAS_COLS * ATLAS_CELL;
 
 // --- Lighting (01 §10, 04) ---
 export const MAX_LIGHT = 15;

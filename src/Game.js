@@ -686,7 +686,9 @@ export class Game {
     this.dayNight.updateRender(alpha, this.camera);
     this.entities.updateRender(alpha, this.player);
     if (this.world.activeDim === 2) this.endFight?.updateRender(alpha);   // 13-BOSSES — dragon self-renders
-    // Particles stepped in tick() via tickParticles() (05 §16.3), not here.
+    // Particles stepped in tick() via tickParticles() (05 §16.3); the render
+    // pass only interpolates instance matrices (OVERHAUL §T).
+    this.particles?.render?.(alpha, this.camera);
     this.updateSelectionBox();
 
     this.renderer.render(this.scene, this.camera);
@@ -747,7 +749,9 @@ export class Game {
     this.camera.position.set(px + rightX * bobR + ox, py + bobY + oy, pz + rightZ * bobR + oz);
     this.camera.rotation.set(p.pitch, p.yaw, (p.hurtTilt * p.hurtTiltDir) * Math.PI / 180);
 
-    const fov = CAMERA_FOV * p.fovScale;   // 03 §23 — one source for the base FOV
+    // OVERHAUL §O — base FOV from options (60–110); sprint's fovScale still
+    // multiplies it (03 §23).
+    const fov = (this.options.fov ?? CAMERA_FOV) * p.fovScale;
     if (Math.abs(this.camera.fov - fov) > 0.05) {
       this.camera.fov = fov;
       this.camera.updateProjectionMatrix();

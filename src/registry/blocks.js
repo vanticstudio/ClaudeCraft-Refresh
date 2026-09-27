@@ -357,6 +357,7 @@ defBlock(1, 'stone', {
 defBlock(2, 'grass_block', {
   hardness: 0.6, blast: 0.6, tool: 'shovel',
   tiles: [ 'grass_side', 'grass_side', 'grass_top', 'dirt', 'grass_side', 'grass_side' ],
+  tint: 'grass_top',      // OVERHAUL §B — +Y face carries the biome grass color
   drops: () => [{ name: 'dirt', count: 1 }],
   randomTick: grassTick,
 });
@@ -377,6 +378,7 @@ for (const [id, wood, apple] of [[11, 'oak', true], [12, 'birch', false], [13, '
   defBlock(id, `${wood}_leaves`, {
     hardness: 0.2, blast: 0.2, tool: 'shears', species: wood,
     opaque: false, opacity: 1, bucket: 'cutout', renderSameIdFaces: true,
+    tint: 'foliage',        // OVERHAUL §B — every face carries the biome foliage color
     drops: leafDrops(`${wood}_sapling`, apple),
     randomTick: leafDecayTick,
   });

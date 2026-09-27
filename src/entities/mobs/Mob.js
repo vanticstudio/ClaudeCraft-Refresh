@@ -532,15 +532,24 @@ export class Mob extends LivingEntity {
     return built.group;
   }
 
-  updateRender(alpha) {
+  updateRender(alpha, player) {
     if (!this.object3d) return;
     const a = this.isPuppet ? 1 : alpha;   // 14 §4.4 — puppet positions are already interpolated by NetClient.renderTick
-    this.object3d.position.set(
-      lerp(this.prevPos.x, this.pos.x, a),
-      lerp(this.prevPos.y, this.pos.y, a),
-      lerp(this.prevPos.z, this.pos.z, a));
-    // model faces +Z; entity yaw 0 faces −Z
-    this.object3d.rotation.y = lerpAngle(this.prevYaw, this.yaw, a) + Math.PI;
+    const dx = this.pos.x - this.prevPos.x;
+    const dy = this.pos.y - this.prevPos.y;
+    const dz = this.pos.z - this.prevPos.z;
+    const teleported = dx * dx + dy * dy + dz * dz > 100;   // >10 blocks in one tick
+    if (teleported) {
+      this.object3d.position.set(this.pos.x, this.pos.y, this.pos.z);
+      this.object3d.rotation.y = this.yaw + Math.PI;
+    } else {
+      this.object3d.position.set(
+        lerp(this.prevPos.x, this.pos.x, a),
+        lerp(this.prevPos.y, this.pos.y, a),
+        lerp(this.prevPos.z, this.pos.z, a));
+      // model faces +Z; entity yaw 0 faces −Z
+      this.object3d.rotation.y = lerpAngle(this.prevYaw, this.yaw, a) + Math.PI;
+    }
 
     // death fall-over (05 §16.3)
     if (this.dead) {
@@ -550,10 +559,46 @@ export class Mob extends LivingEntity {
       this.hurtTime = 5;   // hold the red tint
     }
 
+    // Distance LOD — the player is never closer than ~this far when the mob is
+    // a speck, so the per-part swing math is skipped entirely out there. On the
+    // frame the mob crosses OUT of range the pose settles to neutral once (legs
+    // straight, head level) so it doesn't freeze mid-stride; on the frame it
+    // crosses back IN, animate() resumes from that neutral pose.
+    const p = player?.pos;
+    const far = p &&
+      (this.pos.x - p.x) ** 2 + (this.pos.y - p.y) ** 2 + (this.pos.z - p.z) ** 2 > 48 * 48;
+    if (far) {
+      if (!this._lodFar) {
+        this._lodFar = true;
+        this.settleParts();
+      }
+      return;
+    }
+    this._lodFar = false;
     this.applyLightScalar();
     // 14 §4.4 — NetClient._applyPuppetState advances prevWalkCycle→walkCycle
     // once per FRAME as well, so the limb swing needs the same `a`.
     this.animate(a);
+  }
+
+  // One-shot pose reset when a mob drops behind the animation LOD: without it a
+  // sprinting mob would visibly freeze with its legs scissored mid-air.
+  settleParts() {
+    const p = this.parts;
+    if (!p) return;
+    if (p.legFL) {
+      p.legFL.rotation.x = 0; p.legBR.rotation.x = 0;
+      p.legFR.rotation.x = 0; p.legBL.rotation.x = 0;
+    }
+    if (p.legL) {
+      p.legL.rotation.x = 0; p.legR.rotation.x = 0;
+      if (p.legL2) { p.legL2.rotation.x = 0; p.legR2.rotation.x = 0; }
+    }
+    if (p.armL && !this.armsForward) { p.armL.rotation.x = 0; p.armR.rotation.x = 0; }
+    if (p.legs) {
+      for (const l of p.legs) l.rotation.y = l.userData.baseRotY;
+    }
+    if (p.head) { p.head.rotation.y = 0; p.head.rotation.x = 0; }
   }
 
   animate(alpha) {

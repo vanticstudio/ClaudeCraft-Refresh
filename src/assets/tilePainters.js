@@ -1,7 +1,14 @@
-// Procedural 16×16 tile painters (01 §7, 06 §4/§8). Pure canvas-2d: no three.js,
+// Procedural texture painters (01 §7, 06 §4/§8). Pure canvas-2d: no three.js,
 // no DOM at module level. Every painter: (ctx, x0, y0, rng) painting one tile at
 // (x0, y0); rng is pre-seeded per tile name so output is deterministic.
+// Tiles are painted at TILE_PX² (currently 32) — all geometry below is authored
+// in the classic 16-unit logical space and scaled onto the device tile by K, so
+// a future TILE_PX bump re-scales every painter automatically.
 import { mulberry32, xmur3 } from '../math/rng.js';
+import { TILE_PX } from '../constants.js';
+
+const S = TILE_PX;
+const K = S / 16;                // logical (16-space) → device px scale
 
 // ---------------------------------------------------------------- color utils
 function hexToRgb(hex) {
@@ -30,27 +37,36 @@ function lerpHex(h1, h2, t) {
 const clamp15 = v => Math.max(0, Math.min(15, v | 0));
 
 // ------------------------------------------------------------- paint helpers
+// px/rect take LOGICAL 16-space coordinates and scale onto the S×S device tile;
+// px1 is a 1-DEVICE-pixel dab used by the fine detail passes.
 function px(ctx, x0, y0, x, y, style) {
   ctx.fillStyle = style;
-  ctx.fillRect(x0 + clamp15(x), y0 + clamp15(y), 1, 1);
+  ctx.fillRect(x0 + clamp15(x) * K, y0 + clamp15(y) * K, K, K);
+}
+function px1(ctx, x0, y0, x, y, style) {
+  ctx.fillStyle = style;
+  ctx.fillRect(x0 + Math.max(0, Math.min(S - 1, x | 0)), y0 + Math.max(0, Math.min(S - 1, y | 0)), 1, 1);
 }
 function rect(ctx, x0, y0, x, y, w, h, style) {
   ctx.fillStyle = style;
-  ctx.fillRect(x0 + x, y0 + y, w, h);
+  ctx.fillRect(x0 + x * K, y0 + y * K, w * K, h * K);
 }
 function solid(ctx, x0, y0, c) {
   rect(ctx, x0, y0, 0, 0, 16, 16, c.startsWith('#') ? c : c);
 }
-// §6 — base value fill. Was per-pixel white noise (±a%); now coherent grain
-// (smoothed coarse lattice + a whisper of dither) with the SAME signature, so
-// every painter built on noise/speckle/blotch upgrades from static to material
-// in one place. Amplitude semantics preserved (a ≈ overall contrast %).
+// §6 — base value fill: coherent grain (smoothed coarse lattice + a whisper of
+// dither), now TWO octaves — a coarse material octave plus a fine sparkle
+// octave — so at 2× resolution the surface reads as material, not static.
+// Amplitude semantics preserved (a ≈ overall contrast %).
 function noise(ctx, x0, y0, rng, c, a) {
-  grain(ctx, x0, y0, rng, c, { amp: a, cellX: 3, cellY: 3, dither: Math.min(4, a / 2) });
+  grain(ctx, x0, y0, rng, c, {
+    amp: a, cellX: 3, cellY: 3, dither: Math.min(4, a / 2),
+    oct2: { cellX: 1.5, cellY: 1.5, amp: a * 0.35 },
+  });
 }
 function speckle(ctx, x0, y0, rng, c, f, d) {
   noise(ctx, x0, y0, rng, c, 6);
-  const n = Math.round(256 * d / 100);
+  const n = Math.round(S * S * d / 100);
   for (let i = 0; i < n; i++) px(ctx, x0, y0, rng() * 16, rng() * 16, f);
   edgeLight(ctx, x0, y0);                                   // §6 — full-cube users
 }
@@ -74,15 +90,18 @@ function blotch(ctx, x0, y0, rng, c1, c2, n) {
         if (nx < 0 || nx > 15 || ny < 0 || ny > 15) continue;
         if (!cells.has(nx * 16 + ny) && rng() < 0.5) px(ctx, x0, y0, nx, ny, outline);
       }
+      // interior shading: a light dab toward the top-left, a dark one low-right
+      if (rng() < 0.4) px(ctx, x0, y0, cxx, cyy, shadeHex(c2, 1.18));
+      if (rng() < 0.4) px(ctx, x0, y0, cxx, cyy, shadeHex(c2, 0.82));
     }
   }
   edgeLight(ctx, x0, y0);                                   // §6 — full-cube users
 }
 // §6 — planks: along-board coherent wood grain (wide lattice cells so streaks
-// run WITH each board), staggered joints, and a bevelled seam — dark seam row
-// with a lit first row on the board below, so boards read as separate slats.
+// run WITH each board), staggered joints, a bevelled seam, and 1–2 subtle
+// knots so long boards never read as printed stripes.
 function planks(ctx, x0, y0, rng, c) {
-  grain(ctx, x0, y0, rng, c, { amp: 8, cellX: 8, cellY: 2, dither: 4 });
+  grain(ctx, x0, y0, rng, c, { amp: 8, cellX: 8, cellY: 2, dither: 4, oct2: { cellX: 1.5, cellY: 1, amp: 4 } });
   const [r, g, b] = hexToRgb(c);
   const joints = [];
   for (let board = 0; board < 4; board++) joints.push(Math.floor(rng() * 16));
@@ -97,8 +116,18 @@ function planks(ctx, x0, y0, rng, c) {
       px(ctx, x0, y0, x, y, css(r * k, g * k, b * k));
     }
   }
+  // 1–2 subtle knots: a dark 2×2 core with a lit upper shoulder
+  const knots = rng() < 0.5 ? 1 : 2;
+  for (let i = 0; i < knots; i++) {
+    const kx = 2 + Math.floor(rng() * 11), ky = 2 + Math.floor(rng() * 2) * 4 + 4 + Math.floor(rng() * 2);
+    px(ctx, x0, y0, kx, ky, shadeHex(c, 0.66));
+    px(ctx, x0, y0, kx + 1, ky, shadeHex(c, 0.74));
+    px(ctx, x0, y0, kx, ky + 1, shadeHex(c, 0.8));
+    px(ctx, x0, y0, kx, ky - 1, shadeHex(c, 1.12));
+  }
   edgeLight(ctx, x0, y0);
 }
+// Bark: vertical ridge stripes plus deeper notch lines and pale mossy flecks.
 function bark(ctx, x0, y0, rng, c1, c2) {
   let x = 0, which = rng() < 0.5;
   while (x < 16) {
@@ -112,97 +141,169 @@ function bark(ctx, x0, y0, rng, c1, c2) {
       }
     x += w; which = !which;
   }
+  // deep ridge lines: near-vertical dark wobbles breaking the stripe rhythm
+  for (let i = 0; i < 3; i++) {
+    let wx = 1 + Math.floor(rng() * 14), wy = 0;
+    while (wy < 16) {
+      px(ctx, x0, y0, wx, wy, shadeHex(c2, 0.72));
+      wy += 1 + (rng() < 0.3 ? 1 : 0);
+      wx = Math.max(0, Math.min(15, wx + (rng() < 0.4 ? (rng() < 0.5 ? 1 : -1) : 0)));
+    }
+  }
   for (let i = 0; i < 8; i++)                                // random notches
     px(ctx, x0, y0, rng() * 16, rng() * 16, rng() < 0.5 ? c1 : c2);
+  for (let i = 0; i < 5; i++)                                // mossy flecks
+    px(ctx, x0, y0, rng() * 16, rng() * 16, shadeHex(c1, 1.35));
   edgeLight(ctx, x0, y0);                                    // §6
 }
 function birchBark(ctx, x0, y0, rng, c1, c2) {              // pale + black dashes
   noise(ctx, x0, y0, rng, c1, 6);
-  for (let i = 0; i < 10; i++) {
+  for (let i = 0; i < 13; i++) {
     const dx = Math.floor(rng() * 13), dy = Math.floor(rng() * 16);
     const w = 2 + Math.floor(rng() * 3);
     rect(ctx, x0, y0, dx, dy, Math.min(w, 16 - dx), 1, c2);
   }
+  for (let i = 0; i < 6; i++) px(ctx, x0, y0, rng() * 16, rng() * 16, shadeHex(c1, 0.9));
   edgeLight(ctx, x0, y0);                                    // §6
 }
+// End-grain rings with a heartwood gradient: the centre reads denser/darker,
+// brightening toward the bark edge, with per-px jitter for organic wobble.
 function rings(ctx, x0, y0, rng, c1, c2) {
   for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) {
     const ring = Math.floor(Math.max(Math.abs(x - 7.5), Math.abs(y - 7.5)));
     const c = (ring & 1) ? c2 : c1;
     const [r, g, b] = hexToRgb(c);
-    const f = 1 + (rng() * 2 - 1) * 0.05;
+    const heart = 0.85 + 0.15 * (ring / 7);                  // darker heartwood core
+    const f = heart * (1 + (rng() * 2 - 1) * 0.05);
     px(ctx, x0, y0, x, y, css(r * f, g * f, b * f));
   }
   edgeLight(ctx, x0, y0);                                    // §6
 }
-// §6 — ore flecks: chunkier irregular blobs, a dark rim on the shadow side and
-// a bright gleam at the top-left. Base-agnostic so stone AND netherrack ores use
-// the same treatment; contrast pops without changing any mineral hue.
+// §6 — ore flecks: chunky irregular blobs, a dark rim on the shadow side and a
+// 1–2px GLEAM at the top-left of each blob. Silhouette character varies with
+// the mineral (hashed from its hex) so coal reads chunkier, redstone glintier,
+// without changing any hue. Base-agnostic: stone AND netherrack ores share it.
 function oreFlecks(ctx, x0, y0, rng, mineral, rimBase = '#7f7f7f') {
-  const blobs = 4 + Math.floor(rng() * 2);
-  const hi = shadeHex(mineral, 1.45), lo = shadeHex(mineral, 0.8);
+  const seed = (mineral.charCodeAt(1) + mineral.charCodeAt(3) + mineral.charCodeAt(5));
+  const chunky = seed % 3;                                   // 0..2 silhouette variance
+  const blobs = 4 + (seed % 2) + Math.floor(rng() * 2);
+  const hi = shadeHex(mineral, 1.7), hi2 = shadeHex(mineral, 2.1);
+  const lo = shadeHex(mineral, 0.78);
   const rim = shadeHex(rimBase, 0.55);
   for (let i = 0; i < blobs; i++) {
     const bx = 2 + Math.floor(rng() * 11), by = 2 + Math.floor(rng() * 11);
     const cells = [[bx, by], [bx + 1, by], [bx, by + 1]];
-    if (rng() < 0.7) cells.push([bx + 1, by + 1]);
-    if (rng() < 0.4) cells.push([bx + (rng() < 0.5 ? -1 : 2), by + (rng() < 0.5 ? 0 : 1)]);
+    if (rng() < 0.7 + chunky * 0.15) cells.push([bx + 1, by + 1]);
+    if (rng() < 0.4 + chunky * 0.2) cells.push([bx + (rng() < 0.5 ? -1 : 2), by + (rng() < 0.5 ? 0 : 1)]);
+    if (chunky === 2 && rng() < 0.5) cells.push([bx + 1 + (rng() < 0.5 ? -1 : 2), by + 1]);
     for (const [cx2, cy2] of cells) px(ctx, x0, y0, cx2, cy2, rng() < 0.3 ? lo : mineral);
     const maxX = Math.max(...cells.map(p => p[0])), maxY = Math.max(...cells.map(p => p[1]));
-    px(ctx, x0, y0, maxX + 1, maxY, rim);
-    px(ctx, x0, y0, maxX, maxY + 1, rim);
-    px(ctx, x0, y0, bx, by, hi);
+    px(ctx, x0, y0, maxX + 1, maxY, rim);                    // shadow rim right
+    px(ctx, x0, y0, maxX, maxY + 1, rim);                    // …and under
+    px(ctx, x0, y0, bx, by, hi);                             // gleam top-left
+    if (rng() < 0.55) px(ctx, x0, y0, bx + 1, by, hi2);      // 2nd gleam px
   }
 }
-// §6 — overworld ore tile: stone strata base + flecks + edge light.
+// §6 — overworld ore tile: stone strata base (2 octaves) + flecks + edge light.
 function oreTile2(ctx, x0, y0, rng, mineral) {
-  grain(ctx, x0, y0, rng, '#7f7f7f', { amp: 9, cellX: 5, cellY: 3, dither: 4 });
+  grain(ctx, x0, y0, rng, '#7f7f7f', { amp: 9, cellX: 6, cellY: 3, dither: 4, oct2: { cellX: 2, cellY: 1.5, amp: 5 } });
   oreFlecks(ctx, x0, y0, rng, mineral);
   edgeLight(ctx, x0, y0);
 }
-// §6 — leaf depth: coherent canopy clumps over a dark underlayer, holes kept but
-// given a shadowed rim so the canopy reads as layered foliage instead of confetti.
+// §6 — leaf depth: coherent canopy CLUMPS driven by a value-noise mask over a
+// dark underlayer, holes with shadowed rims, and sparse bright leaf highlights.
 function leaf(ctx, x0, y0, rng, c1, c2) {
-  const deep = shadeHex(c2, 0.72), lit = shadeHex(c1, 1.16);
+  const deep = shadeHex(c2, 0.72), lit = shadeHex(c1, 1.16), hi = shadeHex(c1, 1.35);
+  const cw = 3, ch = 3, gw = Math.ceil(16 / cw) + 1, gh = Math.ceil(16 / ch) + 1;
+  const lat = [];
+  for (let i = 0; i < gw * gh; i++) lat.push(rng() * 2 - 1);
+  const vnoise = (x, y) => {
+    const gx = x / cw, gy = y / ch;
+    const ix = Math.min(gw - 2, gx | 0), iy = Math.min(gh - 2, gy | 0);
+    const fx = gx - ix, fy = gy - iy;
+    const sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy);
+    return (lat[iy * gw + ix] * (1 - sx) + lat[iy * gw + ix + 1] * sx) * (1 - sy)
+         + (lat[(iy + 1) * gw + ix] * (1 - sx) + lat[(iy + 1) * gw + ix + 1] * sx) * sy;
+  };
   const holes = [];
   for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) {
-    if (rng() < 0.12) { holes.push([x, y]); continue; }      // transparent holes
-    const v = rng();
-    px(ctx, x0, y0, x, y, v < 0.18 ? lit : v < 0.55 ? c1 : v < 0.86 ? c2 : deep);
+    const v = vnoise(x, y);
+    if (v < -0.62) { holes.push([x, y]); continue; }         // transparent holes in clump gaps
+    const v2 = rng() < 0.5 ? v : vnoise(x + 7.3, y + 3.1);
+    px(ctx, x0, y0, x, y,
+       v2 > 0.42 ? (rng() < 0.22 ? hi : lit)                 // sunlit clump tops
+     : v2 > 0.05 ? c1
+     : v2 > -0.3 ? c2 : deep);                               // under-canopy dark
   }
   for (const [hx, hy] of holes) {                            // shadow rim under each hole
-    if (hy < 15 && !holes.some(([a, b]) => a === hx && b === hy + 1) && rng() < 0.8) {
+    if (hy < 15 && !holes.some(([a, b]) => a === hx && b === hy + 1) && rng() < 0.85) {
       px(ctx, x0, y0, hx, hy + 1, deep);
     }
+    if (rng() < 0.3 && hx < 15) px(ctx, x0, y0, hx + 1, hy, shadeHex(c2, 0.85));
   }
 }
 function grassSide(ctx, x0, y0, rng) {
-  // §6 — coherent dirt grain + pebbles, then a ragged turf lip whose top row is
-  // lit and whose underside casts a 1-px shadow fringe into the dirt (depth).
-  grain(ctx, x0, y0, rng, '#8a6142', { amp: 11, cellX: 4, cellY: 4 });
-  for (let i = 0; i < 6; i++) {
-    px(ctx, x0, y0, rng() * 16, 5 + rng() * 11, shadeHex('#8a6142', rng() < 0.5 ? 0.72 : 1.18));
+  // §6 — coherent two-octave dirt grain + rimmed pebbles + root speckles, then
+  // a ragged turf lip (2–5 device px deep, irregular) whose top row is lit and
+  // whose underside casts a 1-px shadow fringe into the dirt.
+  grain(ctx, x0, y0, rng, '#8a6142', { amp: 10, cellX: 3, cellY: 3, oct2: { cellX: 1.5, cellY: 1.5, amp: 5 } });
+  for (let i = 0; i < 5; i++) {                              // pebbles: lit + rim shadow
+    const bx = Math.floor(rng() * 13), by = 5 + Math.floor(rng() * 10);
+    px(ctx, x0, y0, bx, by, '#a58f6e');
+    if (rng() < 0.6) px(ctx, x0, y0, bx + 1, by, '#97815f');
+    px(ctx, x0, y0, bx, by + 1, shadeHex('#8a6142', 0.68));
   }
+  for (let i = 0; i < 7; i++)                                // root speckles
+    px(ctx, x0, y0, rng() * 16, 5 + rng() * 11, shadeHex('#6b4a33', 0.78));
   const [r, g, b] = hexToRgb('#5d9b3e');
+  const [r2, g2, b2] = hexToRgb('#4a8232');
   for (let x = 0; x < 16; x++) {
-    const depth = 2 + (rng() < 0.45 ? 1 : 0) + (rng() < 0.18 ? 1 : 0);
+    const depth = 1 + (rng() < 0.55 ? 1 : 0) + (rng() < 0.22 ? 1 : 0);   // 1–3 logical (2–6 device)
+    let blade = false;
     for (let y = 0; y < depth; y++) {
-      const f = 1 + (rng() * 2 - 1) * 0.08 + (y === 0 ? 0.10 : 0);
-      px(ctx, x0, y0, x, y, css(r * f, g * f, b * f));
+      const dark = y >= depth - 1 && rng() < 0.5;            // shaded turf underside
+      const f = 1 + (rng() * 2 - 1) * 0.09 + (y === 0 ? 0.12 : 0);
+      const [ur, ug, ub] = dark ? [r2, g2, b2] : [r, g, b];
+      px(ctx, x0, y0, x, y, css(ur * f, ug * f, ub * f));
     }
-    px(ctx, x0, y0, x, depth, shadeHex('#6b4a33', 0.62));
+    if (rng() < 0.28) { px(ctx, x0, y0, x, depth, '#548a37'); blade = true; }   // hanging blade
+    px(ctx, x0, y0, x, depth + (blade ? 1 : 0), shadeHex('#6b4a33', 0.62));     // shadow fringe
   }
   edgeLight(ctx, x0, y0, { top: 1.0 });   // lip already carries the top light
 }
-// pixel-map sprite: rows of chars, '.'=transparent, letters index palette
-function crossSprite(ctx, x0, y0, map, palette) {
+// pixel-map sprite: rows of chars, '.'=transparent, letters index palette.
+// Rendered as (S/16)² blocks, then a fine detail pass: per-cell 1-device-px
+// jitter (lighter/darker) plus occasional 1px organic nubs just outside the
+// silhouette, so sprites read crisp and slightly richer, never blurry.
+function crossSprite(ctx, x0, y0, map, palette, rng) {
+  const filled = new Set(), cells = [];
   for (let y = 0; y < Math.min(16, map.length); y++) {
     const row = map[y];
     for (let x = 0; x < Math.min(16, row.length); x++) {
       const ch = row[x];
       if (ch === '.' || ch === ' ') continue;
       const c = palette[ch];
-      if (c) px(ctx, x0, y0, x, y, c);
+      if (!c) continue;
+      rect(ctx, x0, y0, x, y, 1, 1, c);
+      filled.add(x * 16 + y);
+      cells.push([x, y, c]);
+    }
+  }
+  if (!rng) return;
+  for (const [x, y, c] of cells) {
+    if (rng() < 0.45) {
+      const f = rng() < 0.5 ? 0.85 : 1.12;                   // 1px in-cell jitter
+      const [r, g, b] = hexToRgb(c);
+      ctx.fillStyle = css(r * f, g * f, b * f);
+      ctx.fillRect(x0 + x * K + ((rng() * K) | 0), y0 + y * K + ((rng() * K) | 0), 1, 1);
+    }
+    if (rng() < 0.10) {                                      // organic edge nub
+      const [dx, dy] = [[1, 0], [0, 1], [1, 1]][(rng() * 3) | 0];
+      const nx = x + dx, ny = y + dy;
+      if (nx < 16 && ny < 16 && !filled.has(nx * 16 + ny)) {
+        ctx.fillStyle = shadeHex(c, 0.78);
+        ctx.fillRect(x0 + nx * K + (dx ? K - 1 : 0), y0 + ny * K + (dy ? K - 1 : 0), 1, 1);
+      }
     }
   }
 }
@@ -213,6 +314,8 @@ function cropTile(ctx, x0, y0, rng, stage, cLo, cHi) {
     for (let i = 0; i < h; i++) {
       const f = 1 + (rng() * 2 - 1) * 0.1;
       px(ctx, x0, y0, sx, 15 - i, css(r * f, g * f, b * f));
+      if (i > 1 && rng() < 0.25)                             // leaf nubs on mature stalks
+        px(ctx, x0, y0, sx + (rng() < 0.5 ? -1 : 1), 15 - i, css(r * 0.88, g * 0.88, b * 0.88));
     }
     if (stage >= 5) {                                        // head pixels
       const ty = 15 - h;
@@ -222,18 +325,24 @@ function cropTile(ctx, x0, y0, rng, stage, cLo, cHi) {
   }
 }
 function glassy(ctx, x0, y0, c) {
-  for (let i = 0; i < 16; i++) {
-    px(ctx, x0, y0, i, 0, c); px(ctx, x0, y0, i, 15, c);
-    px(ctx, x0, y0, 0, i, c); px(ctx, x0, y0, 15, i, c);
+  // faint interior sheen so panes don't read as empty frames
+  rect(ctx, x0, y0, 1, 1, 14, 14, 'rgba(255,255,255,0.06)');
+  border(ctx, x0, y0, c);
+  const shine = 'rgba(255,255,255,0.45)';
+  for (let i = 0; i < 4; i++) {
+    px(ctx, x0, y0, 3 + i, 7 - i, shine);
+    px(ctx, x0, y0, 4 + i, 8 - i, 'rgba(255,255,255,0.22)');
+    px(ctx, x0, y0, 9 + i, 13 - i, 'rgba(255,255,255,0.3)');
   }
-  const shine = 'rgba(255,255,255,0.4)';
-  for (let i = 0; i < 3; i++) {
-    px(ctx, x0, y0, 3 + i, 6 - i, shine);
-    px(ctx, x0, y0, 9 + i, 12 - i, shine);
-  }
+  rect(ctx, x0, y0, 1, 1, 3, 1, 'rgba(255,255,255,0.55)');   // corner shine
+  rect(ctx, x0, y0, 1, 1, 1, 3, 'rgba(255,255,255,0.45)');
 }
 function fluid(ctx, x0, y0, rng, c) {
-  noise(ctx, x0, y0, rng, c, 10);
+  grain(ctx, x0, y0, rng, c, { amp: 8, cellX: 6, cellY: 2, dither: 3 });
+  for (let i = 0; i < 3; i++) {                              // drift streaks
+    const yy = Math.floor(rng() * 16);
+    for (let x = 0; x < 16; x++) if (rng() < 0.65) px(ctx, x0, y0, x, yy, shadeHex(c, 1.12));
+  }
 }
 function border(ctx, x0, y0, c) {
   for (let i = 0; i < 16; i++) {
@@ -254,24 +363,41 @@ function disc(ctx, x0, y0, cx, cy, rad, c) {
 
 /**
  * Coherent value-noise fill: a coarse random lattice, smoothstep-bilinearly
- * interpolated per pixel, plus a whisper of per-pixel dither. Reads as material
- * grain (stone strata, wood streaks) instead of TV static. cellX/cellY stretch
- * the lattice — wide cells → horizontal grain, tall cells → vertical.
+ * interpolated per pixel, plus a whisper of per-pixel dither — optionally a
+ * SECOND fine octave (`oct2: { cellX, cellY, amp }`) for two-scale strata.
+ * cellX/cellY stretch the lattice — wide cells → horizontal grain, tall cells
+ * → vertical. Cells are given in the logical 16-space and shrink 2× on device
+ * at S=32, so every caller's lattice reads ~2× finer than the old 16 px tiles.
  */
-function grain(ctx, x0, y0, rng, c, { amp = 12, cellX = 4, cellY = 4, dither = 3 } = {}) {
+function grain(ctx, x0, y0, rng, c, { amp = 12, cellX = 4, cellY = 4, dither = 3, oct2 = null } = {}) {
   const [r, g, b] = hexToRgb(c);
-  const gw = Math.ceil(16 / cellX) + 1, gh = Math.ceil(16 / cellY) + 1;
-  const lat = [];
-  for (let i = 0; i < gw * gh; i++) lat.push(rng() * 2 - 1);
-  for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) {
-    const gx = x / cellX, gy = y / cellY;
+  const vnoise = (lat, cw, ch, gw, gh, x, y) => {
+    const gx = x / cw, gy = y / ch;
     const ix = Math.min(gw - 2, gx | 0), iy = Math.min(gh - 2, gy | 0);
     const fx = gx - ix, fy = gy - iy;
     const sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy);
-    const v = (lat[iy * gw + ix] * (1 - sx) + lat[iy * gw + ix + 1] * sx) * (1 - sy)
-            + (lat[(iy + 1) * gw + ix] * (1 - sx) + lat[(iy + 1) * gw + ix + 1] * sx) * sy;
-    const f = 1 + v * amp / 100 + (rng() * 2 - 1) * dither / 100;
-    px(ctx, x0, y0, x, y, css(r * f, g * f, b * f));
+    return (lat[iy * gw + ix] * (1 - sx) + lat[iy * gw + ix + 1] * sx) * (1 - sy)
+         + (lat[(iy + 1) * gw + ix] * (1 - sx) + lat[(iy + 1) * gw + ix + 1] * sx) * sy;
+  };
+  const cw = Math.max(1, cellX * K / 2), ch = Math.max(1, cellY * K / 2);
+  const gw = Math.ceil(S / cw) + 1, gh = Math.ceil(S / ch) + 1;
+  const lat = [];
+  for (let i = 0; i < gw * gh; i++) lat.push(rng() * 2 - 1);
+  let lat2 = null, amp2 = 0, cw2 = 0, ch2 = 0, gw2 = 0, gh2 = 0;
+  if (oct2) {
+    const o = oct2;
+    cw2 = Math.max(1, o.cellX * K / 2); ch2 = Math.max(1, oct2.cellY * K / 2);
+    amp2 = oct2.amp ?? amp / 2;
+    gw2 = Math.ceil(S / cw2) + 1; gh2 = Math.ceil(S / ch2) + 1;
+    lat2 = [];
+    for (let i = 0; i < gw2 * gh2; i++) lat2.push(rng() * 2 - 1);
+  }
+  for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+    const v = vnoise(lat, cw, ch, gw, gh, x, y);
+    const v2 = lat2 ? vnoise(lat2, cw2, ch2, gw2, gh2, x, y) : 0;
+    const f = 1 + v * amp / 100 + v2 * amp2 / 100 + (rng() * 2 - 1) * dither / 100;
+    ctx.fillStyle = css(r * f, g * f, b * f);
+    ctx.fillRect(x0 + x, y0 + y, 1, 1);
   }
 }
 
@@ -283,16 +409,16 @@ function grain(ctx, x0, y0, rng, c, { amp = 12, cellX = 4, cellY = 4, dither = 3
  * as separate cells without turning into a drawn frame.
  */
 function edgeLight(ctx, x0, y0, { top = 1.10, left = 1.04, bottom = 0.82, right = 0.91 } = {}) {
-  const img = ctx.getImageData(x0, y0, 16, 16), d = img.data;
+  const img = ctx.getImageData(x0, y0, S, S), d = img.data;
   const mul = (x, y, f) => {
-    const i = (y * 16 + x) * 4;
+    const i = (y * S + x) * 4;
     if (d[i + 3] === 0) return;
     d[i] = Math.min(255, d[i] * f);
     d[i + 1] = Math.min(255, d[i + 1] * f);
     d[i + 2] = Math.min(255, d[i + 2] * f);
   };
-  for (let x = 0; x < 16; x++) { mul(x, 0, top); mul(x, 15, bottom); }
-  for (let y = 1; y < 15; y++) { mul(0, y, left); mul(15, y, right); }
+  for (let x = 0; x < S; x++) { mul(x, 0, top); mul(x, S - 1, bottom); }
+  for (let y = 1; y < S - 1; y++) { mul(0, y, left); mul(S - 1, y, right); }
   ctx.putImageData(img, x0, y0);
 }
 
@@ -304,21 +430,21 @@ function edgeLight(ctx, x0, y0, { top = 1.10, left = 1.04, bottom = 0.82, right 
  * they stay visible instead of vanishing into outline.
  */
 function bevelSprite(ctx, x0, y0, { lite = 1.24, dark = 0.55 } = {}) {
-  const img = ctx.getImageData(x0, y0, 16, 16), d = img.data;
-  const A = (x, y) => (x < 0 || x > 15 || y < 0 || y > 15) ? 0 : d[(y * 16 + x) * 4 + 3];
-  const f = new Float32Array(256).fill(1);
-  for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) {
+  const img = ctx.getImageData(x0, y0, S, S), d = img.data;
+  const A = (x, y) => (x < 0 || x > S - 1 || y < 0 || y > S - 1) ? 0 : d[(y * S + x) * 4 + 3];
+  const f = new Float32Array(S * S).fill(1);
+  for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
     if (A(x, y) === 0) continue;
     const litEdge = A(x, y - 1) === 0 || A(x - 1, y) === 0;
     const darkEdge = A(x, y + 1) === 0 || A(x + 1, y) === 0;
-    if (darkEdge && !litEdge) f[y * 16 + x] = dark;
-    else if (litEdge && !darkEdge) f[y * 16 + x] = lite;
-    else if (litEdge && darkEdge) f[y * 16 + x] = (lite + dark) / 2;
+    if (darkEdge && !litEdge) f[y * S + x] = dark;
+    else if (litEdge && !darkEdge) f[y * S + x] = lite;
+    else if (litEdge && darkEdge) f[y * S + x] = (lite + dark) / 2;
   }
-  for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) {
-    const k = f[y * 16 + x];
+  for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+    const k = f[y * S + x];
     if (k === 1) continue;
-    const i = (y * 16 + x) * 4;
+    const i = (y * S + x) * 4;
     d[i] = Math.min(255, d[i] * k);
     d[i + 1] = Math.min(255, d[i + 1] * k);
     d[i + 2] = Math.min(255, d[i + 2] * k);
@@ -334,23 +460,41 @@ export const PAINTERS = {};
 const P = PAINTERS;
 
 // --- terrain cubes -----------------------------------------------------------
-// §6 — stone: horizontal strata grain + sparse clustered fracture flecks.
+// --- terrain cubes -----------------------------------------------------------
+// §6 — stone: two-octave horizontal strata grain, clustered fracture flecks
+// (1px highlight + shadow pairs) and a couple of darker crack lines.
 P.stone = (c, x, y, r) => {
-  grain(c, x, y, r, '#7f7f7f', { amp: 9, cellX: 5, cellY: 3, dither: 4 });
-  for (let i = 0; i < 7; i++) {
-    const fx = r() * 16 | 0, fy = r() * 16 | 0;
-    px(c, x, y, fx, fy, shadeHex('#7f7f7f', 0.78));
-    if (r() < 0.5) px(c, x, y, fx + 1, fy, shadeHex('#7f7f7f', 0.86));
+  grain(c, x, y, r, '#7f7f7f', { amp: 8, cellX: 7, cellY: 4, dither: 3, oct2: { cellX: 2, cellY: 2, amp: 5 } });
+  for (let i = 0; i < 7; i++) {                              // fracture fleck clusters
+    const fx = r() * 15 | 0, fy = r() * 15 | 0;
+    px(c, x, y, fx, fy, '#a8a8a8');                          // 1px highlight
+    px(c, x, y, fx, fy + 1, '#5f5f5f');                      // …over a shadow
+    if (r() < 0.6) { px(c, x, y, fx + 1, fy, '#8f8f8f'); px(c, x, y, fx + 1, fy + 1, '#666666'); }
+    if (r() < 0.3) px(c, x, y, fx + 1, fy + 1, '#8a8a8a');
+  }
+  for (let i = 0; i < 2; i++) {                              // darker crack lines
+    let wx = r() * 13 | 0, wy = r() * 13 | 0;
+    for (let s = 0; s < 5; s++) {
+      px(c, x, y, wx, wy, '#5d5d5d');
+      wx += r() < 0.65 ? 1 : 0; wy += r() < 0.5 ? 1 : 0;
+    }
   }
   edgeLight(c, x, y);
 };
-// §6 — grass top: coherent turf grain + short two-pixel blade streaks.
+// §6 — grass top: 3-tone turf (dark clumps / mid grain / lit blades) with
+// sunlit 2px blade highlights popping off the canopy.
 P.grass_top = (c, x, y, r) => {
-  grain(c, x, y, r, '#5d9b3e', { amp: 10, cellX: 3, cellY: 3, dither: 5 });
-  for (let i = 0; i < 10; i++) {
-    const sx = r() * 16 | 0, sy = r() * 15 | 0, f = r() < 0.5 ? 1.14 : 0.86;
-    px(c, x, y, sx, sy, shadeHex('#5d9b3e', f));
-    px(c, x, y, sx, sy + 1, shadeHex('#5d9b3e', f * 0.97));
+  grain(c, x, y, r, '#4f8c34', { amp: 9, cellX: 4, cellY: 4, dither: 4, oct2: { cellX: 2, cellY: 2, amp: 6 } });
+  for (let i = 0; i < 12; i++) {                             // canopy clumps
+    const cx = r() * 15 | 0, cy = r() * 15 | 0, dark = r() < 0.4;
+    const col = dark ? '#3f7a26' : '#6aae48';
+    px(c, x, y, cx, cy, col); px(c, x, y, cx + 1, cy, col);
+    if (r() < 0.6) px(c, x, y, cx, cy + 1, col);
+  }
+  for (let i = 0; i < 7; i++) {                              // blade highlights
+    const sx = r() * 16 | 0, sy = r() * 14 | 0;
+    px(c, x, y, sx, sy, '#8ecf63');
+    px(c, x, y, sx, sy + 1, '#79b951');
   }
   edgeLight(c, x, y);
 };
@@ -364,6 +508,12 @@ P.cobblestone = (c, x, y, r) => {
       px(c, x, y, wx, wy, '#4a4a4a');
       wx = (wx + 1) & 15; wy = Math.max(0, Math.min(15, wy + Math.floor(r() * 3) - 1));
     }
+  }
+  for (let i = 0; i < 8; i++) {                              // lit stone crowns
+    const hx = Math.floor(r() * 14), hy = Math.floor(r() * 14);
+    px(c, x, y, hx, hy, '#969696');
+    if (r() < 0.5) px(c, x, y, hx + 1, hy, '#8a8a8a');
+    if (r() < 0.5) px(c, x, y, hx, hy + 1, '#565656');
   }
 };
 P.oak_planks = (c, x, y, r) => planks(c, x, y, r, '#b8945f');
@@ -398,7 +548,7 @@ const SAPLING_MAP = [
   '................',
 ];
 function sapling(foliage) {
-  return (c, x, y) => crossSprite(c, x, y, SAPLING_MAP, { F: foliage, S: '#6b4f2a' });
+  return (c, x, y, r) => crossSprite(c, x, y, SAPLING_MAP, { F: foliage, S: '#6b4f2a' }, r);
 }
 P.oak_sapling = sapling('#4a7a28');
 P.birch_sapling = sapling('#6a9e47');
@@ -408,7 +558,13 @@ P.bedrock = (c, x, y, r) => blotch(c, x, y, r, '#565656', '#2f2f2f', 12);
 P.sand = (c, x, y, r) => speckle(c, x, y, r, '#dbd3a0', '#c9bd8b', 12);
 P.gravel = (c, x, y, r) => {
   blotch(c, x, y, r, '#857b74', '#675e57', 10);
-  for (let i = 0; i < 20; i++) px(c, x, y, r() * 16, r() * 16, '#9c948c');
+  for (let i = 0; i < 14; i++) {                             // pebbles with rim shadow
+    const bx = Math.floor(r() * 13), by = Math.floor(r() * 13);
+    px(c, x, y, bx, by, '#b0a89f');                          // lit top-left
+    px(c, x, y, bx + 1, by, '#9c948c');
+    px(c, x, y, bx, by + 1, '#938b83');
+    px(c, x, y, bx + 1, by + 1, '#5f574f');                  // rim shadow
+  }
 };
 P.sandstone_top = (c, x, y, r) => speckle(c, x, y, r, '#dbd3a0', '#c9bd8b', 12);
 P.sandstone_side = (c, x, y, r) => {
@@ -430,7 +586,15 @@ P.iron_block = (c, x, y, r) => { noise(c, x, y, r, '#d8d8d8', 4); border(c, x, y
 P.gold_block = (c, x, y, r) => { noise(c, x, y, r, '#f9ec4e', 5); border(c, x, y, '#d4b82a'); };
 P.diamond_block = (c, x, y, r) => { noise(c, x, y, r, '#62e9d8', 5); border(c, x, y, '#3bbfb0'); };
 P.glass = (c, x, y) => glassy(c, x, y, '#c9dbdc');
-P.glowstone = (c, x, y, r) => blotch(c, x, y, r, '#f9d49c', '#d2a04a', 10);
+P.glowstone = (c, x, y, r) => {
+  blotch(c, x, y, r, '#f9d49c', '#d2a04a', 10);
+  for (let i = 0; i < 4; i++) {                              // hot cores + bloom halo
+    const hx = 1 + Math.floor(r() * 13), hy = 1 + Math.floor(r() * 13);
+    px(c, x, y, hx, hy, '#fff3c4');
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1]])
+      if (r() < 0.85) px(c, x, y, hx + dx, hy + dy, 'rgba(255,220,140,0.6)');
+  }
+};
 P.obsidian = (c, x, y, r) => blotch(c, x, y, r, '#1b1029', '#3b2754', 6);
 
 // ============ 08-ENCHANTING §2.4 ============
@@ -469,8 +633,8 @@ const anvilTop = stage => (c, x, y, r) => {
     }
   }
   if (stage >= 2) {                                       // 2 chipped corner pixels
-    c.clearRect(x + 0, y + 0, 1, 1);
-    c.clearRect(x + 15, y + 15, 1, 1);
+    c.clearRect(x + 0, y + 0, K, K);
+    c.clearRect(x + 15 * K, y + 15 * K, K, K);
   }
 };
 P.anvil_top_0 = anvilTop(0);
@@ -513,7 +677,15 @@ P.crimson_planks = (c, x, y, r) => planks(c, x, y, r, '#7a3a4a');
 P.warped_planks = (c, x, y, r) => planks(c, x, y, r, '#3a6b64');
 P.nether_wart_block = (c, x, y, r) => { noise(c, x, y, r, '#7a0a15', 10); for (let i = 0; i < 20; i++) rect(c, x, y, r() * 15, r() * 15, 1, 1, '#a01824'); };
 P.warped_wart_block = (c, x, y, r) => { noise(c, x, y, r, '#167a6e', 8); speckle(c, x, y, r, '#167a6e', '#0e8a4a', 8); };
-P.shroomlight = (c, x, y, r) => blotch(c, x, y, r, '#f5a83c', '#d47a1a', 8);
+P.shroomlight = (c, x, y, r) => {
+  blotch(c, x, y, r, '#f5a83c', '#d47a1a', 8);
+  for (let i = 0; i < 4; i++) {                              // glowing pores + halo
+    const hx = 2 + Math.floor(r() * 12), hy = 2 + Math.floor(r() * 12);
+    px(c, x, y, hx, hy, '#ffdc9a');
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]])
+      if (r() < 0.75) px(c, x, y, hx + dx, hy + dy, 'rgba(255,190,90,0.6)');
+  }
+};
 P.crimson_fungus = (c, x, y) => { rect(c, x, y, 7, 8, 2, 6, '#7a5b3a'); rect(c, x, y, 5, 5, 6, 3, '#c42d2d'); };
 P.warped_fungus = (c, x, y) => { rect(c, x, y, 7, 8, 2, 6, '#5a6b3a'); rect(c, x, y, 5, 5, 6, 3, '#3aa58f'); };
 P.crimson_roots = (c, x, y) => { for (let i = 0; i < 5; i++) rect(c, x, y, 3 + i * 2, 8, 1, 5, '#8a1030'); };
@@ -609,7 +781,11 @@ P.blast_furnace_front = (c, x, y, r) => {
 };
 P.blast_furnace_front_lit = (c, x, y, r) => {
   P.blast_furnace_front(c, x, y, r);
-  rect(c, x, y, 5, 9, 6, 3, '#ff8a1a'); rect(c, x, y, 6, 10, 4, 1, '#ffd23c');
+  for (let yy = 0; yy < 3; yy++) for (let xx = 0; xx < 6; xx++) {   // radial glow
+    const d = Math.hypot(xx - 2.5, yy - 2.8);
+    px(c, x, y, 5 + xx, 9 + yy, d < 1.4 ? '#ffd23c' : d < 2.2 ? '#ffa832' : '#ff6a00');
+  }
+  rect(c, x, y, 5, 8, 6, 1, 'rgba(255,138,26,0.4)');          // glow spill above mouth
 };
 P.smoker_top = (c, x, y, r) => { planks(c, x, y, r, '#7a5a34'); rect(c, x, y, 5, 5, 6, 6, '#2a2a2a'); border(c, x, y, '#4a3a22'); };
 P.smoker_side = (c, x, y, r) => { planks(c, x, y, r, '#7a5a34'); rect(c, x, y, 0, 11, 16, 5, '#6a6a6a'); };
@@ -620,7 +796,12 @@ P.smoker_front = (c, x, y, r) => {
 };
 P.smoker_front_lit = (c, x, y, r) => {
   P.smoker_front(c, x, y, r);
-  rect(c, x, y, 5, 9, 6, 3, '#ff8a1a'); rect(c, x, y, 7, 10, 2, 1, '#ffd23c');
+  for (let yy = 0; yy < 3; yy++) for (let xx = 0; xx < 6; xx++) {
+    const d = Math.hypot(xx - 3, yy - 3.2);
+    px(c, x, y, 5 + xx, 9 + yy, d < 1.6 ? '#ffd23c' : d < 2.4 ? '#ffa832' : '#ff6a00');
+  }
+  for (let i = 0; i < 3; i++) px(c, x, y, 5 + r() * 6, 9 + r() * 3, '#ffe27a');   // embers
+  rect(c, x, y, 5, 8, 6, 1, 'rgba(255,138,26,0.35)');
 };
 P.fletching_table_top = (c, x, y, r) => { planks(c, x, y, r, '#c8b070'); rect(c, x, y, 3, 3, 1, 10, '#3a3a3a'); rect(c, x, y, 3, 3, 8, 1, '#3a3a3a'); rect(c, x, y, 6, 6, 5, 5, '#5a5a5a'); };
 P.fletching_table_side = (c, x, y, r) => { planks(c, x, y, r, '#b89a5a'); rect(c, x, y, 4, 2, 1, 12, '#3a3a3a'); rect(c, x, y, 8, 4, 1, 8, '#3a3a3a'); };
@@ -712,7 +893,7 @@ function dustHex(p) {
 const DUST_SEED = xmur3('dust')();
 function dustShape(c, x, y, p, sx, sy, sw, sh) {
   c.save();
-  c.beginPath(); c.rect(x + sx, y + sy, sw, sh); c.clip();
+  c.beginPath(); c.rect(x + sx * K, y + sy * K, sw * K, sh * K); c.clip();
   noise(c, x, y, mulberry32(DUST_SEED), dustHex(p), 12);
   c.restore();
 }
@@ -859,11 +1040,17 @@ P.jack_o_lantern_front = (c, x, y, r) => {
 };
 function wool(cHex) {
   return (c, x, y, r) => {
-    noise(c, x, y, r, cHex, 6);
-    const dark = shadeHex(cHex, 0.92);
-    for (let i = 0; i < 16; i += 4) {
-      rect(c, x, y, 0, i, 16, 1, dark);
-      rect(c, x, y, i, 0, 1, 16, dark);
+    noise(c, x, y, r, cHex, 5);
+    const dark = shadeHex(cHex, 0.9), lite = shadeHex(cHex, 1.08);
+    // soft fabric weave: column dashes alternate offset row-band by row-band
+    for (let band = 0; band < 4; band++) {
+      const y0b = band * 4;
+      rect(c, x, y, 0, y0b + 3, 16, 1, dark);                // horizontal weave shadow
+      const off = band & 1 ? 2 : 0;
+      for (let bx = off; bx < 16; bx += 4) {
+        rect(c, x, y, bx, y0b, 1, 3, dark);                  // vertical warp shadow
+        px(c, x, y, bx + 1, y0b + 1, lite);                  // weft glint
+      }
     }
   };
 }
@@ -988,28 +1175,82 @@ P.dead_bush = (c, x, y) => {
   px(c, x, y, 8, 5, t); px(c, x, y, 8, 6, t);
 };
 
-// --- animated tiles (2 frames each) -----------------------------------------
-const waterFrame = (c, x, y, r) => fluid(c, x, y, r, '#3f76e4');
-const lavaFrame = (c, x, y, r) => {
-  fluid(c, x, y, r, '#d45a12');
-  for (let i = 0; i < 76; i++) px(c, x, y, r() * 16, r() * 16, '#f8b613');
+// --- animated tiles (4 frames each for water/lava/fire/furnace) --------------
+// All four-frame loops advance phase by f/4 of a cycle, so frame 4 wraps
+// seamlessly back onto frame 0.
+const WATER_HI = '#7fb3ff';
+const waterFrame = f => (c, x, y, r) => {
+  const hue = [0, 0.05, 0, -0.05][f];                        // subtle hue shift per frame
+  grain(c, x, y, r, '#3f76e4', { amp: 8, cellX: 5, cellY: 2, dither: 3 });
+  const [br, bg, bb] = hexToRgb('#3f76e4');
+  for (let yy = 0; yy < 16; yy++) {                          // gentle wave bands drifting
+    const w = Math.sin((yy / 16) * Math.PI * 2 + (f / 4) * Math.PI * 2);
+    if (w < 0.4) continue;
+    const strength = (w - 0.4) / 0.6;
+    for (let xx = 0; xx < 16; xx++) {
+      if (r() < 0.75 - strength * 0.45) continue;
+      const k = 1 + 0.18 * strength;
+      px(c, x, y, xx, yy, css(br * k, bg * k, Math.min(255, bb * k + hue * 255)));
+    }
+  }
+  for (let i = 0; i < 4; i++)                                // sparkles
+    if (r() < 0.6) px(c, x, y, (r() * 16) | 0, (r() * 16) | 0, WATER_HI);
 };
-const fireFrame = (c, x, y, r) => {
-  const cols = ['#ff9a00', '#ff9a00', '#ffd23c', '#ffffff'];
+const lavaFrame = f => (c, x, y, r) => {
+  fluid(c, x, y, r, '#d45a12');
+  const drift = (f * 4) % 16;                                // crust drifts; frame 4 ≡ frame 0
+  const crust = new Set();
+  for (let i = 0; i < 5; i++) {                              // crust islands
+    let bx = (r() * 16) | 0, by = (r() * 16) | 0;
+    for (let s = 0; s < 6; s++) {
+      const cx = ((bx + drift) & 15) | 0;
+      crust.add(cx * 16 + (by & 15));
+      px(c, x, y, cx, by & 15, r() < 0.3 ? '#5a2a0c' : '#7a3a10');
+      bx += (r() * 3 | 0) - 1; by += (r() * 3 | 0) - 1;
+    }
+  }
+  for (const key of crust) {                                 // glowing cracks between crusts
+    const cx = (key / 16) | 0, cy = key % 16;
+    for (const [dx, dy] of [[1, 0], [0, 1]]) {
+      const nx = (cx + dx) & 15, ny = cy + dy;
+      if (crust.has(nx * 16 + ny) || r() < 0.55) continue;
+      px(c, x, y, nx, ny, r() < 0.4 ? '#ffe27a' : '#f8b613');
+    }
+  }
+  for (let i = 0; i < 20; i++)                               // drifting bright flecks
+    px(c, x, y, ((r() * 16) + drift) & 15, (r() * 16) | 0, '#f8b613');
+};
+const fireFrame = f => (c, x, y, r) => {
   for (let xx = 0; xx < 16; xx++) {
-    const h = 8 + Math.floor(r() * 8);
+    const base = r() * 8;                                    // per-column base height
+    const h = 7 + Math.round((base + f * 2) % 9);            // advances per frame, wraps
     for (let yy = 15; yy > 15 - h; yy--) {
-      if (r() < 0.4) continue;                               // 40% transparent
-      px(c, x, y, xx, yy, cols[Math.floor(r() * cols.length)]);
+      if (r() < 0.35) continue;                              // flicker transparency
+      const t = (15 - yy) / h;                               // 0 base → 1 tip
+      const center = 1 - Math.abs(xx - 7.5) / 8;
+      let col;
+      if (t < 0.3 + center * 0.2) col = '#fff6d8';           // white-hot core near base
+      else if (t < 0.55) col = '#ffd23c';                    // mid yellow
+      else col = '#ff9a00';                                  // outer orange tongues
+      px(c, x, y, xx, yy, col);
     }
   }
 };
-const furnaceLitFrame = (flick) => (c, x, y, r) => {
+const furnaceLitFrame = f => (c, x, y, r) => {
   noise(c, x, y, r, '#6f6f6f', 8);
   border(c, x, y, '#565656');
-  rect(c, x, y, 5, 9, 6, 5, flick ? '#ffd23c' : '#ff9a00');
-  for (let i = 0; i < 8; i++)
-    px(c, x, y, 5 + r() * 6, 9 + r() * 5, flick ? '#ff9a00' : '#ffd23c');
+  rect(c, x, y, 5, 9, 6, 5, '#5a1a08');                      // dark firebox
+  const rr = 2.9 + [0, 0.35, 0.15, 0.45][f];                 // flicker radius per frame
+  for (let yy = 0; yy < 5; yy++) for (let xx = 0; xx < 6; xx++) {
+    const d = Math.hypot(xx - 2.5, (yy - 3.4) * 1.25);
+    const t = 1 - d / rr;
+    if (t <= 0) continue;
+    px(c, x, y, 5 + xx, 9 + yy,
+       t > 0.78 ? '#ffd23c' : t > 0.55 ? '#ffa832' : t > 0.32 ? '#ff8a1a' : '#e0520a');
+  }
+  rect(c, x, y, 5, 8, 6, 1, 'rgba(255,138,26,0.35)');        // heat shimmer above mouth
+  for (let i = 0; i < 4 + f; i++)                            // rising embers, more each frame
+    px(c, x, y, 5 + r() * 6, 9 + r() * 5, '#ffd23c');
 };
 // 11-END §14 — end_portal / end_gateway drifting starfield (2-frame twinkle).
 const endStarFrame = (dark) => (c, x, y, r) => {
@@ -1023,10 +1264,10 @@ const endStarFrame = (dark) => (c, x, y, r) => {
   if (dark) rect(c, x, y, 4, 4, 8, 8, '#000000');       // gateway dark core hint
 };
 export const ANIMATED = {
-  water: [waterFrame, (c, x, y, r) => { r(); waterFrame(c, x, y, r); }],
-  lava: [lavaFrame, (c, x, y, r) => { r(); lavaFrame(c, x, y, r); }],
-  fire: [fireFrame, (c, x, y, r) => { r(); fireFrame(c, x, y, r); }],
-  furnace_front_lit: [furnaceLitFrame(false), furnaceLitFrame(true)],
+  water: [0, 1, 2, 3].map(waterFrame),
+  lava: [0, 1, 2, 3].map(lavaFrame),
+  fire: [0, 1, 2, 3].map(fireFrame),
+  furnace_front_lit: [0, 1, 2, 3].map(furnaceLitFrame),
   end_portal: [endStarFrame(false), endStarFrame(true)],
   end_gateway: [(c, x, y, r) => { endStarFrame(false)(c, x, y, r); rect(c, x, y, 4, 4, 8, 8, '#000000'); },
                 (c, x, y, r) => { endStarFrame(true)(c, x, y, r); rect(c, x, y, 3, 3, 10, 10, '#000000'); }],
@@ -1341,7 +1582,7 @@ const MAP_BUCKET = [
 ];
 
 function spriteFromMap(map, palette) {
-  return (c, x, y) => crossSprite(c, x, y, map, palette);
+  return (c, x, y, r) => crossSprite(c, x, y, map, palette, r);
 }
 function toolPalette(tierColor, extra = {}) {
   return {

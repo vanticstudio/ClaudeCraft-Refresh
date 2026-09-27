@@ -5,13 +5,18 @@ import { BLOCKS } from '../registry/blocks.js';
 import { isGlinted, paintGlintIcon } from '../render/glint.js';
 import { icon3dBlockIdFor, blockIconUrl, blockIconCanvas } from './blockIcons.js';   // UPDATE-polish §4
 import { EFFECT, EFFECT_META } from '../status/effects.js';
+import { PIP, setPipFrame, stylePip } from './hudIcons.js';   // OVERHAUL §H — pixel HUD icons
+import { ATLAS_CELL, ATLAS_GUTTER } from '../constants.js';
 const ROMAN = ['', 'I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII'];
 
 export function iconCss(el, tile) {
   const col = tile & 31, row = tile >> 5;
   el.classList.add('icon');
+  // OVERHAUL §A — guttered atlas layout + UI scale: the atlas displays at
+  // 640·px (1 texel = 1.5 css px), so a tile's inner origin sits at
+  // (col·CELL + GUTTER) texels = (col·20 + 2)·px — always integral.
   el.style.backgroundPosition =
-    `calc(-16 * ${col} * var(--px)) calc(-16 * ${row} * var(--px))`;
+    `calc(-${(ATLAS_CELL * col + ATLAS_GUTTER) / 2} * var(--px)) calc(-${(ATLAS_CELL * row + ATLAS_GUTTER) / 2} * var(--px))`;
 }
 
 export function tileForItemId(game, id) {
@@ -166,6 +171,7 @@ export class Hud {
     for (let i = 0; i < n; i++) {
       const p = document.createElement('div');
       p.className = 'pip';
+      stylePip(p);          // OVERHAUL §H — sheet background at creation
       rowEl.appendChild(p);
     }
   }
@@ -253,6 +259,10 @@ export class Hud {
     // on whatever the last survival frame drew. `this.cache = {}` below re-renders
     // it on the way back to survival.
     if (this.creative) this.el.absorption.style.display = 'none';
+    // OVERHAUL §H — armor's `points > 0` rule also lives in update()'s survival
+    // path, so in creative the row must hide here: its pips were styled at
+    // creation and would otherwise sit frozen on frame 0 (a full red-heart row).
+    if (this.creative) this.el.armor.style.display = 'none';
     this.el.badge.style.display = this.creative ? 'block' : 'none';
     // The dirty cache would otherwise suppress the re-render on the way back:
     // update() compares against the value it last WROTE, which is still the
@@ -321,21 +331,23 @@ export class Hud {
     if (this.creative) { this.updateHotbar(p); this.updateOverlays(p); return; }
 
     // hearts (2 HP per heart) — 09-POTIONS §6.3 recolors: Wither black, Poison green.
+    // OVERHAUL §H — pixel-art frames; tints ride CSS filters.
     const hp = Math.ceil(p.health);
     const wither = p.effects.has(EFFECT.WITHER), poison = p.effects.has(EFFECT.POISON);
-    const full = wither ? '#4a4a4a' : poison ? '#7aa060' : '#e0241c';
-    if (this.setDirty('hp', hp + '|' + p.hurtTime + '|' + full)) {
+    const heartFilter = wither ? 'grayscale(1) brightness(0.4)'
+      : poison ? 'hue-rotate(70deg) saturate(1.5)' : '';
+    if (this.setDirty('hp', hp + '|' + p.hurtTime + '|' + heartFilter)) {
       const pips = this.el.hearts.children;
       for (let i = 0; i < 10; i++) {
         const v = hp - i * 2;
-        pips[i].textContent = v >= 2 ? '❤' : v === 1 ? '❥' : '❤';
-        pips[i].style.color = v >= 1 ? full : '#3a0d0d';
+        setPipFrame(pips[i], v >= 2 ? PIP.HEART_FULL : v === 1 ? PIP.HEART_HALF : PIP.HEART_EMPTY);
+        pips[i].style.filter = heartFilter;
       }
       this.el.hearts.style.transform = p.hurtTime > 0
         ? `translateX(${(p.hurtTime % 2 ? 1 : -1) * 2}px)` : '';
     }
 
-    // 09-POTIONS §3.7 — absorption: a separate yellow-heart row above the red
+    // 09-POTIONS §3.7 — absorption: a separate gold-heart row above the red
     // hearts, half-heart support, hidden when the pool is empty.
     const abs = p.absorption;
     if (this.setDirty('absorption', Math.round(abs * 2))) {
@@ -343,8 +355,7 @@ export class Hud {
       const pips = this.el.absorption.children;
       for (let i = 0; i < 10; i++) {
         const v = abs - i * 2;
-        pips[i].textContent = v >= 2 ? '❤' : v >= 1 ? '❥' : '';
-        pips[i].style.color = '#F5C51E';
+        setPipFrame(pips[i], v >= 2 ? PIP.ABSORB_FULL : v >= 1 ? PIP.ABSORB_HALF : null);
       }
     }
 
@@ -355,9 +366,8 @@ export class Hud {
       const pips = this.el.hunger.children;
       for (let i = 0; i < 10; i++) {
         const v = food - i * 2;
-        pips[i].textContent = v >= 2 ? '🍗' : v === 1 ? '🍖' : '·';
-        pips[i].style.filter = hungerFx
-          ? 'hue-rotate(90deg)' : v >= 1 ? 'none' : 'grayscale(1) brightness(0.4)';
+        setPipFrame(pips[i], v >= 2 ? PIP.FOOD_FULL : v === 1 ? PIP.FOOD_HALF : PIP.FOOD_EMPTY);
+        pips[i].style.filter = hungerFx ? 'hue-rotate(90deg)' : '';
       }
     }
 
@@ -368,7 +378,7 @@ export class Hud {
       this.el.armor.style.display = ap > 0 ? 'flex' : 'none';
       for (let i = 0; i < 10; i++) {
         const v = ap - i * 2;
-        pips[i].textContent = v >= 2 ? '🛡' : v === 1 ? '◗' : '';
+        setPipFrame(pips[i], v >= 2 ? PIP.ARMOR_FULL : v === 1 ? PIP.ARMOR_HALF : null);
       }
     }
 
@@ -377,7 +387,7 @@ export class Hud {
     if (this.setDirty('air', bubbles)) {
       this.el.air.style.display = bubbles < 0 ? 'none' : 'flex';
       const pips = this.el.air.children;
-      for (let i = 0; i < 10; i++) pips[i].textContent = i < bubbles ? '🫧' : '';
+      for (let i = 0; i < 10; i++) setPipFrame(pips[i], i < bubbles ? PIP.BUBBLE : null);
     }
 
     // XP

@@ -30,11 +30,15 @@ html, body {
 #overlay { z-index: 10; }
 
 /* ---------- icons from the atlas ---------- */
+/* OVERHAUL §A — HD atlas: 1280² canvas (32×32 grid of 40px cells, 32px tiles).
+   background-size = 640·px: 1 atlas texel = 1.5 css px, so a 32px tile fills
+   the same 16·px icon box the old 16px tile did (2× the texel density). Tile
+   inner origins sit at (col·40 + 4) texels = (col·20 + 2)·px — always integer. */
 .icon {
   width: calc(16 * var(--px));
   height: calc(16 * var(--px));
   background-image: var(--atlas-url);
-  background-size: calc(512 * var(--px));
+  background-size: calc(640 * var(--px));
   image-rendering: pixelated;
 }
 

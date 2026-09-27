@@ -38,6 +38,7 @@ export class Menus {
           <div class="cc-vignette"></div>
 
           <div class="cc-badge">CLAUDECRAFT &middot; v${__APP_VERSION__} ALPHA</div>
+          <div class="cc-credit">Made by Vantic</div>
 
           <div class="cc-center">
             <img class="cc-logo" id="cc-logo" src="menu/logo-primary.png" alt="ClaudeCraft">
@@ -112,8 +113,38 @@ export class Menus {
           <!-- UPDATE-polish §5 — game controls: render distance / debug / creative -->
           <label class="cc-row">
             <span>Render distance</span>
-            <input type="range" min="4" max="16" step="1" id="opt-renderDistance">
+            <input type="range" min="4" max="20" step="1" id="opt-renderDistance">
             <output id="out-renderDistance"></output>
+          </label>
+          <!-- OVERHAUL §O — graphics rows -->
+          <label class="cc-row">
+            <span>FOV</span>
+            <input type="range" min="60" max="110" step="1" id="opt-fov">
+            <output id="out-fov"></output>
+          </label>
+          <label class="cc-row">
+            <span>Resolution scale</span>
+            <input type="range" min="50" max="200" step="5" id="opt-resolutionScale">
+            <output id="out-resolutionScale"></output>
+          </label>
+          <label class="cc-row">
+            <span>Brightness</span>
+            <input type="range" min="0" max="100" step="1" id="opt-brightness">
+            <output id="out-brightness"></output>
+          </label>
+          <label class="cc-row">
+            <span>Smooth textures (mipmaps)</span>
+            <input type="checkbox" id="opt-mipmaps">
+            <output></output>
+          </label>
+          <label class="cc-row">
+            <span>Particles</span>
+            <select id="opt-particles">
+              <option value="all">All</option>
+              <option value="decreased">Decreased</option>
+              <option value="minimal">Minimal</option>
+            </select>
+            <output></output>
           </label>
           <label class="cc-row">
             <span>Debug overlay</span>
@@ -127,6 +158,7 @@ export class Menus {
           </label>
           <div class="cc-note">Menu music plays original/cleared tracks only.
             In-game audio is fully synthesized.</div>
+          <div class="cc-note cc-credit-note">Made by Vantic.</div>
           <!-- text buttons: the art pack has no Back/Delete plates, and
                reusing CONTINUE/QUIT art here would mislabel the action -->
           <div class="cc-actions">
@@ -241,6 +273,42 @@ export class Menus {
     rd.addEventListener('input', () => {
       this.options.renderDistance = Number(rd.value);
       rdOut.textContent = rd.value;
+      this.applyOptions();
+    });
+
+    // OVERHAUL §O — graphics rows: fov / resolutionScale / brightness sliders,
+    // mipmaps + particles. All persist via the shared options object; main.js's
+    // onOptions hook applies them live (fov + brightness also read per frame).
+    const bindSlider = (id, outId, fmt, get, set) => {
+      const el = $(id), out = $(outId);
+      el.value = get();
+      out.textContent = fmt(Number(el.value));
+      el.addEventListener('input', () => {
+        set(Number(el.value));
+        out.textContent = fmt(Number(el.value));
+        this.applyOptions();
+      });
+    };
+    bindSlider('opt-fov', 'out-fov', v => String(v),
+      () => this.options.fov ?? 70, v => { this.options.fov = v; });
+    bindSlider('opt-resolutionScale', 'out-resolutionScale',
+      v => (v / 100).toFixed(2) + '×',
+      () => Math.round((this.options.resolutionScale ?? 1) * 100),
+      v => { this.options.resolutionScale = v / 100; });
+    bindSlider('opt-brightness', 'out-brightness', v => String(v),
+      () => this.options.brightness ?? 0, v => { this.options.brightness = v; });
+
+    const mip = $('opt-mipmaps');
+    mip.checked = this.options.mipmaps !== false;
+    mip.addEventListener('change', () => {
+      this.options.mipmaps = mip.checked;
+      this.applyOptions();
+    });
+
+    const part = $('opt-particles');
+    part.value = this.options.particles ?? 'all';
+    part.addEventListener('change', () => {
+      this.options.particles = part.value;
       this.applyOptions();
     });
 

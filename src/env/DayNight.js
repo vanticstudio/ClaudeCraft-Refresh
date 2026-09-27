@@ -387,6 +387,9 @@ export class DayNight {
 
     // 09-POTIONS §6.5 — Night Vision sky-channel floor, flash-blinking below 10 s.
     sharedUniforms.uNightVision.value = nightVisionScale(this.game.player);
+    // OVERHAUL §M — brightness option lifts the light curve's ambient floor
+    // (0 → 0.04 default; 100 → 0.24 "bright" MC parity).
+    sharedUniforms.uBright.value = 0.04 + ((this.game.options?.brightness ?? 0) / 100) * 0.20;
 
     // shared chunk-shader uniforms (01 §8.7)
     sharedUniforms.uSkyDarken.value = skyDarkenF;

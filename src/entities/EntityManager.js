@@ -156,7 +156,7 @@ export class EntityManager {
           this.scene.add(mesh);
         }
       }
-      entity.updateRender(alpha);
+      entity.updateRender(alpha, player);
     }
   }
 

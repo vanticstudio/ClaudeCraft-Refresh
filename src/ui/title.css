@@ -116,6 +116,14 @@
   color: rgba(255, 240, 225, .85); text-shadow: 1px 1px 0 rgba(0, 0, 0, .5);
 }
 
+/* title-screen corner credit — mirrors .cc-badge, parked opposite it */
+.cc-credit {
+  position: absolute; bottom: 14px; right: 24px; z-index: 7;
+  font-size: clamp(12px, 1.4vw, 19px); letter-spacing: 2px;
+  color: rgba(255, 240, 225, .7); text-shadow: 1px 1px 0 rgba(0, 0, 0, .5);
+  pointer-events: none;
+}
+
 .cc-center {
   position: absolute; inset: 0; z-index: 6;
   display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -310,6 +318,8 @@
   font-size: clamp(12px, 1.4vw, 17px); line-height: 1.35;
   color: rgba(255, 233, 214, .6);
 }
+
+.cc-credit-note { color: rgba(255, 233, 214, .85); letter-spacing: 1px; }
 
 /* panel actions — text buttons, because the art pack has no Back/Delete plates */
 .cc-actions {

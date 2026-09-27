@@ -23,6 +23,9 @@ import { NetClient } from './net/NetClient.js';
 import { NetContainer } from './ui/netContainer.js';
 import { getLocalPlayerId } from './net/identity.js';
 
+// OVERHAUL §O — particles density option (MC parity names) → spawn multiplier.
+const PARTICLE_DENSITY = { all: 1, decreased: 0.5, minimal: 0.15 };
+
 // 01 §2 — the startup failure surface. `boot()` was invoked bare with nothing
 // awaiting or catching it, so a blacklisted WebGL context, a rejecting
 // save.open() or a null 2d context out of buildAtlas() all produced a blank page
@@ -75,8 +78,14 @@ async function boot() {
 
   const input = new Input(canvas);
   const { renderer, camera, viewmodelCamera } = createRenderer(canvas);
+  // OVERHAUL §A — staged animation + anisotropy need the renderer.
+  atlas.setRenderer(renderer);
+  renderer.setResolutionScale(options.resolutionScale ?? 1);
   const game = new Game({ canvas, input, renderer, camera, viewmodelCamera, atlas, audio, options });
   audio.game = game;
+  // OVERHAUL §O — graphics options applied at boot (and live via onOptions).
+  game.particles?.setDensity?.(PARTICLE_DENSITY[options.particles] ?? 1);
+  atlas.setMipmaps(options.mipmaps !== false);
 
   const save = new SaveManager();
   save.hostId = getLocalPlayerId();     // v2→v3 migration wraps the legacy player under this
@@ -125,6 +134,10 @@ async function boot() {
       if (game.chunkManager) game.chunkManager.lastPlayerChunk = null;
       // §5 — debug toggle from the sheet mirrors F3 exactly.
       if (!!opts.debugOverlay !== debug.visible) debug.toggle();
+      // OVERHAUL §O — live graphics options.
+      renderer.setResolutionScale(opts.resolutionScale ?? 1);
+      game.particles?.setDensity?.(PARTICLE_DENSITY[opts.particles] ?? 1);
+      atlas.setMipmaps(opts.mipmaps !== false);
     },
     onNewWorld: async seedInput => {
       await save.deleteWorld();
@@ -372,8 +385,11 @@ async function boot() {
   canvas.addEventListener('webglcontextrestored', () => {
     // The atlas is PAINTED, not loaded, so force one re-upload — atlas.animate()
     // only repaints on a 5-tick boundary and the GPU copy can otherwise stay
-    // stale — and make the streamer re-evaluate its request list.
+    // stale — and make the streamer re-evaluate its request list. The staging
+    // texture needs a fresh GPU upload too (properties are rebuilt on restore),
+    // which the next setRenderer/initTexture does in one step.
     atlas.texture.needsUpdate = true;
+    atlas.setRenderer(renderer);
     if (game.chunkManager) game.chunkManager.lastPlayerChunk = null;
     hud.toast('Graphics context restored');
   });

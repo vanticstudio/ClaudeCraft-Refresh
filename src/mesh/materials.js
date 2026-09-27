@@ -1,13 +1,23 @@
 // The 3 shared chunk ShaderMaterials (01 §8.7). Uniform objects are shared so
 // one write updates every chunk. Light math per 04 §11.1–11.2.
+// OVERHAUL §M — dual UV path: non-merged faces keep ABSOLUTE atlas UVs in
+// `uv` (aSpan = 1,1 → step() selects the plain sample); greedy-merged quads
+// emit TILE-LOCAL uv (0..span) + the tile's atlas origin in aTileUV, and the
+// fragment shader folds them back with fract(). Adds per-vertex biome tint,
+// and turns the light curve's ambient floor into a uniform (brightness option).
 import * as THREE from 'three';
-import { AMBIENT_FLOOR } from '../constants.js';
+import { AMBIENT_FLOOR, TILE_PX, ATLAS_SIZE } from '../constants.js';
 
 const VERT = /* glsl */`
 attribute vec4 color;
+attribute vec2 aSpan;
+attribute vec2 aTileUV;
+attribute vec3 tint;
 varying vec2 vUv; varying vec4 vCol; varying float vDist;
+varying vec2 vSpan; varying vec2 vTileUV; varying vec3 vTint;
 void main() {
   vUv = uv; vCol = color;
+  vSpan = aSpan; vTileUV = aTileUV; vTint = tint;
   vec4 mv = modelViewMatrix * vec4(position, 1.0);
   vDist = length(mv.xyz);
   gl_Position = projectionMatrix * mv;
@@ -21,15 +31,26 @@ uniform vec3 uFogColor; uniform float uFogNear; uniform float uFogFar;
 uniform float uAlphaTest; uniform float uAlpha;
 uniform float uDimAmbient;
 uniform float uNightVision;
+uniform float uBright;
 varying vec2 vUv; varying vec4 vCol; varying float vDist;
+varying vec2 vSpan; varying vec2 vTileUV; varying vec3 vTint;
 const vec3 BLOCK_TINT = vec3(1.00, 0.89, 0.69);
-const float AMBIENT_FLOOR = ${AMBIENT_FLOOR.toFixed(3)};
+// inner tile span in atlas UV (TILE_PX-1 texels). aTileUV carries the tile's
+// ALREADY-inset origin (uvRect u0 = (x0+0.5)/ATLAS_SIZE), so the merged path
+// adds only the span — texel 0 centers and the far edge land exactly where the
+// static path's (u0..u1) window does.
+const float TILE_INNER = ${(((TILE_PX - 1) / ATLAS_SIZE)).toFixed(7)};
 float brightness(float l) {
   float x = clamp(l, 0.0, 15.0) / 15.0;
-  return AMBIENT_FLOOR + (1.0 - AMBIENT_FLOOR) * (x / (4.0 - 3.0 * x));
+  return uBright + (1.0 - uBright) * (x / (4.0 - 3.0 * x));
 }
 void main() {
-  vec4 tex = texture2D(uAtlas, vUv);
+  // merged path: fract() walks the tile texture across the quad's span; the
+  // +1e-4-below-span vertex UVs keep the last texel sampled exactly.
+  float merged = step(2.01, vSpan.x + vSpan.y);
+  vec2 f = fract(vUv);
+  vec2 auv = mix(vUv, vTileUV + f * TILE_INNER, merged);
+  vec4 tex = texture2D(uAtlas, auv);
   if (tex.a < uAlphaTest) discard;
   float effSky = max(vCol.r * 15.0 - uSkyDarken, 0.0);
   // 09-POTIONS §6.5 / AMENDS 04 §11.2 — Night Vision floors the sky channel to 15.
@@ -37,7 +58,7 @@ void main() {
   vec3 light = max(brightness(vCol.g * 15.0) * BLOCK_TINT, brightness(effSky) * uSkyTint);
   // 10-NETHER §13.1 — per-dimension ambient floor; no cell renders below it.
   light = max(light, vec3(uDimAmbient));
-  vec3 rgb = tex.rgb * light * vCol.b;
+  vec3 rgb = tex.rgb * vTint * light * vCol.b;
   float fog = smoothstep(uFogNear, uFogFar, vDist);
   gl_FragColor = vec4(mix(rgb, uFogColor, fog), tex.a * uAlpha * vCol.a);
 }`;
@@ -54,6 +75,8 @@ export const sharedUniforms = {
   uDimAmbient: { value: 0.0 },
   // 09-POTIONS §6.5 — Night Vision sky-channel floor (0..1), written per frame.
   uNightVision: { value: 0.0 },
+  // OVERHAUL §M — brightness option lifts the light-curve floor (0.04..0.22).
+  uBright: { value: AMBIENT_FLOOR },
 };
 
 export function createChunkMaterials(atlasTexture) {

@@ -20,6 +20,76 @@ fidelity gaps, logged precisely in `DEVIATIONS.md` rather than silently dropped.
 
 ---
 
+## Maximum-effort overhaul — perf + HD texture pack (2026-09-27)
+
+A top-to-bottom performance and visual overhaul, run as parallel work-streams and
+verified with `npm run smoke` (8/8) plus a production `vite` build. Sections
+below supersede any perf/graphics claims made earlier in this file.
+
+### Rendering / FPS
+- **Greedy quad merging** (§G, `ChunkMesher.js`): full-cube faces whose tile,
+  biome tint and 4-corner AO + smooth light all match merge into rects — flat
+  terrain drops from ~1 quad/block to ~1 quad per merged rect (order-of-magnitude
+  fewer vertices on plains). Merged quads emit tile-local UVs (0..span) + the
+  tile's atlas origin (`aTileUV`) + a span sentinel (`aSpan`); the chunk shader
+  folds them back with `fract()`. All 38 non-cube shape emitters are untouched
+  and ride the absolute-UV path (`aSpan` = 1,1).
+- **Worker meshing** (§W, `meshWorker.js` + ChunkManager): background remeshing
+  drains to a 2–4 worker pool (hardwareConcurrency-derived) via transferred
+  typed-array hood snapshots (~1.2 MB per job, zero-copy both ways). Player
+  edits still rebuild the edited chunk synchronously (instant feedback); the
+  light-dirtied neighbors ride the pool. Stale results are discarded via a
+  per-chunk `meshEpoch` bumped by every `markDirty`. Index buffers are Uint16
+  whenever the bucket stays under 64k verts.
+- **Mipmaps + MSAA + anisotropy** (§A/§C): 1280² guttered atlas (32px tiles,
+  4px edge-replicated gutters so the mip chain can't bleed across tiles),
+  `NearestMipmapLinear` min filter + anisotropy ≤ 8; context antialiasing on;
+  live resolution scale (0.5–2.0×) for GPU-bound machines.
+- **Staged atlas animation**: water/lava/fire/furnace frames repaint a tiny
+  staging canvas and reach the atlas via `renderer.copyTextureToTexture`
+  (framebuffer path; the staging texture is re-uploaded per step at N·32² px).
+  The old path re-uploaded the whole atlas canvas every 5 ticks. Mip chain
+  stays in sync (the copy regenerates it) + a 60 s full-refresh safety net.
+- **Particles** (§T): 3 InstancedMesh pools (colored / atlas debris / sweep),
+  1024 cap, zero per-particle allocations, render-domain interpolation, plus a
+  density option (All / Decreased / Minimal).
+- **Entities** (§E): teleport snap (>10 blocks/tick stops lerping), per-entity
+  material-tint cache, `applyLightScalar` + per-part animation skipped beyond
+  64/48 blocks (parts settle to neutral on exit).
+- **Biome tints** (§B): grass tops, leaves and water wear per-biome colors
+  (baked per-vertex, merge-key aware) — plains vs taiga vs desert now read
+  differently at a glance.
+
+### Textures (the headline)
+- **HD texture pack** (§P, `tilePainters.js`): every tile re-authored at 32×32
+  (2× resolution) — two-octave coherent grain everywhere, richer ore flecks with
+  gleam + under-rim, layered strata/cracks on stone, knots in planks, clumped
+  canopy leaves, deep turf lips, fabric weave, glowing furnace mouths. 4-frame
+  animated water/lava/fire/furnace-lit with authored wrap-around phases
+  (previously 2 frames of flat noise). All 403 painters + names preserved;
+  smoke U4 stays 404/1024.
+- **HUD icons** (§H, `hudIcons.js`): the emoji glyphs (❤ 🍗 🛡 🫧) are replaced
+  by a procedurally painted 9×9 pixel sprite sheet (hearts/hunger/armor/air,
+  full/half/empty + gold absorption), tinted via CSS filters for poison/wither.
+
+### Options / render distance
+- Render distance widened to **4–20 chunks** (default 8); all streaming costs
+  stay budget-clamped so high radii degrade gracefully.
+- New graphics settings: FOV (60–110), resolution scale (0.5–2×), brightness
+  (light-curve ambient floor), mipmaps toggle, particles density.
+- "Made by Vantic" credit on the title screen and in the settings sheet.
+
+### Review sweep
+Two independent read-only audits of the new code found and fixed: a double
+half-texel inset in the merged-UV path (every greedy face was half a texel
+shifted), a tautological worker epoch guard (stale results could overwrite
+fresh meshes), a `meshReady` race that could permanently stick a chunk
+un-meshed, a staging-texture upload ordering bug (animated tiles would have
+gone blank), per-step animation reseeding that broke the authored frame loops,
+and a creative-mode armor row showing hearts.
+
+---
+
 ## Records pass — the backlog reconciled against the tree (2026-07-31)
 
 The verification pass below audited the sweep's *reports*. This one audits the

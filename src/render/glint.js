@@ -9,6 +9,7 @@
 
 import * as THREE from 'three';
 import { ENCHANTED_BOOK_ID } from '../items/enchants.js';
+import { TILE_PX, ATLAS_CELL, ATLAS_GUTTER } from '../constants.js';   // OVERHAUL §A
 
 /** §11 — does this stack glint? */
 export const isGlinted = stack =>
@@ -74,8 +75,12 @@ export function paintGlintIcon(canvas, atlas, tile, frame, srcCanvas = null) {
   if (srcCanvas) {
     g.drawImage(srcCanvas, 0, 0, S, S);
   } else {
+    // OVERHAUL §A — guttered atlas: sample the tile's inner region
+    // (col·CELL + GUTTER, row·CELL + GUTTER) at the HD TILE_PX² size.
     const col = tile & 31, row = tile >> 5;
-    g.drawImage(atlas.canvas, col * 16, row * 16, 16, 16, 0, 0, S, S);
+    g.drawImage(atlas.canvas,
+      col * ATLAS_CELL + ATLAS_GUTTER, row * ATLAS_CELL + ATLAS_GUTTER, TILE_PX, TILE_PX,
+      0, 0, S, S);
   }
 
   // source-atop keeps only the pixels that land ON the icon — that clip is the

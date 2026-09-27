@@ -16,8 +16,18 @@ export const DEFAULTS = Object.freeze({
   // UPDATE-polish §5 — settings-tab additions. Creative mode is deliberately NOT
   // here: gameMode is per-world state persisted in the save (a global override
   // would corrupt survival worlds); the settings toggle drives the live player.
-  renderDistance: 8,       // chunks, 4–16 — drives RENDER_RADIUS at runtime
+  renderDistance: 8,       // chunks, 4–20 — drives RENDER_RADIUS at runtime
   debugOverlay: false,     // F3 overlay state (F3 key stays a shortcut)
+  // OVERHAUL §O — graphics options. fov is the base vertical FOV (sprint's
+  // fovScale still multiplies); resolutionScale multiplies devicePixelRatio
+  // (0.5–2.0) — the main smoothness lever on weak GPUs; brightness lifts the
+  // light curve's ambient floor; mipmaps enable the HD atlas's mip chain;
+  // particles scales every emitter's spawn count.
+  fov: 70,                 // 60–110
+  resolutionScale: 1,      // 0.5–2.0 (slider stores 50–200)
+  brightness: 0,           // 0–100
+  mipmaps: true,
+  particles: 'all',        // 'all' | 'decreased' | 'minimal'
 });
 
 export function loadOptions() {

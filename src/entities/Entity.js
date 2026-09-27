@@ -21,6 +21,10 @@ export function lerpAngle(a, b, t) {
 
 let SCRATCH = new AABB();
 
+// One tick's worth of motion beyond this = teleport/dimension change/pickup:
+// render snaps instead of smearing across the world.
+const TELEPORT_SNAP_DIST_SQ = 10 * 10;
+
 export class Entity {
   constructor(world, x = 0, y = 0, z = 0) {
     this.world = world;
@@ -103,22 +107,41 @@ export class Entity {
 
   buildMesh() { return null; }   // override; THREE.Group of parts
 
-  updateRender(alpha) {
+  updateRender(alpha, player) {
     if (!this.object3d) return;
     const a = this.isPuppet ? 1 : alpha;   // 14 §4.4 — NetClient.renderTick already wrote the interpolated position; do not re-lerp it
-    this.object3d.position.set(
-      lerp(this.prevPos.x, this.pos.x, a),
-      lerp(this.prevPos.y, this.pos.y, a),
-      lerp(this.prevPos.z, this.pos.z, a),
-    );
-    this.object3d.rotation.y = lerpAngle(this.prevYaw, this.yaw, a);
-    this.applyLightScalar();
+    const dx = this.pos.x - this.prevPos.x;
+    const dy = this.pos.y - this.prevPos.y;
+    const dz = this.pos.z - this.prevPos.z;
+    const teleported = dx * dx + dy * dy + dz * dz > TELEPORT_SNAP_DIST_SQ;
+    if (teleported) {
+      this.object3d.position.set(this.pos.x, this.pos.y, this.pos.z);
+      this.object3d.rotation.y = this.yaw;
+    } else {
+      this.object3d.position.set(
+        lerp(this.prevPos.x, this.pos.x, a),
+        lerp(this.prevPos.y, this.pos.y, a),
+        lerp(this.prevPos.z, this.pos.z, a),
+      );
+      this.object3d.rotation.y = lerpAngle(this.prevYaw, this.yaw, a);
+    }
+    // LOD — the material tint is invisible at range; skip the full traverse.
+    const p = player?.pos;
+    if (!p ||
+        (this.pos.x - p.x) ** 2 + (this.pos.y - p.y) ** 2 + (this.pos.z - p.z) ** 2 <= 64 * 64) {
+      this.applyLightScalar();
+    }
   }
 
   applyLightScalar() {
     if (!this.object3d) return;
     const s = this.lightScalar;
     const hurtMul = this.hurtTime > 0 ? 0.35 : 1;
+    // Called every render frame but the inputs only change on tick boundaries —
+    // skip the full traverse unless the light level or hurt tint actually moved.
+    const key = `${s}|${hurtMul}`;
+    if (key === this._lightKey) return;
+    this._lightKey = key;
     this.object3d.traverse(o => {
       if (!o.isMesh || !o.material) return;
       const mats = Array.isArray(o.material) ? o.material : [o.material];

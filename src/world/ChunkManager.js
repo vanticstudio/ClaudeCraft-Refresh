@@ -1,15 +1,23 @@
 // Chunk streaming: worker dispatch, state promotion, remesh queue (01 §4, §9).
+// OVERHAUL §W — chunk MESHING moves to its own worker pool (meshWorker.js):
+// drainRemesh dispatches snapshot jobs, results land as transferred raw
+// buffers. The main-thread path survives for player edits (zero-latency
+// feedback) and as a fallback if the pool fails to boot.
 import * as THREE from 'three';
 import { Chunk, ChunkState } from './Chunk.js';
 import { terminatesSky } from './LightEngine.js';
 import { fireTickDelay } from './fire.js';
 import { B, BLOCKS, STATE_NIBBLE } from '../registry/blocks.js';
-import { ChunkMesher, setChunkBoundingSphere } from '../mesh/ChunkMesher.js';
+import { ChunkMesher, setChunkBoundingSphere, rawToGeometry } from '../mesh/ChunkMesher.js';
 import {
   chunkKey, GENERATE_RADIUS, RENDER_RADIUS, UNLOAD_RADIUS,
   MAX_JOBS_IN_FLIGHT, WORKER_COUNT, REMESH_FRAME_BUDGET_MS, REMESH_FRAME_MAX,
   INITIAL_MESH_PER_TICK, MAX_Y, CHUNK_CELLS, WORKER_READY_TIMEOUT_MS,
+  MESH_WORKER_COUNT,
 } from '../constants.js';
+
+const MESH_BUCKETS = ['opaque', 'cutout', 'water'];
+const MESH_RAW_KEYS = ['pos', 'nrm', 'uv', 'span', 'tileUV', 'col', 'tint', 'idx'];
 
 export class ChunkManager {
   constructor(world, scene, materials, tileUV) {
@@ -42,6 +50,13 @@ export class ChunkManager {
     this._readyTimer = null;
     this.retries = new Map();
     this.loading = true;               // relaxes budgets during LOADING screen
+    // OVERHAUL §W — mesh worker pool
+    this.meshWorkers = [];
+    this.meshNext = 0;
+    this.meshReady = false;            // at least one worker answered meshReady
+    this.meshBroken = false;           // pool dead → permanent main-thread fallback
+    this.meshJobs = new Map();         // chunk key → { worker, epoch } in flight
+    this.meshNextId = 1;
   }
 
   initWorkers(seedString) {
@@ -71,6 +86,77 @@ export class ChunkManager {
     this._readyTimer = setTimeout(() => {
       if (!this.worldSpawn) this.onFatal?.(new Error('terrain workers never reported ready'));
     }, WORKER_READY_TIMEOUT_MS);
+    this.initMeshWorkers();
+  }
+
+  // OVERHAUL §W — the meshing pool boots lazily-tolerant: a failed spawn or a
+  // dead worker only demotes the session to main-thread meshing (never fatal —
+  // terrain gen above owns the fatal path).
+  initMeshWorkers() {
+    for (let w = 0; w < MESH_WORKER_COUNT; w++) {
+      let worker;
+      try {
+        worker = new Worker(new URL('../mesh/meshWorker.js', import.meta.url), { type: 'module' });
+      } catch (err) { console.error('[meshWorker] spawn failed', err); this.meshBroken = true; return; }
+      worker.onmessage = e => this.onMeshWorkerMessage(w, e.data);
+      worker.onerror = err => {
+        console.error('[meshWorker]', err?.message ?? err);
+        this.dropMeshJobsOf(w);
+        this.meshBroken = true;   // one dead worker → simplest safe fallback
+      };
+      worker.postMessage({ type: 'init', tileUV: this.mesher.tileUV });
+      this.meshWorkers.push(worker);
+    }
+  }
+
+  dropMeshJobsOf(w) {
+    for (const [key, job] of [...this.meshJobs]) {
+      if (job.worker !== w) continue;
+      this.meshJobs.delete(key);
+      // re-queue: the sync path picks it up on the next drain
+      const chunk = this.world.chunks.get(key);
+      if (chunk && chunk.state >= ChunkState.LIT) this.remeshQueue.add(key);
+    }
+  }
+
+  onMeshWorkerMessage(w, msg) {
+    if (msg.type === 'meshReady') { this.meshReady = true; return; }
+    if (msg.type === 'meshError') {
+      if (msg.id === -1) { this.meshBroken = true; return; }   // init failure
+      console.error('[meshWorker] job failed:', msg.message);
+      // per-chunk failure: release the slot, re-queue, and let a repeat fail
+      // into a quiet give-up (stale mesh) rather than killing the pool
+      for (const [key, job] of this.meshJobs) {
+        if (job.id !== msg.id) continue;
+        this.meshJobs.delete(key);
+        const chunk = this.world.chunks.get(key);
+        if (chunk) {
+          chunk.meshFailures = (chunk.meshFailures ?? 0) + 1;
+          if (chunk.meshFailures < 2 && chunk.state >= ChunkState.LIT) this.remeshQueue.add(key);
+        }
+      }
+      return;
+    }
+    if (msg.type !== 'meshed') return;
+    const key = chunkKey(msg.cx, msg.cz);
+    const job = this.meshJobs.get(key);
+    this.meshJobs.delete(key);
+    const chunk = this.world.chunks.get(key);
+    // stale: unloaded, or the chunk's data changed after the snapshot —
+    // markDirty bumps meshEpoch on every queued change, so the job's epoch
+    // must match BOTH the dispatch record AND the chunk's CURRENT epoch
+    // (a player edit that sync-rebuilt after dispatch leaves the worker
+    // result older than the live mesh; the fresh entry sits in remeshQueue).
+    if (!chunk || !job
+      || job.epoch !== msg.epoch
+      || job.epoch !== (chunk.meshEpoch ?? 0)) return;
+    if (chunk.state < ChunkState.LIT) return;
+    try {
+      this.buildChunkRaw(chunk, msg.raw);
+    } catch (err) {
+      console.error('[meshWorker] apply failed', key, err);
+      this.remeshQueue.add(key);
+    }
   }
 
   onWorkerError(wi, err) {
@@ -137,6 +223,9 @@ export class ChunkManager {
     if (this._readyTimer) { clearTimeout(this._readyTimer); this._readyTimer = null; }
     for (const w of this.workers) w.terminate();
     this.workers.length = 0;
+    for (const w of this.meshWorkers) w.terminate();   // OVERHAUL §W
+    this.meshWorkers.length = 0;
+    this.meshJobs.clear();
   }
 
   onWorkerMessage(msg) {
@@ -206,6 +295,7 @@ export class ChunkManager {
     this.remeshQueue.clear();
     this.pending.clear();
     this.jobWorker.clear();
+    this.meshJobs.clear();             // OVERHAUL §W — dimension flush
     this.requestList.length = 0;
     this.requestQueued.clear();        // the index tracks the list exactly
     this.lastPlayerChunk = null;
@@ -487,6 +577,7 @@ export class ChunkManager {
       this.world.chunks.delete(chunk.key);
       this.world.chunkVersion++;
       this.remeshQueue.delete(chunk.key);
+      this.meshJobs.delete(chunk.key);            // OVERHAUL §W — stale job drop
       // 01 §9 grants every chunk ONE re-queue. The counter was never cleared, so
       // a chunk that errored once and then unloaded went straight to FAILED on
       // re-approach — and the map grew for the whole session.
@@ -513,23 +604,84 @@ export class ChunkManager {
   // 01 §4.5 — "sets chunk.dirty = true and pushes its key into remeshQueue".
   // The flag half was missing, leaving Chunk.dirty permanently false for every
   // queued chunk; buildChunk already clears it, closing the loop.
+  // OVERHAUL §W — also bumps meshEpoch: any queued worker job whose snapshot
+  // predates this bump is discarded on arrival (stale-guard).
   markDirty(key) {
     const chunk = this.world.chunks.get(key);
-    if (chunk && chunk.state >= ChunkState.LIT) { chunk.dirty = true; this.remeshQueue.add(key); }
-  }
-
-  // Synchronous rebuild for player edits (01 §4.5)
-  rebuildNow(keys) {
-    for (const key of keys) {
-      const chunk = this.world.chunks.get(key);
-      // Dequeue only on SUCCESS: buildChunk returns false when the mesher's
-      // captureHood rejects the 3×3 (a FAILED neighbour), and dropping the key
-      // then un-meshed that chunk permanently.
-      if (chunk && chunk.state === ChunkState.MESHED && this.buildChunk(chunk)) this.remeshQueue.delete(key);
+    if (chunk && chunk.state >= ChunkState.LIT) {
+      chunk.dirty = true;
+      chunk.meshEpoch = (chunk.meshEpoch ?? 0) + 1;
+      this.remeshQueue.add(key);
     }
   }
 
-  // Render-side drain: nearest-first within budget (01 §3, §4.5)
+  // OVERHAUL §W — snapshot a chunk's 3×3 LIT hood into plain typed-array
+  // copies and transfer them to a mesh worker. ~1.2 MB memcpy per job; the
+  // buffers themselves become the worker's property (zero-copy postMessage).
+  dispatchMeshChunk(chunk) {
+    const worker = this.meshWorkers[this.meshNext];
+    if (!worker) return false;
+    const hood = new Array(9);
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dz = -1; dz <= 1; dz++) {
+        const c = this.world.chunks.get(chunkKey(chunk.cx + dx, chunk.cz + dz));
+        hood[(dx + 1) * 3 + (dz + 1)] = {
+          blocks: c.blocks.slice(),
+          states: c.states.slice(),
+          skyLight: c.skyLight.slice(),
+          blockLight: c.blockLight.slice(),
+          biomes: c.biomes.slice(),
+        };
+      }
+    }
+    const epoch = chunk.meshEpoch ?? 0;
+    const id = this.meshNextId++;
+    this.meshJobs.set(chunk.key, { worker: this.meshNext, id, epoch });
+    this.meshNext = (this.meshNext + 1) % this.meshWorkers.length;
+    const center = {
+      blocks: hood[4].blocks, states: hood[4].states,
+      minY: chunk.minY, maxY: chunk.maxY,
+    };
+    const transfer = [];
+    for (const h of hood) {
+      transfer.push(h.blocks.buffer, h.states.buffer, h.skyLight.buffer,
+        h.blockLight.buffer, h.biomes.buffer);
+    }
+    worker.postMessage({ type: 'mesh', id, cx: chunk.cx, cz: chunk.cz, epoch, snap: { hood, center } }, transfer);
+    return true;
+  }
+
+  // Synchronous rebuild for player edits (01 §4.5). OVERHAUL §W — the chunk
+  // the player edited builds synchronously (instant feedback); every other
+  // dirtied key rides the worker pool (a 1-frame light-delta delay is
+  // invisible, a 9-chunk sync burst was a visible hitch).
+  rebuildNow(keys) {
+    let first = true;
+    for (const key of keys) {
+      const chunk = this.world.chunks.get(key);
+      if (!chunk || chunk.state !== ChunkState.MESHED) continue;
+      this.remeshQueue.delete(key);
+      if (first) {
+        first = false;
+        // Dequeue only on SUCCESS: buildChunk returns false when the mesher's
+        // captureHood rejects the 3×3 (a FAILED neighbour) — keep the key then,
+        // or the chunk never meshes again.
+        if (!this.buildChunk(chunk)) this.remeshQueue.add(key);
+        continue;
+      }
+      if (!this.meshBroken && this.meshWorkers.length && this.meshReady) {
+        chunk.meshEpoch = (chunk.meshEpoch ?? 0) + 1;
+        if (!this.meshJobs.has(key)) this.dispatchMeshChunk(chunk);
+        else this.remeshQueue.add(key);   // already in flight — it stays queued
+      } else if (!this.buildChunk(chunk)) {
+        this.remeshQueue.add(key);
+      }
+    }
+  }
+
+  // Render-side drain: nearest-first, OVERHAUL §W — dispatches to the mesh
+  // worker pool instead of building on the main thread (budget now bounds
+  // snapshot+dispatch work, not mesh work).
   drainRemesh(playerX, playerZ, budgetMs = REMESH_FRAME_BUDGET_MS, maxCount = REMESH_FRAME_MAX) {
     if (this.remeshQueue.size === 0) return 0;
     const pcx = Math.floor(playerX) >> 4, pcz = Math.floor(playerZ) >> 4;
@@ -546,19 +698,51 @@ export class ChunkManager {
     for (const [, chunk] of entries) {
       if (built >= maxCount || performance.now() - t0 > budgetMs) break;
       if (!this.hoodAtLeast(chunk, ChunkState.LIT)) continue;   // retried later
-      // hoodAtLeast exempts FAILED neighbours, ChunkMesher.captureHood does not,
-      // so this pre-check passes exactly where the build is guaranteed to fail.
-      // Keep the key queued on failure or the chunk never meshes again.
-      if (!this.buildChunk(chunk)) continue;
+      if (this.meshJobs.has(chunk.key)) continue;               // already in flight
+      // give-up guard for chunks the pool repeatedly failed on
+      if ((chunk.meshFailures ?? 0) >= 2) { this.remeshQueue.delete(chunk.key); continue; }
       this.remeshQueue.delete(chunk.key);
+      if (!this.meshBroken && this.meshWorkers.length && this.meshReady) {
+        chunk.meshEpoch = (chunk.meshEpoch ?? 0) + 1;
+        this.dispatchMeshChunk(chunk);
+      } else if (!this.buildChunk(chunk)) {
+        // hoodAtLeast exempts FAILED neighbours, ChunkMesher.captureHood does
+        // not, so this pre-check passes exactly where the build is guaranteed
+        // to fail. Keep the key queued on failure or the chunk never meshes.
+        this.remeshQueue.add(chunk.key);
+      }
       built++;
     }
     return built;
   }
 
+  // Main-thread build (sync path): mesher against live chunks.
   buildChunk(chunk) {
-    const geos = this.mesher.build(this.world, chunk);
+    let geos;
+    try {
+      geos = this.mesher.build(this.world, chunk);
+    } catch (err) {
+      console.error('[mesher] build failed', chunk.key, err);
+      return false;
+    }
     if (!geos) return false;
+    this.applyGeometry(chunk, geos);
+    return true;
+  }
+
+  // OVERHAUL §W — worker-result intake: wrap transferred raw arrays.
+  buildChunkRaw(chunk, raw) {
+    const geos = {
+      opaque: raw.opaque && rawToGeometry(raw.opaque),
+      cutout: raw.cutout && rawToGeometry(raw.cutout),
+      water: raw.water && rawToGeometry(raw.water),
+    };
+    chunk.minY = raw.minY;
+    chunk.maxY = raw.maxY;
+    this.applyGeometry(chunk, geos);
+  }
+
+  applyGeometry(chunk, geos) {
     if (!chunk.group) {
       chunk.group = new THREE.Group();
       chunk.group.position.set(chunk.cx * 16, 0, chunk.cz * 16);
@@ -566,7 +750,7 @@ export class ChunkManager {
       chunk.group.updateMatrix();
       this.scene.add(chunk.group);
     }
-    for (const bucket of ['opaque', 'cutout', 'water']) {
+    for (const bucket of MESH_BUCKETS) {
       const old = chunk.meshes[bucket];
       const geo = geos[bucket];
       if (old) {
@@ -589,7 +773,6 @@ export class ChunkManager {
     }
     chunk.dirty = false;
     if (chunk.state === ChunkState.LIT) chunk.state = ChunkState.MESHED;
-    return true;
   }
 
   // Loading progress: meshed fraction of the 7×7 around spawn (01 §15.2)
