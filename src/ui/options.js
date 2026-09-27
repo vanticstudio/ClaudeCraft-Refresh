@@ -32,6 +32,10 @@ export const DEFAULTS = Object.freeze({
   // purpose (accessibility: forced camera motion is a vestibular trigger); the
   // DayNight camera offset only applies while this is true.
   screenShake: false,
+  // B10 §1 — "Fancy graphics": bloom (lava/glowstone/portal/fire) + subtle
+  // vignette + grade. OFF by default per spec; Game.render re-reads this per
+  // frame (the screenShake pattern), so the toggle applies on the next frame.
+  fancy: false,
 });
 
 export function loadOptions() {

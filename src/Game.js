@@ -35,6 +35,7 @@ import { hasLineOfSight } from './world/raycast.js';
 import { DayNight } from './env/DayNight.js';
 import { Particles } from './render/Particles.js';
 import { isGlinted, addGlintPass, tickGlint } from './render/glint.js';
+import { PostFX } from './render/post.js';   // B10 — fancy post pass (bloom + vignette + grade)
 import { AABB } from './math/aabb.js';
 import { createMob, MobSpawner, HOSTILE_TYPES } from './entities/mobs/index.js';
 import { emitSound, startLoop, at } from './audio/engine.js';
@@ -131,6 +132,7 @@ export class Game {
     this.mobSpawner = null;
     this.save = null;                   // saveManager, wired by main.js
     this.particles = null;
+    this.postfx = null;                 // B10 — lazy PostFX, allocated on the first fancy frame
     this.sleeping = null;               // { ticks }
     this.debug = { fps: 0, frameMs: 0, remeshCount: 0, lastRemeshes: 0, audioMs: 0, redstoneMs: 0 };
     this._fpsWindow = [];
@@ -698,7 +700,24 @@ export class Game {
     this.particles?.render?.(alpha, this.camera);
     this.updateSelectionBox();
 
-    this.renderer.render(this.scene, this.camera);
+    // B10 — Fancy path: the scene renders into the post target, the bloom chain
+    // runs offscreen, then composite() blits scene+bloom+grade to the DEFAULT
+    // framebuffer — so the viewmodel branch below is untouched and the hand
+    // still draws on top after its manual depth clear (§B10 2). Read per frame
+    // from the shared options object (the screenShake pattern in DayNight):
+    // the settings toggle persists via applyOptions and lands on the NEXT
+    // frame; no live re-render hook exists or is needed.
+    if (this.options?.fancy === true) {
+      // Allocated lazily ONCE and kept across toggle-off frames (no swapchain
+      // churn). Game has no renderer-level teardown hook — disposeWorld() is
+      // world-scoped and materials/renderer are never disposed — so
+      // postfx.dispose() is wired nowhere; it exists for a future pagehide path.
+      this.postfx ??= new PostFX(this.renderer, this.scene, this.camera);
+      this.postfx.renderScene(this.scene, this.camera);
+      this.postfx.composite();
+    } else {
+      this.renderer.render(this.scene, this.camera);
+    }
 
     if (this.state === STATE.PLAYING || this.state === STATE.PLAYING_UI) {
       this.updateViewmodel(alpha);

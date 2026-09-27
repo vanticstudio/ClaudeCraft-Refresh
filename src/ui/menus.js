@@ -165,6 +165,14 @@ export class Menus {
             <input type="checkbox" id="opt-screenShake">
             <output></output>
           </label>
+          <!-- B10 — Fancy graphics: bloom (lava/glowstone/portal/fire) + subtle
+               vignette + grade. Default OFF; Game.render re-reads
+               game.options.fancy per frame (the screenShake pattern). -->
+          <label class="cc-row">
+            <span>Fancy graphics</span>
+            <input type="checkbox" id="opt-fancy">
+            <output></output>
+          </label>
           <label class="cc-row">
             <span>Particles</span>
             <select id="opt-particles">
@@ -358,6 +366,17 @@ export class Menus {
     shake.checked = this.options.screenShake === true;
     shake.addEventListener('change', () => {
       this.options.screenShake = shake.checked;
+      this.applyOptions();
+    });
+
+    // B10 — Fancy graphics checkbox, the screenShake row's pattern: read the
+    // shared options object, persist via applyOptions. Game.render reads
+    // game.options.fancy per frame, so the toggle lands on the NEXT frame —
+    // the only onOptions consumer is main.js and post.js needs no hook there.
+    const fancy = $('opt-fancy');
+    fancy.checked = this.options.fancy === true;
+    fancy.addEventListener('change', () => {
+      this.options.fancy = fancy.checked;
       this.applyOptions();
     });
 

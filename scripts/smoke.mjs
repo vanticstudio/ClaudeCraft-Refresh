@@ -1802,7 +1802,7 @@ async function checkPhaseFiles() {
       resolve();
     });
   })));
-  report('U-EXT', `phase regression files — ${files.length} standalone checks (U18/U19/U20/U21/U22/U24)`, fails, notes);
+  report('U-EXT', `phase regression files — ${files.length} standalone checks (U18+ phase checks)`, fails, notes);
 }
 
 // ==================================================================== driver
