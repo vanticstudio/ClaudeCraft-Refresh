@@ -228,6 +228,13 @@ export function buildAtlas() {
       ctx.clearRect(x0, y0, TILE_PX, TILE_PX);
       f(ctx, x0, y0, mulberry32(xmur3(seed)()));
     }
+    // CRITICAL: bump the staging texture's version or the GPU never sees the
+    // repaint. setTexture2D uploads only when `version > 0 && __version !==
+    // version` — the ctor's single needsUpdate made version 1, and initTexture
+    // below was a permanent no-op afterwards, so every copyTextureToTexture
+    // pushed the BOOT-TIME BLANK staging canvas over the water/lava/fire/
+    // furnace-lit/portal atlas regions (invisible water, frozen animation).
+    animTexture.needsUpdate = true;
     // The framebuffer copy path reads the STAGING TEXTURE from GPU memory, so
     // the CPU-side repaint above must actually reach it: initTexture processes
     // the version bump and re-uploads the tiny (N·32×32) staging canvas

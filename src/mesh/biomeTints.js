@@ -43,7 +43,14 @@ const TABLE = [
 
 /** Biome id → {grass, foliage, water} rgb triples. Unknown ids → neutral. */
 export function biomeTint(biome) {
-  return TABLE[biome] ?? C.END;
+  // NEUTRALIZED — the tint pipeline multiplies the tile texture by the biome
+  // color, which is only correct over GRAYSCALE tiles (MC's water_still etc).
+  // These painters bake their FINAL colors (grass #4f8c34, water #3f76e4), so
+  // the multiply squared them: grass went dark/muddy, water went near-black
+  // navy, leaves over-saturated. Until the painters ship desaturated variants
+  // (and untinted UI icons are re-tinted), every tintable surface rides the
+  // neutral white below — byte-identical to the pre-§B look.
+  return C.END;
 }
 
 export const NEUTRAL_TINT = C.END.grass;
