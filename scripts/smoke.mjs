@@ -1538,6 +1538,100 @@ async function checkLightParity() {
   report('U14', 'light parity — sync vs worker snapshot path (B1)', fails, notes);
 }
 
+// ==================================================================== U15
+// B7 — pathfinding regression (pure logic, synthetic voxel world). The A* in
+// ai.js was already complete when the build-out landed; this check pins its
+// contract: gap negotiation, step-up, drop, water avoidance, budget cap, and
+// determinism — so a future AI rewrite cannot silently regress navigation.
+async function checkPathfinding() {
+  const fails = [];
+  const notes = [];
+  try {
+    // NOTE: findPath consumes the global astar budget (2/tick) — every case
+    // below uses a DISTINCT world time to stay independent of call order.
+    {
+      const { findPath, standable, astarBudgetOk } = await imp('entities/mobs/ai.js');
+      const { B } = await imp('registry/blocks.js');
+
+      const mkWorld = () => {
+        const voxel = new Map();
+        return {
+          voxel,
+          getBlock: (x, y, z) => voxel.get(x + ',' + y + ',' + z) ?? 0,
+          set: (x, y, z, id) => voxel.set(x + ',' + y + ',' + z, id),
+        };
+      };
+      // flat stone floor at y=0 (standable at y=1), 45×45
+      const floor = (w) => {
+        for (let x = -22; x <= 22; x++) for (let z = -45; z <= 45; z++) w.set(x, 0, z, B.STONE);
+      };
+      const mob = {};                       // no tall3/wide3 constraints
+
+      // 1) wall with a gap — the path must use the gap
+      {
+        const w = mkWorld(); floor(w);
+        for (let y = 1; y <= 3; y++) for (let z = -45; z <= 45; z++) if (z < -1 || z > 1) w.set(5, y, z, B.STONE);
+        const p = findPath(w, mob, -3, 1, 0, 13, 1, 0, 32, 4000);
+        if (!p) fails.push('gap: no path found');
+        else {
+          const cross = p.filter(n => n.x === 5);
+          if (!cross.length || !cross.every(n => n.z >= -1 && n.z <= 1)) {
+            fails.push('gap: path crosses the wall outside the gap columns');
+          }
+          for (const n of p) if (!standable(w, n.x, n.y, n.z, mob)) { fails.push('gap: path node not standable'); break; }
+        }
+      }
+      // 2) full wall (endless in z) — best-effort path must NOT cross x=5
+      {
+        const w = mkWorld(); floor(w);
+        for (let y = 1; y <= 3; y++) for (let z = -60; z <= 60; z++) w.set(5, y, z, B.STONE);
+        const p = findPath(w, mob, -3, 1, 0, 13, 1, 0, 20, 4000);
+        if (p && p.some(n => n.x >= 5)) fails.push('wall: path crossed an unbroken wall');
+      }
+      // 3) step-up terrace — path must climb (y+1 node present)
+      {
+        const w = mkWorld(); floor(w);
+        for (let x = 5; x <= 22; x++) for (let z = -45; z <= 45; z++) w.set(x, 1, z, B.STONE);
+        const p = findPath(w, mob, 0, 1, 0, 12, 2, 0, 32, 4000);
+        if (!p || !p.some(n => n.y === 2)) fails.push('step: path did not climb the terrace');
+      }
+      // 4) water avoidance — lake straight ahead, land detour around it
+      {
+        const w = mkWorld(); floor(w);
+        for (let x = 4; x <= 10; x++) for (let z = -6; z <= 6; z++) { w.set(x, 0, z, B.WATER); w.set(x, -1, z, B.STONE); }
+        const p = findPath(w, mob, 0, 1, 0, 14, 1, 0, 32, 8000);
+        if (!p) fails.push('water: no path around the lake');
+        else if (p.some(n => w.getBlock(n.x, n.y, n.z) === B.WATER)) {
+          fails.push('water: path entered the lake despite a land detour');
+        }
+      }
+      // 5) budget — 2 A* runs per world tick (findPath increments), then
+      // blocked, resets next tick
+      {
+        if (!astarBudgetOk(9000)) fails.push('budget: fresh tick must allow runs');
+        const wb = mkWorld(); floor(wb);
+        findPath(wb, mob, 0, 1, 0, 3, 1, 0, 8, 200);   // run 1 of tick 9000
+        findPath(wb, mob, 0, 1, 0, 3, 1, 0, 8, 200);   // run 2 of tick 9000
+        if (astarBudgetOk(9000)) fails.push('budget: third run of a tick must be blocked');
+        if (!astarBudgetOk(9001)) fails.push('budget: budget must reset on the next tick');
+      }
+      // 6) determinism — identical inputs → identical path
+      {
+        const w = mkWorld(); floor(w);
+        for (let y = 1; y <= 3; y++) for (let z = -45; z <= 45; z++) if (z < -1 || z > 1) w.set(5, y, z, B.STONE);
+        const a = findPath(w, mob, -3, 1, 0, 13, 1, 0, 32, 4000);
+        const b = findPath(w, mob, -3, 1, 0, 13, 1, 0, 32, 4000);
+        const s = p => p ? p.map(n => `${n.x},${n.y},${n.z}`).join(';') : 'null';
+        if (s(a) !== s(b)) fails.push('determinism: repeated findPath diverged');
+      }
+      notes.push('gap/step/water-avoidance/budget/determinism pinned (5 world fixtures)');
+      report('U15', 'mob pathfinding — gap, step, water, budget, determinism (B7)', fails, notes);
+    }
+  } catch (e) {
+    report('U15', 'mob pathfinding (B7)', ['harness threw: ' + (e.stack || e).split('\n').slice(0, 3).join(' | ')]);
+  }
+}
+
 // ==================================================================== driver
 const imp = p => import(pathToFileURL(join(SRC, p)).href);
 
@@ -1573,6 +1667,7 @@ async function main() {
   await checkWorkerPurity();
   checkShaderGLSL3();
   await checkLightParity();
+  await checkPathfinding();
   finish();
 }
 
