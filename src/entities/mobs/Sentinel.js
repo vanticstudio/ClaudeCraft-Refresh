@@ -5,16 +5,18 @@
 // (spec: "NO boss bar"), gen-spawned (features.js stampHollow) and therefore
 // persistent (Game.onChunkGenerated spawns gen records with persistent: true).
 //
-// SOUND DEVIATION: events.js owns every recipe and is outside this phase's file
-// list, so there is no mob.sentinel.* voice row yet — the base Mob's dynamic
-// `mob.${type}.hurt/death/idle` emissions resolve to null (warn-once, silent)
-// until the orchestrator adds the row. No literal ids are emitted here, so U6
-// stays green either way.
+// SOUND: the pulse fires the literal 'mob.sentinel.pulse' (head height, like
+// every mob emit site). Its recipe lands with the v1.3.1 voice sweep
+// (src/audio/voices-hostile.js) — until then U6 flags the literal; that is the
+// expected mid-overhaul state. The base Mob's dynamic `mob.${type}.hurt/death/
+// idle` emissions still resolve to null (warn-once, silent) until the
+// mob.sentinel.* voice rows land there too.
 import { Mob } from './Mob.js';
 import { SwimGoal, WanderGoal, LookAtPlayerGoal, IdleLookGoal, MeleeAttackGoal, Goal } from './ai.js';
 import { humanoidModel } from './models.js';
 import { addEffect, EFFECT } from '../../status/effects.js';
 import { lootedRange, lootedRareChance } from '../../items/effects.js';
+import { emitSound, at } from '../../audio/engine.js';
 
 // Same deviation as blocks.js ECHO_DROP: the spec's echo_shard item does not
 // resolve yet (idOf throws; item registry is outside this phase's file list),
@@ -48,6 +50,7 @@ class SonicPulseGoal extends Goal {
     m.pulseCooldown = 60;
     if (!t || t.dead) return;
     if (m.distTo(t) > 12) return;
+    emitSound('mob.sentinel.pulse', at(m.pos.x, m.pos.y + m.height * 0.7, m.pos.z));
     const dx = t.pos.x - m.pos.x, dz = t.pos.z - m.pos.z;
     const h = Math.hypot(dx, dz) || 1;
     const nx = dx / h, nz = dz / h;

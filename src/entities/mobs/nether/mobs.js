@@ -100,7 +100,7 @@ export class Blaze extends Mob {
     const fb = new SmallFireball(this.world, ex, ey, ez,
       p.pos.x - ex, (p.pos.y + p.height * 0.5) - ey, p.pos.z - ez, this);
     this.world.game.entities.add(fb);
-    emitSound('entity.blaze.shoot', at(ex, ey, ez));
+    emitSound('mob.blaze.shoot', at(ex, ey, ez));
   }
   dropTable() { return this.world.rng() < 0.5 ? [{ name: 'blaze_rod', count: 1 }] : []; }
   buildMesh() { return tintBox(0.6, 1.8, [1.0, 0.75, 0.1]); }
@@ -234,6 +234,7 @@ export class MagmaCube extends Mob {
       this.vel.y = 0.42 + this.size * 0.1;
       this.vel.x = dx / len * (0.10 + 0.02 * this.size);
       this.vel.z = dz / len * (0.10 + 0.02 * this.size);
+      emitSound('mob.magma_cube.jump', at(this.pos.x, this.pos.y + this.height * 0.7, this.pos.z));   // once per hop
     }
     // contact damage
     if (p && this.distTo(p) < this.width) p.hurt(this.size + 2, 'melee', { attacker: this });

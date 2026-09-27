@@ -10,6 +10,7 @@ import { BLOCKS } from '../registry/blocks.js';
 import * as THREE from 'three';
 import { makeAtlasMaterial, tileSpriteGeometry, itemTileFor } from './ItemEntity.js';
 import { idOf } from '../registry/items.js';
+import { emitSound, at } from '../audio/engine.js';
 
 export class FishingBobber extends Entity {
   constructor(world, x, y, z, vx, vy, vz, owner, openWater) {
@@ -35,6 +36,7 @@ export class FishingBobber extends Entity {
       if (w.getBlock(Math.floor(this.pos.x), Math.floor(this.pos.y), Math.floor(this.pos.z)) === 63 /* water */) {
         this.state = 'float';
         this.vel.x *= 0.2; this.vel.z *= 0.2; this.vel.y = 0;
+        emitSound('item.fishing.splash', at(this.pos.x, this.pos.y + this.height * 0.7, this.pos.z));
         // open-water check at the hook: no solid/fluid in the 5×4×5 box around
         // and above the bobber (MC's bonus definition, simplified to the hook)
         this.openWater = this.isOpenWater();
@@ -56,7 +58,9 @@ export class FishingBobber extends Entity {
       if (w.time >= this.biteAt) {
         this.state = 'bite';
         this.biteUntil = w.time + 5;                    // 5-tick reel window
-        // gold bite sparkle — the generic colored emitter (no new sound id)
+        emitSound('item.fishing.bite', at(this.pos.x, this.pos.y + this.height * 0.7, this.pos.z));
+        // gold bite sparkle — the generic colored emitter (the reel itself is
+        // interaction.useRod's, not this entity's)
         const p = w.game?.particles;
         if (p?.spawn && p?.colored) {
           for (let i = 0; i < 6; i++) {

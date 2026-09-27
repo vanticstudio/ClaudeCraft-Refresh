@@ -4,6 +4,11 @@
 import * as THREE from 'three';
 import { bakeBuffers, bakedBytes } from './primitives.js';
 import { EVENTS, P, resolveEvent } from './events.js';
+// v1.3.1 — voice registries: they def() into the SAME EVENTS table at module
+// load, replacing events.js's generic MOB_IDLE derivations with hand-tuned
+// per-mob voices. Import order matters: events first, voices after.
+import './voices-hostile.js';
+import './voices-passive.js';
 import { Ambience } from './ambience.js';
 import { Music } from './music.js';
 import { loadOptions, busGain } from '../ui/options.js';

@@ -899,6 +899,10 @@ export class Interaction {
     if (out && !out.dead) {
       const result = out.reel();                       // marks the bobber dead
       p.fishingBobber = null;
+      // B4/v1.3.1 — reel sounds: a bite's tug before the roll, a dry ratchet
+      // when the reel comes up empty
+      emitSound(result === 'bite' ? 'item.fishing.bite' : 'item.fishing.reel',
+        at(p.pos.x, p.pos.y + p.eyeHeight, p.pos.z));
       if (result === 'bite') {
         const w = g.world;
         // deterministic-per-catch rng (time+position); distribution pinned by U17
@@ -921,6 +925,7 @@ export class Interaction {
     // approximated at cast time from the hook's landing neighborhood once it
     // floats (the bobber re-checks and downgrades itself when boxed in)
     const e = this.eyePos(), d = this.lookDir();
+    emitSound('item.fishing.cast', at(e.x, e.y, e.z));
     const bobber = new FishingBobber(g.world, e.x + d.x * 0.6, e.y + d.y * 0.6 - 0.1, e.z + d.z * 0.6,
       d.x * 0.9, d.y * 0.9 + 0.06, d.z * 0.9, p, true);
     g.entities.add(bobber);
