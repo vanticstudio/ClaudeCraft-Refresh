@@ -20,6 +20,38 @@ import {
 const MESH_BUCKETS = ['opaque', 'cutout', 'water'];
 const MESH_RAW_KEYS = ['pos', 'nrm', 'uv', 'span', 'tileUV', 'col', 'tint', 'idx'];
 
+// B9 — the PURE occlusion-gate decision (scripts/checks/u22-culling.mjs drives
+// this directly). `center` is the chunk's mesh summary { topExposed,
+// sideView, voidTop }; the four args are its horizontal neighbours as
+// { meshed, vis } | null, ordered +X, −X, +Z, −Z. A chunk is skippable ONLY
+// when its own summary proves zero exposure (no topExposed bit, no border
+// view in any of the 6 face directions) AND every horizontal neighbour is
+// MESHED with the bit that faces the center CLEAR — the east neighbour's −X
+// faces (bit 1) are the ones that look INTO the center, and so on; bit order
+// follows faceTables: 0=+X 1=−X 2=+Y 3=−Y 4=+Z 5=−Z. topExposed/sideView only
+// count faces opening into IN-WORLD cells — a face whose opening cell is the
+// void above the build limit rides vis.voidTop and is decided by the camera
+// guards in cullSkipFor (anyPlayerAboveLimit), not here. Every unproven
+// precondition returns false (DRAW): a false skip is invisible terrain (the
+// v1.2.6 rule), a false draw is only a wasted draw call.
+// SAFETY ARGUMENT (why all-zero ⇒ invisible): a fully-air column contributes
+// no counted face only when it runs y=0..127 — and then any in-world sight
+// ray into the chunk must pass through an in-world air cell whose column has
+// an in-chunk floor (up face) or ceiling (down face), or cross a border plane
+// with a facing neighbour view; every such path is counted, so an all-zero
+// summary with sealed neighbours proves nothing can be seen from any in-world
+// camera. The only residual view is from ABOVE y=127, guarded by voidTop.
+export function cullGateSkip(center, east, west, south, north) {
+  if (!center || !center.topExposed) return false;    // no summary → no proof
+  if (center.sideView !== 0) return false;            // a border view exists
+  const top = center.topExposed;
+  for (let i = 0; i < 256; i++) if (top[i] !== 0) return false;   // a sky view exists
+  const sealed = (nb, facingBit) =>
+    !!nb && nb.meshed === true && !!nb.vis && (nb.vis.sideView & facingBit) === 0;
+  return sealed(east, 1 << 1) && sealed(west, 1 << 0)
+      && sealed(south, 1 << 5) && sealed(north, 1 << 4);
+}
+
 export class ChunkManager {
   constructor(world, scene, materials, tileUV) {
     this.world = world;
@@ -58,6 +90,11 @@ export class ChunkManager {
     this.meshBroken = false;           // pool dead → permanent main-thread fallback
     this.meshJobs = new Map();         // chunk key → { worker, epoch } in flight
     this.meshNextId = 1;
+    // B9 — occlusion gate bookkeeping: keys of chunks currently pulled out of
+    // the scene, plus the last-known "any camera above the build limit" state
+    // (a transition re-decides every hidden chunk — see tick()).
+    this._hiddenKeys = new Set();
+    this._camsAboveLimit = false;
     // B1 — lighting pool (same discipline as the mesh pool above); built in the
     // CONSTRUCTOR so any tick before startWorld's initWorkers still finds a
     // degraded-but-functional pool instead of undefined fields.
@@ -620,6 +657,20 @@ export class ChunkManager {
     this.promote(pcx, pcz);
 
     if (this.world.time % 20 === 0) this.unloadPass(pcx, pcz);
+
+    // B9 — the void-plane guard: a chunk sealed except for its y=127 top
+    // faces is only skippable while NO camera can be above the build limit
+    // (flight has no clamp there — Player.flightMove/collision scan ≤ MAX_Y).
+    // On a transition, every hidden chunk is re-decided under the new fact.
+    const above = this.anyPlayerAboveLimit();
+    if (above !== this._camsAboveLimit) {
+      this._camsAboveLimit = above;
+      for (const key of [...this._hiddenKeys]) {
+        const c = this.world.chunks.get(key);
+        if (c) this.updateCullGate(c);
+        else this._hiddenKeys.delete(key);   // unloaded under us
+      }
+    }
   }
 
   rebuildRequestList(pcx, pcz) {
@@ -731,6 +782,11 @@ export class ChunkManager {
   }
 
   disposeChunkMeshes(chunk) {
+    // B9 — the summary dies with the mesh: a stale one must never gate a
+    // future decision (every re-install brings a fresh summary anyway).
+    chunk.vis = null;
+    chunk.cullHidden = false;
+    this._hiddenKeys.delete(chunk.key);
     if (!chunk.group) return;
     for (const bucket of ['opaque', 'cutout', 'water']) {
       const mesh = chunk.meshes[bucket];
@@ -762,6 +818,10 @@ export class ChunkManager {
       chunk.dirty = true;
       chunk.meshEpoch = (chunk.meshEpoch ?? 0) + 1;
       this.remeshQueue.add(key);
+      // B9 — an edit can only EXPOSE a chunk (its current summary predates
+      // the edit), so draw it until the rebuild lands a fresh proof;
+      // applyGeometry re-hides if the fresh summary still seals it.
+      this.setChunkCulled(chunk, false);
     }
   }
 
@@ -880,7 +940,7 @@ export class ChunkManager {
       return false;
     }
     if (!geos) return false;
-    this.applyGeometry(chunk, geos);
+    this.applyGeometry(chunk, geos, geos.vis);
     return true;
   }
 
@@ -893,16 +953,17 @@ export class ChunkManager {
     };
     chunk.minY = raw.minY;
     chunk.maxY = raw.maxY;
-    this.applyGeometry(chunk, geos);
+    this.applyGeometry(chunk, geos, raw.vis);
   }
 
-  applyGeometry(chunk, geos) {
+  applyGeometry(chunk, geos, vis) {
     if (!chunk.group) {
       chunk.group = new THREE.Group();
       chunk.group.position.set(chunk.cx * 16, 0, chunk.cz * 16);
       chunk.group.matrixAutoUpdate = false;
       chunk.group.updateMatrix();
       this.scene.add(chunk.group);
+      chunk.cullHidden = false;   // B9 — a fresh group starts live in the scene
     }
     for (const bucket of MESH_BUCKETS) {
       const old = chunk.meshes[bucket];
@@ -927,6 +988,75 @@ export class ChunkManager {
     }
     chunk.dirty = false;
     if (chunk.state === ChunkState.LIT) chunk.state = ChunkState.MESHED;
+    // B9 — a fresh mesh (either path) re-decides this chunk's gate, and can
+    // flip its horizontal neighbours' too: their sealed test reads THIS
+    // chunk's facing bit. Diagonals share no border plane; they are skipped.
+    chunk.vis = vis ?? null;
+    this.updateCullGate(chunk);
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const nb = this.world.chunks.get(chunkKey(chunk.cx + dx, chunk.cz + dz));
+      if (nb && nb.state === ChunkState.MESHED) this.updateCullGate(nb);
+    }
+  }
+
+  // ------------------------------------------------------- B9 occlusion gate
+  // Chunks whose mesh summary PROVES they are fully enclosed are pulled out of
+  // the scene; exposure (their own or a neighbour's facing view) puts them
+  // back. Conservative by construction — every unproven precondition draws.
+
+  updateCullGate(chunk) {
+    this.setChunkCulled(chunk, this.cullSkipFor(chunk));
+  }
+
+  cullSkipFor(chunk) {
+    if (!chunk || chunk.state !== ChunkState.MESHED) return false;
+    if (!chunk.vis) return false;                        // no summary → draw
+    if (this.playerInChunkColumns(chunk)) return false;  // camera may be inside
+    // Void-plane guard: the chunk's only escape faces look at the sky above
+    // the build limit — skippable ONLY while no camera is up there.
+    if (chunk.vis.voidTop && this.anyPlayerAboveLimit()) return false;
+    const at = (dx, dz) => {
+      const c = this.world.chunks.get(chunkKey(chunk.cx + dx, chunk.cz + dz));
+      return c ? { meshed: c.state === ChunkState.MESHED, vis: c.vis } : null;
+    };
+    return cullGateSkip(chunk.vis, at(1, 0), at(-1, 0), at(0, 1), at(0, -1));
+  }
+
+  // B9 — is any camera (eye) above the build limit? The eye sits ≤ 2 above
+  // pos.y for every pose, so the +2 margin errs on the DRAW side. `players`
+  // is a superset of every rendering camera (dead players included).
+  anyPlayerAboveLimit() {
+    for (const p of this.world.players ?? []) {
+      if ((p?.pos?.y ?? 0) + 2 > MAX_Y) return true;
+    }
+    return false;
+  }
+
+  // "the player NOT inside the chunk's column range" — a chunk the player (or,
+  // as host, ANY player) stands in must always draw: the summary proves
+  // nothing about the camera being inside the volume, only about faces.
+  playerInChunkColumns(chunk) {
+    const pc = this.world.playerChunk;
+    if (pc && pc.cx === chunk.cx && pc.cz === chunk.cz) return true;
+    if (this.game?.net?.isHost) {
+      for (const c of this.game.playerChunkCenters?.() ?? []) {
+        if (c.cx === chunk.cx && c.cz === chunk.cz) return true;
+      }
+    }
+    return false;
+  }
+
+  // The hidden flag is recorded even without a group, so a skip decided while
+  // a chunk is groupless still applies at its next install; _hiddenKeys
+  // mirrors the hidden population for the tick()'s void-plane transition.
+  setChunkCulled(chunk, hidden) {
+    if ((chunk.cullHidden === true) === hidden) return;   // no scene churn
+    chunk.cullHidden = hidden;
+    if (hidden) this._hiddenKeys.add(chunk.key);
+    else this._hiddenKeys.delete(chunk.key);
+    if (!chunk.group) return;
+    if (hidden) this.scene.remove(chunk.group);
+    else this.scene.add(chunk.group);
   }
 
   // Loading progress: meshed fraction of the 7×7 around spawn (01 §15.2)

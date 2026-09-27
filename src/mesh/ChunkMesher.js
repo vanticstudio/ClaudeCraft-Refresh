@@ -8,6 +8,10 @@
 // Runs on the main thread against a 3×3 LIT neighborhood (01 §8.6), and — via
 // loadSnapshot/buildFromSnapshot — inside meshWorker.js from plain typed-array
 // hood snapshots (OVERHAUL §W).
+// B9 — every face the pass DECIDES to draw also folds into a per-chunk
+// VISIBILITY SUMMARY (topExposed columns + a 6-bit border-plane mask, see
+// noteFace/noteCubeRect/noteSprite); meshWorker transfers it and ChunkManager's
+// occlusion gate consumes it. No second cell scan, no geometry change.
 import * as THREE from 'three';
 import { BLOCKS, B, WATERLOGGED, STATE_NIBBLE, WALL_DIR } from '../registry/blocks.js';
 import {
@@ -270,6 +274,7 @@ export class ChunkMesher {
       opaque: raw.opaque && rawToGeometry(raw.opaque),
       cutout: raw.cutout && rawToGeometry(raw.cutout),
       water: raw.water && rawToGeometry(raw.water),
+      vis: raw.vis,   // B9 — the summary rides through to ChunkManager (sync path)
     };
   }
 
@@ -277,6 +282,12 @@ export class ChunkMesher {
     builders.opaque.reset(); builders.cutout.reset(); builders.water.reset();
     this.minY = 127; this.maxY = 0;
     this.center = chunk;
+    // B9 — fresh summary per build: topExposed[z<<4|x] and the sideView mask
+    // (bit order = face order: 0=+X 1=−X 2=+Y 3=−Y 4=+Z 5=−Z). Filled by the
+    // note* helpers AT the face-emission points — never a second scan.
+    this.visTop = new Uint8Array(256);
+    this.visSide = 0;
+    this.visVoidTop = 0;
 
     const blocks = chunk.blocks, states = chunk.states;
     for (let i = 0; i < 32768; i++) {
@@ -379,12 +390,80 @@ export class ChunkMesher {
       opaque: builders.opaque.toRaw(),
       cutout: builders.cutout.toRaw(),
       water: builders.water.toRaw(),
+      // B9 — both mesh paths return the summary with the geometry (the worker
+      // transfers topExposed's buffer, the sync path rides the geos object).
+      vis: { topExposed: this.visTop, sideView: this.visSide, voidTop: this.visVoidTop },
     };
   }
 
   trackY(y0, y1) {
     if (y0 < this.minY) this.minY = Math.max(0, Math.floor(y0));
     if (y1 > this.maxY) this.maxY = Math.min(127, Math.ceil(y1));
+  }
+
+  // ------------------------------------------------------------ B9 visibility
+  // Three note helpers fold the occlusion summary in at the exact points
+  // faces are emitted — the pass already made every visibility decision, so
+  // no second cell scan is needed:
+  //   noteCubeRect — greedy rects, EXACT (plane + extent of the rect known);
+  //   noteFace     — non-greedy face emitters, EXACT (called only for faces
+  //                  that passed their visibility test, i.e. will be drawn);
+  //   noteSprite   — direction-less quads (cross/hash/ladder/dust), CONSERVATIVE:
+  //                  the column counts as exposed and a sprite sitting in a
+  //                  border column marks that border's bits. Extra bits only
+  //                  ever argue for a DRAW — they can never hide a face.
+  // Border rule: a face touches the chunk border plane when its BASE cell is
+  // on the border column/row AND f is the outward direction for that border
+  // (e.g. a +X face counts only from the x=15 column, where its plane is x=16).
+  // VOID PLANE (deliberate refinement of the B9 brief): an up face at y=127
+  // opens into the void ABOVE the build limit — no in-world air cell, no
+  // skylit surface — so it does NOT mark topExposed/sideView; it is reported
+  // as vis.voidTop instead, and ChunkManager's gate only trusts a void-only
+  // chunk while no camera can be above y=127 (flight has no build-limit
+  // clamp). Without the exclusion a fully-solid chunk could never report
+  // zero exposure and the U22 (b) sealed fixture is unconstructible.
+
+  noteFace(x, y, z, f) {
+    if (f === 2) {
+      if (y >= MAX_Y) { this.visVoidTop = 1; return; }   // void plane, see above
+      this.visSide |= 1 << 2;                       // an up face exists anywhere
+      this.visTop[(z << 4) | x] = 1;                // …so its column is exposed
+    } else if (f === 3) {
+      this.visSide |= 1 << 3;                       // a down face exists anywhere
+    } else if (f === 0) {
+      if (x === 15) this.visSide |= 1 << 0;         // plane x=16 = east border
+    } else if (f === 1) {
+      if (x === 0) this.visSide |= 1 << 1;          // plane x=0 = west border
+    } else if (f === 4) {
+      if (z === 15) this.visSide |= 1 << 4;         // plane z=16 = south border
+    } else if (f === 5) {
+      if (z === 0) this.visSide |= 1 << 5;          // plane z=0 = north border
+    }
+  }
+
+  // Greedy variant: the rect spans (w,h) along the tangent axes t1/t2, so an
+  // up rect marks EVERY column it covers as exposed; all other directions use
+  // the base-cell border test of noteFace unchanged. (An up rect sits on ONE
+  // y slice — its axis is the normal — so a single void test covers it.)
+  noteCubeRect(f, x, y, z, t1, t2, w, h) {
+    if (f === 2 && y >= MAX_Y) { this.visVoidTop = 1; return; }   // void plane
+    this.noteFace(x, y, z, f);
+    if (f !== 2) return;
+    const sx = t1 === 0 ? w : t2 === 0 ? h : 1;
+    const sz = t1 === 2 ? w : t2 === 2 ? h : 1;
+    for (let zz = z, ze = z + sz; zz < ze; zz++) {
+      const base = zz << 4;
+      for (let xx = x, xe = x + sx; xx < xe; xx++) this.visTop[base | xx] = 1;
+    }
+  }
+
+  // Conservative summary for quads with no face direction (sprites, dust).
+  noteSprite(x, y, z) {
+    this.visTop[(z << 4) | x] = 1;
+    if (x === 15) this.visSide |= 1 << 0;
+    else if (x === 0) this.visSide |= 1 << 1;
+    if (z === 15) this.visSide |= 1 << 4;
+    else if (z === 0) this.visSide |= 1 << 5;
   }
 
   // ------------------------------------------- OVERHAUL §G — greedy cubes
@@ -540,6 +619,9 @@ export class ChunkMesher {
     }
     builder.quad(verts[0], verts[1], verts[2], verts[3],
       tuple.ao[0] + tuple.ao[2] > tuple.ao[1] + tuple.ao[3]);
+    // B9 — the rect's plane/extent is fully known here: fold it into the
+    // chunk's visibility summary (exact for the greedy pass).
+    this.noteCubeRect(f, x, y, z, t1, t2, w, h);
     // the rect may span many cells along Y (tangent axis 1) — track the full
     // extent or the bounding sphere clips merged cliff faces
     this.trackY(y, y + (t1 === 1 ? w : t2 === 1 ? h : 1));
@@ -711,6 +793,7 @@ export class ChunkMesher {
       );
     }
     builder.quad(verts[0], verts[1], verts[2], verts[3], false);
+    this.noteFace(x, y, z, f);   // B9 — emitFlatFace is only called post-visibility test: exact
     this.trackY(y, y + 1);
   }
 
@@ -723,6 +806,9 @@ export class ChunkMesher {
   }
 
   emitSpriteQuad(builder, tile, p0, p1, p2, p3, r, g) {
+    // B9 — sprites carry no face direction (vertical billboards wearing an up
+    // light normal): count conservatively from their cell.
+    this.noteSprite(Math.floor(p0[0]), Math.floor(p0[1]), Math.floor(p0[2]));
     builder.ensure(4, 6);
     const uvr = this.tileUV, t4 = tile * 4;
     const u0 = uvr[t4], v0 = uvr[t4 + 1], u1 = uvr[t4 + 2], v1 = uvr[t4 + 3];
@@ -832,6 +918,9 @@ export class ChunkMesher {
    * arms. The graph itself comes from dustConnections() — never re-derived here.
    */
   emitDust(x, y, z, st) {
+    // B9 — one conservative note covers the dot, the arms and the UP_SLOPE
+    // risers: every piece of this cell's dust figure stays inside it.
+    this.noteSprite(x, y, z);
     const p = st & 0x0f;                      // §13.3 power, bits0–3
     const dot = DUST_DOT_TILE[p], line = DUST_LINE_TILE[p];
     const [sky, bl] = this.ownLight(x, y, z);
@@ -1115,6 +1204,10 @@ export class ChunkMesher {
     const U0 = uvr[t4], V0 = uvr[t4 + 1], U1 = uvr[t4 + 2], V1 = uvr[t4 + 3];
     const r = Math.round(skyV * 17), g = Math.round(blkV * 17);
     for (let f = 0; f < 6; f++) {
+      // B9 — conservative: this emitter draws all six faces unconditionally
+      // (beacon shell/core, portal pane); an occluded one merely sets a bit
+      // that argues for drawing.
+      this.noteFace(x, y, z, f);
       const n = FACE_NORMALS[f];
       const bcol = Math.round(255 * FACE_SHADE[f]);
       bld.ensure(4, 6);
@@ -1138,6 +1231,8 @@ export class ChunkMesher {
     const U0 = uvr[t4], V0 = uvr[t4 + 1], U1 = uvr[t4 + 2], V1 = uvr[t4 + 3];
     const r = Math.round(skyV * 17), g = Math.round(blkV * 17);
     for (let f = 0; f < 6; f++) {
+      // B9 — conservative, as emitWaterBox: all six faces are emitted.
+      this.noteFace(x, y, z, f);
       const n = FACE_NORMALS[f];
       const shade = FACE_SHADE[f], bcol = Math.round(255 * shade);
       bld.ensure(4, 6);
@@ -1184,6 +1279,9 @@ export class ChunkMesher {
           if (this.occludesAt(x + n[0], y + n[1], z + n[2])) continue;
         }
       }
+      // B9 — every skip (skipTop/skipBottom/flush-cull) is above this line, so
+      // the face WILL be drawn: count it exactly.
+      this.noteFace(x, y, z, f);
       const n = FACE_NORMALS[f];
       const tile = opts.tile ?? this.tileFor(blk, st, f);
       const uvr = this.tileUV, t4 = tile * 4;

@@ -52,6 +52,10 @@ self.onmessage = (e) => {
         transfer.push(r[k].buffer);
       }
     }
+    // B9 — the visibility summary is part of the result; hand over its
+    // buffer zero-copy like the buckets (raw.vis still references it, so the
+    // cloned message on the main thread sees the transferred array).
+    if (raw.vis) transfer.push(raw.vis.topExposed.buffer);
     self.postMessage({
       type: 'meshed', id: msg.id, cx: msg.cx, cz: msg.cz, epoch: msg.epoch, raw,
     }, transfer);
