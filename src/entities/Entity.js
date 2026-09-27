@@ -37,6 +37,7 @@ export class Entity {
     this.width = 0.5; this.height = 0.5;
     this.onGround = false;
     this.hitWall = false;
+    this.stepHeight = 0;                      // vanilla maxUpStep; LivingEntity raises to 0.6
     this.inWater = false;
     this.inLava = false;
     this.onLadder = false;
@@ -178,6 +179,7 @@ export class Entity {
 export class LivingEntity extends Entity {
   constructor(world, x, y, z) {
     super(world, x, y, z);
+    this.stepHeight = 0.6;              // vanilla maxUpStep — walk up lips/slabs, jump for full blocks
     this.health = 20;
     this.maxHealth = 20;
     this.invulnTicks = 0;

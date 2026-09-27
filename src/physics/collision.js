@@ -53,19 +53,45 @@ export function collideAxis(world, box, axis, d, blockUnloaded = false) {
 }
 
 // Axis order fixed Y → X → Z (01 §12). Mutates entity pos/vel/flags.
+//
+// maxUpStep (vanilla Entity.move): a GROUNDED entity whose horizontal motion
+// was clipped retries the move from a box raised by `stepHeight`, then settles
+// back down; whichever variant travelled farther horizontally wins. That is
+// what walks you up a 1/16 lip (dirt path / farmland 15/16 vs a full block) or
+// a slab without jumping, while a full block (1.0 > 0.6) still needs one.
 export function moveEntity(world, entity, dx, dy, dz) {
   const blockUnloaded = !!entity.blockAgainstUnloaded;
   const box = entity.getAABB();
+  const wasOnGround = entity.onGround;
   const cdy = collideAxis(world, box, 1, dy, blockUnloaded); box.translate(0, cdy, 0);
-  const cdx = collideAxis(world, box, 0, dx, blockUnloaded); box.translate(cdx, 0, 0);
-  const cdz = collideAxis(world, box, 2, dz, blockUnloaded); box.translate(0, 0, cdz);
+  let cdx = collideAxis(world, box, 0, dx, blockUnloaded); box.translate(cdx, 0, 0);
+  let cdz = collideAxis(world, box, 2, dz, blockUnloaded); box.translate(0, 0, cdz);
+  let ady = cdy;
+  let onGround = dy < 0 && cdy !== dy;
+  let hitWall = cdx !== dx || cdz !== dz;
+
+  const step = entity.stepHeight ?? 0;
+  if (step > 0 && wasOnGround && (dx !== 0 || dz !== 0) && (cdx !== dx || cdz !== dz)) {
+    const sbox = entity.getAABB();                     // retry from the PRE-move box
+    const sup = collideAxis(world, sbox, 1, step, blockUnloaded); sbox.translate(0, sup, 0);
+    const sdx = collideAxis(world, sbox, 0, dx, blockUnloaded); sbox.translate(sdx, 0, 0);
+    const sdz = collideAxis(world, sbox, 2, dz, blockUnloaded); sbox.translate(0, 0, sdz);
+    const sdy = collideAxis(world, sbox, 1, -sup, blockUnloaded); sbox.translate(0, sdy, 0);
+    if (sdx * sdx + sdz * sdz > cdx * cdx + cdz * cdz) {
+      box.copy(sbox);
+      cdx = sdx; cdz = sdz; ady = sup + sdy;           // the step consumed the Y move
+      onGround = dy < 0 && ady !== dy;                 // vanilla setOnGround rule
+      hitWall = cdx !== dx || cdz !== dz;
+    }
+  }
+
   entity.setPosFromAABB(box);
-  entity.onGround = dy < 0 && cdy !== dy;
-  entity.hitWall = cdx !== dx || cdz !== dz;
+  entity.onGround = onGround;
+  entity.hitWall = hitWall;
   if (cdx !== dx) entity.vel.x = 0;
-  if (cdy !== dy) entity.vel.y = 0;   // fall-damage hook reads pre-zero vel upstream
+  if (ady !== dy) entity.vel.y = 0;   // fall-damage hook reads pre-zero vel upstream
   if (cdz !== dz) entity.vel.z = 0;
-  return { cdx, cdy, cdz };
+  return { cdx, cdy: ady, cdz };
 }
 
 // 01 §12's `ceil(dist / 0.5)` projectile sub-step lived here as
