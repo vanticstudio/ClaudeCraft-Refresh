@@ -3,7 +3,7 @@
 import { LivingEntity, lerp, lerpAngle } from './Entity.js';
 import { buildHumanoid, animateHumanoid } from './RemotePlayer.js';   // 14 §8.4 — shared model
 import { BLOCKS, B, matOf, isWaterCellAt } from '../registry/blocks.js';
-import { ITEMS } from '../registry/items.js';
+import { ITEMS, idOf } from '../registry/items.js';
 import { collidesAny, overlapsBlockId } from '../physics/collision.js';
 import { AABB } from '../math/aabb.js';
 import { emitSound, at, audio } from '../audio/engine.js';
@@ -20,6 +20,8 @@ import { epfMultiplier, rollThorns, fireTicksAfterProtection } from '../items/ef
 import { tickPortal } from '../world/Portal.js';
 import { EFFECT, tickEffects, effectLevel, addEffect, applyInstant, clearEffects, serializeEffects, applyEffectsData } from '../status/effects.js';
 import { POTIONS } from '../status/potions.js';
+import { totemSave, isTotem, setTotemId } from '../items/totem.js';   // B4 — totem
+setTotemId(idOf('totem_of_undying'));   // B4 — bind the totem id once
 
 const DEG = Math.PI / 180;
 
@@ -1045,12 +1047,32 @@ export class Player extends LivingEntity {
 
   // -------------------------------------------------- damage / death (03 §20)
 
-  beforeHurt(amount, source) {
+  beforeHurt(amount, source, opts = {}) {
     // 14 §4.2 — on a CLIENT, health is host-authoritative (never predicted); the
     // local player takes no local damage (playerState overwrites it).
     if (this.world.game?.net?.isClient) return false;
     // 18 §4.1 — void is the ONE source creative does not nullify.
     if (this.creative && source !== 'void') return false;
+    // B4 — shield block (19-BUILDOUT §B4): `blocking` (set in Interaction.tick:
+    // shield in either hand + RMB held) negates front-arc melee/projectile
+    // damage entirely. Axe hits disable the shield for 100 ticks (MC parity);
+    // blocking costs 1 durability on the shielding stack (damageIn's path).
+    if (this.blocking && LivingEntity.ARMOR_SOURCES.has(source) &&
+        this.world.time >= (this.shieldDisabledUntil ?? 0)) {
+      const dx = opts.dirX, dz = opts.dirZ;
+      if (dx != null && dz != null) {
+        const lookX = -Math.sin(this.yaw), lookZ = -Math.cos(this.yaw);
+        const facing = lookX * -dx + lookZ * -dz;        // >0 = attacker in front
+        if (facing > 0.1) {
+          const shieldHand = ITEMS.get(this.stackIn('off')?.id)?.kind === 'shield' ? 'off'
+            : ITEMS.get(this.heldStack?.id)?.kind === 'shield' ? 'main' : null;
+          if (shieldHand) this.damageIn(shieldHand, 1);
+          const axe = ITEMS.get(opts.attacker?.heldItem?.().id);
+          if (axe?.toolClass === 'axe') this.shieldDisabledUntil = this.world.time + 100;
+          return false;                                    // blocked — no damage, no knockback
+        }
+      }
+    }
     return true;
   }
 
@@ -1114,6 +1136,25 @@ export class Player extends LivingEntity {
     }
     if (!this.isNetPlayer) audio.duck();   // §4.3: music steps aside while YOU panic
     this.world.game?.onPlayerHurt?.(dmg, source);
+  }
+
+  // B4 — Totem of Undying: die() is the last exit before death is final; a
+  // totem in the OFFHAND consumes itself and undoes it (1 HP + Absorption II
+  // + Regeneration II + fire out). totemSave is pure (U17 pins the contract).
+  die(source, opts) {
+    if (totemSave(this, this.world)) {
+      // totem-pop feedback: gold particle burst + the levelup chime reused
+      const p = this.world.game?.particles;
+      if (p?.spawn && p?.colored) {
+        for (let i = 0; i < 24; i++) {
+          p.spawn(p.colored(0xffd54a, 0.1), this.pos.x, this.pos.y + 1, this.pos.z,
+            (Math.random() - 0.5) * 0.4, Math.random() * 0.3, (Math.random() - 0.5) * 0.4, 16, 0);
+        }
+      }
+      this._selfSound('player.levelup');     // reuse the existing levelup chime
+      return;                                // NOT dead — skip onDeath entirely
+    }
+    super.die(source, opts);
   }
 
   onDeath() {

@@ -24,6 +24,9 @@ import {
 import { tryIgnitePortal } from '../world/Portal.js';
 import { getDimension } from '../world/dimensions.js';
 import { faceToIndex as faceIndex } from '../net/protocol.js';   // 14 — face byte for blockEdit/useBlock
+import { FishingBobber } from '../entities/FishingBobber.js';    // B4 — fishing
+import { rollCatch } from '../items/fishing.js';
+import { randomEnchantedBook } from '../items/enchanting.js';    // B4 — treasure books
 
 const REPLACEABLE_TARGET = id => BLOCKS[id]?.replaceable;
 
@@ -172,6 +175,12 @@ export class Interaction {
 
     // swap offhand (08 §7.2; AMENDS 01 §15.1 / 03 §3)
     if (input.pressed.has(KEYBINDS.swapOffhand)) this.swapOffhand();
+
+    // B4 — shield blocking state: a shield in either hand + RMB held (and not
+    // busy using another item) raises the shield; Player.beforeHurt consumes it
+    const shieldUp = (p.stackIn('off') && ITEMS.get(p.stackIn('off').id)?.kind === 'shield') ||
+      (p.heldStack && ITEMS.get(p.heldStack.id)?.kind === 'shield');
+    p.blocking = shieldUp && !!input.mouseRight && !p.usingItem;
 
     // middle-click pick block (18 §5.4; AMENDS 06 §14.2)
     if (input.middlePressed && p.creative && this.currentHit) {
@@ -859,6 +868,8 @@ export class Interaction {
     if (held.kind === 'eye_of_ender') return this.useEyeOfEnder(hand, hit);
     // 13-BOSSES §3.4 — end crystal places a crystal entity on obsidian/bedrock only.
     if (held.kind === 'end_crystal') return this.useEndCrystal(hand, hit);
+    // B4 — fishing rod: cast / reel (self-use, no block target)
+    if (held.kind === 'rod') return this.useRod(hand, held);
 
     // 3: placeable block. Per §7.3 a place that FAILS still consumes the
     // attempt and blocks the offhand — only "no block to place against" passes.
@@ -872,8 +883,50 @@ export class Interaction {
   // §7.3 step 4 — self-use items, not tied to a block. 09's potion drink lands
   // here. Returns true = done (even when the action fails, per §7.3), false =
   // this hand has no self-use → PASS.
+  // B4 — fishing rod state machine (§B4): cast spawns a bobber along the look
+  // ray; the second RMB reels — a bite within the 5-tick window rolls the
+  // catch (items/fishing.js, pure) and drops it at the player's feet. Rod
+  // durability: 1 per catch. A reel without a bite is free.
+  useRod(hand, held) {
+    const p = this.player, g = this.game;
+    const out = p.fishingBobber;
+    if (out && !out.dead) {
+      const result = out.reel();                       // marks the bobber dead
+      p.fishingBobber = null;
+      if (result === 'bite') {
+        const w = g.world;
+        // deterministic-per-catch rng (time+position); distribution pinned by U17
+        let s = (w.time * 2654435761 ^ Math.floor(p.pos.x * 16) ^ Math.floor(p.pos.z * 16)) & 0x7fffffff;
+        const rng = () => { s = (s * 1103515245 + 12345) & 0x7fffffff; return s / 0x7fffffff; };
+        const catchRoll = rollCatch(rng, out.openWater);
+        const stack = { id: idOf(catchRoll.item), count: catchRoll.count };
+        if (catchRoll.meta === 'enchanted') {
+          const book = randomEnchantedBook(rng, 15 + Math.floor(rng() * 15), true);
+          if (book) Object.assign(stack, book);
+        } else if (catchRoll.meta === 'damaged') {
+          stack.damage = Math.floor((ITEMS.get(stack.id)?.durability ?? 0) / 2);
+        }
+        g.dropStackAt(stack, p.pos.x, p.pos.y + 1, p.pos.z);
+        p.damageIn(hand, 1);
+      }
+      return true;
+    }
+    // cast: bobber flies from the eye along the look ray; open-water bonus is
+    // approximated at cast time from the hook's landing neighborhood once it
+    // floats (the bobber re-checks and downgrades itself when boxed in)
+    const e = this.eyePos(), d = this.lookDir();
+    const bobber = new FishingBobber(g.world, e.x + d.x * 0.6, e.y + d.y * 0.6 - 0.1, e.z + d.z * 0.6,
+      d.x * 0.9, d.y * 0.9 + 0.06, d.z * 0.9, p, true);
+    g.entities.add(bobber);
+    p.fishingBobber = bobber;
+    return true;
+  }
+
   useSelf(hand, held) {
     const p = this.player;
+    // B4 — fishing rod: RMB toggles cast ↔ reel (singleplayer/host only; the
+    // client branch above returns before this pipeline ever runs)
+    if (held.kind === 'rod') return this.useRod(hand, held);
     if (held.kind === 'food') {
       // AMENDS 06 §15.1 / 18 §4.3 — in creative, eating is a no-op that neither
       // heals nor consumes. Stated explicitly rather than leaning on the frozen

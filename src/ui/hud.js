@@ -115,6 +115,7 @@ export class Hud {
         <div id="effect-stack"></div>
         <div id="offhand-slot"></div>
         <div id="hotbar"></div>
+        <div id="held-tool"></div>
         <div id="item-name"></div>
         <div id="toast"></div>
         <div id="sleep-fade"></div>
@@ -132,6 +133,7 @@ export class Hud {
       xpFill: document.getElementById('xp-fill'),
       xpLevel: document.getElementById('xp-level'),
       hotbar: document.getElementById('hotbar'),
+      heldTool: document.getElementById('held-tool'),
       offhand: document.getElementById('offhand-slot'),
       itemName: document.getElementById('item-name'),
       toast: document.getElementById('toast'),
@@ -305,6 +307,7 @@ export class Hud {
   update() {
     const p = this.game.player;
     if (!p) return;
+    this.updateHeldTool(p);   // B4 — clock dial / compass needle above the hotbar
 
     // 18 §1.4 — setGameMode fires Game.onGameModeChanged → rebuild(), but that is
     // not the only writer of the field: a save load (03 §2.4 deserialize) and a
@@ -423,8 +426,42 @@ export class Hud {
     }
   }
 
-  updateHotbar(p) {
-    for (let i = 0; i < 9; i++) {
+  // B4 — held-tool strip (19-BUILDOUT §B4): a clock in hand shows the day
+  // dial (4 atlas tiles, phase = quarter day); a compass shows the needle
+  // swinging toward world spawn. Hidden for any other held stack.
+  updateHeldTool(p) {
+    const el = this.el.heldTool;
+    const item = p.heldStack && ITEMS.get(p.heldStack.id);
+    const kind = item?.kind;
+    if (kind !== 'clock' && kind !== 'compass') {
+      if (this._heldKind) { el.style.display = 'none'; this._heldKind = null; }
+      return;
+    }
+    if (this._heldKind !== kind) { this._heldKind = kind; el.style.display = 'block'; el.textContent = ''; }
+    if (kind === 'clock') {
+      const day = ((this.game.world.time % 24000) + 24000) % 24000;
+      const phase = Math.floor(day / 6000) % 4;
+      if (phase !== this._clockPhase) {
+        this._clockPhase = phase;
+        const tile = this.game.atlas.TILE['item_clock_' + phase];
+        if (tile !== undefined) iconCss(el, tile);
+      }
+    } else {
+      const spawn = this.game.worldSpawn ?? { x: 0, z: 0 };
+      // yaw that would face the spawn, relative to the player's yaw — the tile
+      // needle paints pointing "up" (= the look direction)
+      const yawToSpawn = Math.atan2(-(spawn.x - p.pos.x), -(spawn.z - p.pos.z));
+      const rel = (yawToSpawn - p.yaw) * 180 / Math.PI;
+      if (typeof rel === 'number' && Number.isFinite(rel)) {
+        el.style.transform = `rotate(${rel.toFixed(1)}deg)`;
+        const tile = this.game.atlas.TILE['item_compass'];
+        if (this._compassTile === undefined && tile !== undefined) iconCss(el, tile);
+        this._compassTile = tile;
+      }
+    }
+  }
+
+  updateHotbar(p) {    for (let i = 0; i < 9; i++) {
       const s = p.inventory[i];
       // 08 §11 — the glint frame joins the signature ONLY for an enchanted
       // stack, so it re-composites at 4 Hz while every plain slot keeps its

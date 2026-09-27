@@ -1711,6 +1711,78 @@ async function checkDungeons() {
   }
 }
 
+// ==================================================================== U17
+// B4 — new items & systems: fishing catch-roll distribution (pure), totem
+// save contract (pure), and new-item registry/recipe integrity.
+async function checkB4Systems() {
+  const fails = [];
+  const notes = [];
+  globalThis.localStorage = globalThis.localStorage ?? {
+    getItem: () => null, setItem: () => {}, removeItem: () => {},
+  };
+  try {
+    const { rollCatch, biteDelay } = await imp('items/fishing.js');
+    const { totemSave, isTotem, setTotemId } = await imp('items/totem.js');
+    const { ITEMS, RECIPES, idOf } = await imp('registry/items.js');
+
+    // --- fishing distribution ---
+    setTotemId(idOf('totem_of_undying'));
+    let s = 12345;
+    const rng = () => { s = (s * 1103515245 + 12345) & 0x7fffffff; return s / 0x7fffffff; };
+    const tally = { fish: 0, treasure: 0, junk: 0 };
+    const species = new Set();
+    const N = 4000;
+    for (let i = 0; i < N; i++) {
+      const c = rollCatch(rng, false);
+      tally[c.category]++;
+      if (c.category === 'fish') species.add(c.item);
+      if (!ITEMS.has(idOf(c.item))) fails.push(`fishing: rolled unknown item '${c.item}'`);
+    }
+    const fishPct = tally.fish / N;
+    if (fishPct < 0.82 || fishPct > 0.88) fails.push(`fishing: fish rate ${(fishPct * 100).toFixed(1)}% outside 82–88%`);
+    if (species.size < 4) fails.push('fishing: not all four fish species appeared');
+    // open water shifts treasure up: compare two large batches
+    let s2 = 999;
+    const rng2 = () => { s2 = (s2 * 1103515245 + 12345) & 0x7fffffff; return s2 / 0x7fffffff; };
+    let trOpen = 0, trClosed = 0;
+    for (let i = 0; i < N; i++) { if (rollCatch(rng2, true).category === 'treasure') trOpen++; if (rollCatch(rng2, false).category === 'treasure') trClosed++; }
+    if (trOpen <= trClosed) fails.push(`fishing: open-water bonus did not raise treasure rate (${trOpen} vs ${trClosed})`);
+    if (biteDelay(() => 0.5, true) >= biteDelay(() => 0.5, false)) fails.push('fishing: open water must shorten the bite delay');
+
+    // --- totem contract ---
+    const mkEntity = (withTotem) => ({
+      effects: new Map(), absorption: 0, health: 0, dead: true, fireTicks: 7,
+      offhand: withTotem ? { id: idOf('totem_of_undying'), count: 1 } : null,
+      onTotemSave: null,
+    });
+    const e1 = mkEntity(true);
+    if (!totemSave(e1)) fails.push('totem: totemSave returned false with a totem in the offhand');
+    if (e1.health !== 1 || e1.dead !== false || e1.offhand !== null || e1.fireTicks !== 0) {
+      fails.push('totem: state after save wrong (health/dead/offhand/fire)');
+    }
+    if (!e1.effects.has(22 /* ABSORPTION */) || e1.absorption !== 8) fails.push('totem: Absorption II not granted (8 pt pool)');
+    if (!e1.effects.has(10 /* REGENERATION */)) fails.push('totem: Regeneration II not granted');
+    if (totemSave(mkEntity(false))) fails.push('totem: totemSave must return false without a totem');
+    if (totemSave(mkEntity(false))) { /* unreachable */ }
+
+    // --- registry integrity ---
+    for (const [name, kind] of [['fishing_rod', 'rod'], ['shield', 'shield'], ['totem_of_undying', 'totem'], ['clock', 'clock'], ['compass', 'compass'], ['raw_cod', 'food'], ['pufferfish', 'food']]) {
+      const it = ITEMS.get(idOf(name));
+      if (!it || it.kind !== kind) fails.push(`registry: item '${name}' missing or wrong kind`);
+    }
+    const ids = new Set([...ITEMS.keys()]);
+    for (const r of RECIPES) {
+      if (!ids.has(r.output.id)) fails.push(`recipe output id ${r.output.id} missing from ITEMS`);
+      const ing = r.shaped ? Object.values(r.key).flat() : r.ingredients.flat();
+      for (const i of ing) if (!ids.has(i)) fails.push(`recipe ingredient id ${i} missing from ITEMS`);
+    }
+    notes.push(`distribution pinned over ${N} rolls; totem contract + ${RECIPES.length} recipes verified`);
+    report('U17', 'B4 systems — fishing rolls, totem save, item registry', fails, notes);
+  } catch (e) {
+    report('U17', 'B4 systems', ['harness threw: ' + (e.stack || e).split('\n').slice(0, 3).join(' | ')]);
+  }
+}
+
 // ==================================================================== driver
 const imp = p => import(pathToFileURL(join(SRC, p)).href);
 
@@ -1748,6 +1820,7 @@ async function main() {
   await checkLightParity();
   await checkPathfinding();
   await checkDungeons();
+  await checkB4Systems();
   finish();
 }
 

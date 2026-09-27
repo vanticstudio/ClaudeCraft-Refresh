@@ -1968,3 +1968,81 @@ P.item_sugar_cane = P.sugar_cane;
 for (const key of Object.keys(P)) {
   if (key.startsWith('item_')) P[key] = beveled(P[key]);
 }
+
+// ========================= B4 — fishing, shield, totem, clock, compass =====
+const FROD = '#8a6a3a', FROD_L = '#a8854a', LINE = '#d8d8d8';
+const FISH_BODY = (c, x, y, base, dark, belly, tail) => {
+  for (let i = 0; i < 9; i++) { px(c, x, y, 4 + i, 7 - Math.min(i, 2), base); px(c, x, y, 4 + i, 8 + Math.min(i, 2), base); }
+  for (let i = 0; i < 9; i++) px(c, x, y, 4 + i, 8, base);
+  px(c, x, y, 5, 7, belly); px(c, x, y, 6, 9, belly); px(c, x, y, 5, 9, belly);
+  px(c, x, y, 3, 8, tail); px(c, x, y, 2, 7, tail); px(c, x, y, 2, 9, tail);
+  px(c, x, y, 12, 6, dark); px(c, x, y, 11, 6, dark);
+  px(c, x, y, 10, 7, '#101018');                                    // eye
+  px(c, x, y, 10, 10, dark); px(c, x, y, 8, 11, dark);
+};
+P.item_fish_cod = (c, x, y, r) => FISH_BODY(c, x, y, '#8a9a7a', '#6a7a58', '#c8c8b0', '#7a8a6a');
+P.item_fish_salmon = (c, x, y, r) => FISH_BODY(c, x, y, '#c05a4a', '#9a4038', '#e0a08a', '#a84838');
+P.item_fish_tropical = (c, x, y, r) => {
+  FISH_BODY(c, x, y, '#e8b83a', '#c8902a', '#f0d080', '#d8a030');
+  for (let i = 0; i < 3; i++) { px(c, x, y, 6 + i * 2, 6, '#4a6ad8'); px(c, x, y, 7 + i * 2, 10, '#4a6ad8'); }
+};
+P.item_fish_pufferfish = (c, x, y, r) => {
+  for (let i = 0; i < 8; i++) { px(c, x, y, 4 + i, 5, '#d8b84a'); px(c, x, y, 4 + i, 11, '#d8b84a'); }
+  for (let i = 0; i < 6; i++) { px(c, x, y, 3 + i, 6, '#e8cc68'); px(c, x, y, 3 + i, 10, '#e8cc68'); }
+  for (let i = 0; i < 8; i++) px(c, x, y, 3 + i, 7 + (i % 2), '#e8cc68');
+  for (let i = 0; i < 8; i++) { px(c, x, y, 3 + i, 4, '#a8862a'); px(c, x, y, 3 + i, 12, '#a8862a'); }
+  px(c, x, y, 5, 3, '#a8862a'); px(c, x, y, 12, 3, '#a8862a'); px(c, x, y, 5, 13, '#a8862a'); px(c, x, y, 12, 13, '#a8862a');
+  px(c, x, y, 6, 8, '#101018'); px(c, x, y, 10, 8, '#101018');
+  px(c, x, y, 2, 8, '#e8cc68'); px(c, x, y, 13, 8, '#e8cc68');
+};
+P.item_fishing_rod = (c, x, y, r) => {
+  for (let i = 0; i < 11; i++) { px(c, x, y, 3 + i, 13 - i, FROD); px(c, x, y, 4 + i, 13 - i, FROD_L); }
+  for (let i = 0; i < 7; i++) px(c, x, y, 13, 5 + i, LINE);          // line drop
+  px(c, x, y, 12, 12, '#d93a3a'); px(c, x, y, 11, 12, '#f0f0f0');    // bobber tip
+  px(c, x, y, 3, 10, '#6a5030'); px(c, x, y, 4, 11, '#6a5030');      // reel
+};
+P.item_shield = (c, x, y, r) => {
+  for (let row = 0; row < 12; row++) {
+    const w = row < 5 ? 10 : 10 - (row - 4) * 2;
+    const off = (16 - w) >> 1;
+    for (let i = 0; i < w; i++) px(c, x, y, off + i, 2 + row, row % 4 === 3 ? '#8a6a3a' : '#b0b0b8');
+  }
+  px(c, x, y, 6, 5, '#d8d8e0'); px(c, x, y, 9, 5, '#d8d8e0');        // iron boss
+  px(c, x, y, 7, 6, '#e8e8f0'); px(c, x, y, 8, 6, '#e8e8f0');
+  px(c, x, y, 5, 1, '#6a5030'); px(c, x, y, 10, 1, '#6a5030');       // handle
+};
+P.item_totem = (c, x, y, r) => {
+  for (let yy = 3; yy < 14; yy++) for (let xx = 5; xx < 11; xx++) px(c, x, y, xx, yy, '#3a8a4a');
+  px(c, x, y, 5, 3, '#2a6a3a'); px(c, x, y, 10, 3, '#2a6a3a');
+  px(c, x, y, 6, 5, '#e8e0a0'); px(c, x, y, 9, 5, '#e8e0a0');        // eyes
+  px(c, x, y, 6, 6, '#c8a028'); px(c, x, y, 9, 6, '#c8a028');
+  px(c, x, y, 7, 8, '#c8a028'); px(c, x, y, 8, 8, '#c8a028');        // nose
+  px(c, x, y, 6, 10, '#e8e0a0'); px(c, x, y, 9, 10, '#e8e0a0');      // lower eyes
+  px(c, x, y, 4, 6, '#c8a028'); px(c, x, y, 11, 6, '#c8a028');       // ears/wings
+  px(c, x, y, 4, 9, '#c8a028'); px(c, x, y, 11, 9, '#c8a028');
+  px(c, x, y, 6, 14, '#c8a028'); px(c, x, y, 9, 14, '#c8a028');      // base
+};
+// clock dial: 4 phases — the sun/moon marker sweeps across the face
+const CLOCK_DIAL = (c, x, y, phase) => {
+  for (let yy = 3; yy < 14; yy++) for (let xx = 3; xx < 14; xx++) {
+    const dx = xx - 8, dy = yy - 8;
+    if (dx * dx + dy * dy <= 25) px(c, x, y, xx, yy, '#e8d060');
+  }
+  const mx = Math.round(8 + Math.cos(phase * Math.PI / 2) * 4);
+  const my = Math.round(8 + Math.sin(phase * Math.PI / 2) * 4);
+  px(c, x, y, mx, my, phase % 4 < 2 ? '#38a8e8' : '#203a68');        // day sky / night
+  px(c, x, y, 7, 7, '#8a7020'); px(c, x, y, 8, 8, '#8a7020');
+};
+P.item_clock_0 = (c, x, y, r) => CLOCK_DIAL(c, x, y, 0);
+P.item_clock_1 = (c, x, y, r) => CLOCK_DIAL(c, x, y, 1);
+P.item_clock_2 = (c, x, y, r) => CLOCK_DIAL(c, x, y, 2);
+P.item_clock_3 = (c, x, y, r) => CLOCK_DIAL(c, x, y, 3);
+P.item_compass = (c, x, y, r) => {
+  for (let yy = 3; yy < 14; yy++) for (let xx = 3; xx < 14; xx++) {
+    const dx = xx - 8, dy = yy - 8;
+    if (dx * dx + dy * dy <= 25) px(c, x, y, xx, yy, '#b8b8c0');
+  }
+  px(c, x, y, 8, 4, '#c83a3a'); px(c, x, y, 8, 5, '#c83a3a');        // red needle (N)
+  px(c, x, y, 8, 11, '#e8e8f0'); px(c, x, y, 8, 12, '#e8e8f0');      // white tail
+  px(c, x, y, 8, 8, '#3a3a44');
+};

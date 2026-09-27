@@ -533,3 +533,24 @@ export function furnaceAccepts(profile, itemId) {
 export function fuelValue(itemId) {
   return ITEMS.get(itemId)?.fuel ?? 0;
 }
+
+// ========================= B4 — fishing, shield, totem, clock, compass =====
+// 19-BUILDOUT §B4. Sprites are painted per-name in tilePainters.js (item_*
+// prefix auto-joins ITEM_TILES). Fish are raw-only: no smelting variants
+// (documented deviation — cooking fish is a follow-up).
+defItem(453, 'raw_cod', { kind: 'food', hunger: 2, saturation: 0.4, displayName: 'Raw Cod', sprite: 'item_fish_cod' });
+defItem(454, 'raw_salmon', { kind: 'food', hunger: 2, saturation: 0.4, displayName: 'Raw Salmon', sprite: 'item_fish_salmon' });
+defItem(455, 'tropical_fish', { kind: 'food', hunger: 1, saturation: 0.2, displayName: 'Tropical Fish', sprite: 'item_fish_tropical' });
+defItem(456, 'pufferfish', { kind: 'food', hunger: 1, saturation: 0.2, poisonChance: 1, displayName: 'Pufferfish', sprite: 'item_fish_pufferfish' });
+defItem(457, 'fishing_rod', { kind: 'rod', stack: 1, durability: 64, attackDamage: 1, displayName: 'Fishing Rod', sprite: 'item_fishing_rod' });
+defItem(458, 'shield', { kind: 'shield', stack: 1, durability: 336, displayName: 'Shield', sprite: 'item_shield' });
+defItem(459, 'totem_of_undying', { kind: 'totem', stack: 1, displayName: 'Totem of Undying', sprite: 'item_totem' });
+defItem(460, 'clock', { kind: 'clock', stack: 1, displayName: 'Clock', sprite: 'item_clock_0' });
+defItem(461, 'compass', { kind: 'compass', stack: 1, displayName: 'Compass', sprite: 'item_compass' });
+
+// B4 recipes — rod/shield/clock/compass craftable; the totem is dungeon loot
+// only (B5's dungeon pool is extended in endLoot.js).
+shaped(457, 1, ['.S', 'ST', '.T'], { S: [318], T: [327] });            // stick diag + string
+shaped(458, 1, ['PIP', 'PIP', '.P.'], { P: PLANKS, I: [322] });        // planks + iron boss
+shaped(460, 1, ['G.R', 'GGR', 'G.R'], { G: [324], R: [342] });         // gold ring + redstone (3D-ish grid)
+shaped(461, 1, ['.I.', 'IRC', '.I.'], { I: [322], R: [342], C: [B.COBBLESTONE] });

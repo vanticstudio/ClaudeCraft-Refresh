@@ -30,7 +30,7 @@ const POOLS = {
     ['@ench_diamond', 21, 1, 1], ['@ench_iron', 21, 1, 1],
   ] },
   // B5 — overworld dungeon chests: mid-tier utility + a chance at early enchants
-  dungeon: { rolls: [3, 6], pool: [
+  dungeon: { rolls: [3, 6], guaranteed: 'totem_of_undying', pool: [
     ['bread', 15, 1, 4], ['apple', 12, 1, 3], ['iron_ingot', 10, 1, 4], ['gold_ingot', 6, 1, 3],
     ['redstone', 10, 2, 6], ['string', 10, 1, 4], ['bone', 10, 1, 4], ['rotten_flesh', 8, 1, 3],
     ['bucket', 5, 1, 1], ['iron_pickaxe', 4, 1, 1], ['iron_sword', 4, 1, 1],
