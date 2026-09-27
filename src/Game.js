@@ -42,6 +42,7 @@ import { forgetFireInChunk, clearFireOrigins } from './world/fire.js';
 import { RedstoneEngine } from './redstone/RedstoneEngine.js';
 import { RedstoneComponents, installComponentHooks } from './redstone/components.js';
 import { installBossHooks } from './world/bossHooks.js';   // 13-BOSSES
+import { RaidManager } from './world/Raid.js';   // B6 — raid system (tickRaids)
 import { RedstoneContainers } from './redstone/containersRedstone.js';
 import { getDimension } from './world/dimensions.js';
 import { findOrCreatePortal } from './world/Portal.js';
@@ -171,6 +172,7 @@ export class Game {
     this.dayNight = new DayNight(this);
     this.particles = new Particles(this.scene);
     this.mobSpawner = new MobSpawner(this);
+    this.raidManager = new RaidManager(this);   // B6 — raids tick with the villages (tickRaids)
     // 07-REDSTONE §5 — the circuit engine + component/container logic. Hooks are
     // attached to block defs once (idempotent across worlds).
     this.redstone = new RedstoneEngine(this.world);
@@ -237,6 +239,10 @@ export class Game {
     // survives every world; nothing else clears it, so a boss bar from the world
     // being torn down would stay frozen on the HUD for the rest of the session.
     this.ui?.bossBar?.clearAll?.();
+    // B6 §4 — the raid machine map is runtime-only state keyed by the OLD
+    // world's meta objects; dropping it keeps a new world from inheriting
+    // machines that point at torn-down villages (villages itself is nulled below).
+    this.raidManager = null;
     if (this.chunkManager && this.world) {
       this.chunkManager.dispose();
       for (const chunk of this.world.chunks.values()) this.chunkManager.disposeChunkMeshes(chunk);
@@ -456,6 +462,7 @@ export class Game {
       this.dayNight.tick();
       this.mobSpawner?.tick();
       this.tickVillages();
+      this.raidManager?.tick();   // B6 — raid waves + omen gating (no-op before startWorld)
       // 13-BOSSES §7.1 — the dragon fight (dragon + parts + respawn ritual) ticks
       // outside the EntityManager while the End is active (AMENDS 05 §1).
       if (this.world.activeDim === 2) this.endFight?.tick(this.world.seedString);
@@ -1417,6 +1424,9 @@ export class Game {
       this.villages ??= new Map();
       const key = record.villageMeta.anchor.join(',');
       if (!this.villages.has(key)) this.villages.set(key, record.villageMeta);
+      // B6 §4 — a saved meta.raid rides the record; the raid machine re-adopts
+      // it lazily on the next tickRaids pass (machineFor rebuilds the runtime
+      // machine and re-registers re-hydrated raiders by raidId).
     }
     if (record.entities) {
       // 01 §16 — restoreEntity constructs real entity classes, so one truncated

@@ -9,7 +9,7 @@ import { splitmix32 } from '../../math/rng.js';
 import { rng32 } from '../../items/xp.js';
 import { randomEnchantedBook, selectEnchants, applyOffer } from '../../items/enchanting.js';
 import { CATALOG } from '../../items/enchants.js';
-import { EFFECT, hasEffect } from '../../status/effects.js';
+import { EFFECT, hasEffect, effectLevel } from '../../status/effects.js';   // B6 §5 — HERO discount
 import { cloneStack } from '../../items/tags.js';
 import { idOf } from '../../registry/items.js';
 import { emitSound, at } from '../../audio/engine.js';
@@ -210,7 +210,16 @@ export class Villager extends Mob {
     // §9.1 — a tier's rows unlock only when the villager reaches it. Trades saved
     // before `lvl` existed have none, so an absent field reads as Novice.
     if (!t || (t.lvl ?? 1) > this.level || t.uses >= t.maxUses) return false;
-    const cost = a => a.id === EMERALD ? Math.max(1, a.count + t.specialPrice) : a.count;
+    // B6 §5 — HERO of the Village: % discount on emerald buys. Vanilla's
+    // per-level gcd table is not modeled here (no reputation system); instead
+    // HERO level L shaves L × 15% off the emerald cost, floor 1 — stacking
+    // AFTER the cure discount so both read in one place (doTrade, not
+    // refreshPrices: the specialPrice field is the villager's own state, the
+    // hero discount is a per-buyer live read off the trading player).
+    const heroL = player ? effectLevel(player, EFFECT.HERO) : 0;
+    const cost = a => a.id === EMERALD
+      ? Math.max(1, Math.round((a.count + t.specialPrice) * (1 - Math.min(0.45, 0.15 * heroL))))
+      : a.count;
     const has = a => !a || countItem(player, a.id) >= cost(a);
     if (!has(t.buyA) || !has(t.buyB)) return false;
     takeItem(player, t.buyA.id, cost(t.buyA));

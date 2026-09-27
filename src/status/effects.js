@@ -20,13 +20,19 @@
 //   witherImmune, effectImmune.
 
 // §1.3 — vanilla Java numeric ids (stable in saves). Reserved-but-unimplemented:
-// 9 nausea, 15 blindness, 21 health_boost, 23 saturation, 24 glowing, 26/27 luck.
+// 9 nausea, 15 blindness, 21 health_boost, 23 saturation, 24 glowing, 26/27 luck,
+// 29 conduit_power, 30 dolphins_grace.
 export const EFFECT = {
   SPEED: 1, SLOWNESS: 2, HASTE: 3, MINING_FATIGUE: 4, STRENGTH: 5,
   INSTANT_HEALTH: 6, INSTANT_DAMAGE: 7, JUMP_BOOST: 8, REGENERATION: 10,
   RESISTANCE: 11, FIRE_RESISTANCE: 12, WATER_BREATHING: 13, INVISIBILITY: 14,
   NIGHT_VISION: 16, HUNGER: 17, WEAKNESS: 18, POISON: 19, WITHER: 20,
   ABSORPTION: 22, LEVITATION: 25, SLOW_FALLING: 28,
+  // B6 §1 — raid markers (vanilla Java ids). Markers only: no periodic action
+  // and no onEffectAdded/Removed hook — consumers read hasEffect live (the raid
+  // trigger in Raid.js, the trade discount in villager.js) and the HUD's effect
+  // stack renders them from EFFECT_META below like any other icon.
+  BAD_OMEN: 31, HERO: 32,
 };
 
 // §3 catalog — name, display, color (Java 1.20 particle/potion palette), sign.
@@ -49,9 +55,12 @@ export const EFFECT_META = {
   18: { name: 'weakness', display: 'Weakness', color: 0x484D48, positive: false },
   19: { name: 'poison', display: 'Poison', color: 0x87A363, positive: false },
   20: { name: 'wither', display: 'Wither', color: 0x352A27, positive: false },
-  22: { name: 'absorption', display: 'Absorption', color: 0x2552A5, positive: true },
-  25: { name: 'levitation', display: 'Levitation', color: 0xCEFFFF, positive: false },
-  28: { name: 'slow_falling', display: 'Slow Falling', color: 0xFFEFD1, positive: true },
+  22:  { name: 'absorption', display: 'Absorption', color: 0x2552A5, positive: true },
+  25:  { name: 'levitation', display: 'Levitation', color: 0xCEFFFF, positive: false },
+  28:  { name: 'slow_falling', display: 'Slow Falling', color: 0xFFEFD1, positive: true },
+  // B6 §1 — raid markers. 0x0B6653 is Java's bad_omen arrow color, 0x44FF44 hero's.
+  31:  { name: 'bad_omen', display: 'Bad Omen', color: 0x0B6653, positive: false },
+  32:  { name: 'hero', display: 'Hero of the Village', color: 0x44FF44, positive: true },
 };
 
 // -------------------------------------------------- helpers (read live, §2.6)
