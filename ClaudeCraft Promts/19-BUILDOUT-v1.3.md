@@ -72,7 +72,7 @@
 | B2 | Chunk shader GLSL3 + textureGrad (seam fix) | M | ☑ DONE (U13) | — |
 | B3 | Feel & combat polish | M | ☐ not started | — |
 | B4 | New items & systems (fishing, shield, totem, clock/compass) | L | ☐ not started | B0 |
-| B5 | Dungeons & structures | L | ☐ not started | B0 |
+| B5 | Dungeons & structures | L | ☑ DONE (U16: 4 dungeons/21×21, integrity+loot+seed variation) | B0 |
 | B6 | Raids & village life | L | ☐ not started | B5, B7 (AI base) |
 | B7 | Mob AI pathfinding (A*) | L | ☑ DONE — audit: A* was already fully built (budget/repath/stall/fallback); U15 pins the contract | B0 |
 | B8 | Weather expansion (thunder, snow, fog) | M | ☐ not started | B0 |
@@ -715,4 +715,5 @@ touch layouts.
 | 2026-09-27 | B2 | Claude (build-out) | B2 commit + fixup | GLSL3 textureGrad seam fix; U13 initially read MASKED (template literals are blanked) — fixed to inspect raw source; NOTE: renderer.js WebGL2 assert skipped (three r185 hardcodes isWebGL2=true); U13 was briefly committed red by a chained command — fixed forward next commit |
 | 2026-09-27 | B1 | Claude (build-out) | B1 commit | LightBFS grid refactor (WorldGrid/HoodGrid), lightWorker pool, promote dispatch + sync fallback; U14 parity byte-identical (228k/83k delta writes) + no-Worker fallback gate 49/49; DEVIATIONS from spec: emitTable dropped (workers import pure blocks.js legally — U12-guarded), pendingLight set dropped (hoodAtLeast already gates it), light pool init moved to CONSTRUCTOR (initWorkers-time init left pre-startWorld ticks with undefined pools — the fallback check caught it) |
 | 2026-09-27 | B7 | Claude (build-out) | B7 commit | AUDIT result: A* pathfinding was already fully implemented in ai.js (standable/MinHeap/findPath + Mob.pathTo/followPath/chaseTarget with budget, repath cadence, stall detection, direct-steer fallback) — no engine changes needed; U15 pins gap/step/water/budget/determinism. Harness note: astar budget is consumed by findPath calls, not astarBudgetOk probes |
-| — | NEXT | | | Next phase per ship order: **B5 dungeons & structures** (then B4, B3, B8, B6, B12, B9, B10, B11). Harness now at 15 checks (U1–U15) |
+| — | NEXT | | | Next phase per ship order: **B4 items & systems** (then B3, B8, B6, B12, B9, B10, B11). Harness now at 16 checks (U1–U16) |
+| 2026-09-27 | B5 | Claude (build-out) | B5 commit | dungeons.js stamper (village-architecture clone: origin-derived plan, ±1 chunk reach, per-cell fixed draw order); mossy_cobblestone (id 144 + tile + painter + stone material class — the registry warning caught the missing mat); dungeon/desert_ruin loot pools in endLoot.js; spawn records ride the existing be:'spawner'/be:'chest' pipeline; U16 pins integrity/loot/seed-variation; NOTE: dungeon loot applies only to NEWLY generated chunks (existing explored chunks keep their state) |
