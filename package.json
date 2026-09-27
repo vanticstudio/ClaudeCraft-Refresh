@@ -1,7 +1,7 @@
 {
   "name": "claudecraft",
   "private": true,
-  "version": "1.3.0-beta",
+  "version": "1.3.1-beta",
   "description": "ClaudeCraft — a browser voxel survival game (Vite + three.js, 100% procedural assets), built from a written spec by AI. Fan-made, not affiliated with Mojang/Microsoft.",
   "type": "module",
   "scripts": {

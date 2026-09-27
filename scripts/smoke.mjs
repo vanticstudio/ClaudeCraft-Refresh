@@ -1824,6 +1824,11 @@ async function main() {
       imp('registry/blocks.js'), imp('registry/items.js'),
       imp('assets/atlas.js'), imp('assets/tilePainters.js'), imp('audio/events.js'),
     ]);
+    // v1.3.1 — the voice registries def() into the same EVENTS table; the U6
+    // oracle must see them exactly as the engine does (imported after events)
+    await Promise.all([
+      imp('audio/voices-hostile.js'), imp('audio/voices-passive.js'),
+    ]).catch(() => {});   // a missing voice file is U-EXT/u25's report, not U6's crash
   } catch (e) {
     report('U3-U6', 'registry load', [`could not import a registry module: ${e.message}`]);
     finish();
