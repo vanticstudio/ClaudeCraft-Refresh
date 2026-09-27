@@ -397,7 +397,13 @@ export class Interaction {
     const fireAspect = getEnchantLvl(p.heldStack, ENCH.FIRE_ASPECT);
     if (fireAspect > 0 && !target.dead) target.setOnFire?.(80 * fireAspect);
 
-    if (crit) this.game.particles?.crit?.(target);
+    if (crit) {
+      // B3 §3 — hit feedback for the ×1.5 crit branch above: gold burst at the
+      // victim's chest + the strong-attack voice (the sweep's sibling). Both are
+      // optional-chained so a particles-less context (net replay headless) no-ops.
+      this.game.particles?.crit?.(target);
+      emitSound('player.attack.crit', null);
+    }
     if (sweeps) this.doSweep(victims, base, charge);
     if (item?.toolClass) p.damageHeld(item.toolClass === 'sword' ? 1 : 2);
     p.addExhaustion(0.1);
@@ -1387,10 +1393,13 @@ export class Interaction {
     return true;
   }
 
-  // §3.2 place verb; shared by tryPlace and tryPlaceSpecial (door/bed).
+  // §3.2 place verb; shared by tryPlace and tryPlaceSpecial (door/bed) and
+  // plantSeed — so it is the single "placement completed" point. B3 §6 rides
+  // here: 4 upward-biased debris cubes from the placed block's own atlas faces.
   emitPlace(blockId, x, y, z) {
     const cls = matOf(blockId);
     if (cls) emitSound(`block.place.${cls}`, at(x + 0.5, y + 0.5, z + 0.5));
+    this.game.particles?.blockPlace?.(x, y, z, blockId);
   }
 
   tryPlaceSpecial(held, hit, hand = 'main') {

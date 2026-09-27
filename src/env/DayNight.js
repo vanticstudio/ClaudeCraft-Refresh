@@ -28,6 +28,43 @@ const frac = x => x - Math.floor(x);
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const lerp = (a, b, t) => a + (b - a) * t;
 
+// ============================================================================
+// B3 §4 — screen shake (19-BUILDOUT §B3.4). Pure, node-testable helpers for the
+// render-only camera offset this file applies in updateRender — the ONLY place
+// in the build allowed to move the camera, and it never touches player.pos
+// (collision purity). Both helpers are exported for U18 (scripts/checks/u18-feel.mjs).
+//
+// SHAKE_MAX is the spec's "1-tick ~0.15-block" ceiling: clampShake folds every
+// request magnitude (and garbage) into [0, 0.15], and shakeOffset keeps every
+// axis component within the clamped magnitude, so no caller can shake harder
+// than the spec allows no matter what it passes in.
+// ============================================================================
+export const SHAKE_MAX = 0.15;
+
+export function clampShake(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return 0;
+  return Math.min(SHAKE_MAX, Math.max(0, n));
+}
+
+// Deterministic per-tick jitter direction in [-1, 1) from an integer seed —
+// stable across every interpolated frame inside one tick (no 60 Hz shimmer),
+// different on the next tick (it reads as an impact, not a slide).
+function shakeJitter(seed) {
+  let x = Math.imul((seed | 0) ^ 0x9e3779b9, 0x85ebca6b) >>> 0;
+  x = Math.imul(x ^ (x >>> 13), 0xc2b2ae35) >>> 0;
+  return ((x >>> 8) & 0xffff) / 32767.5 - 1;
+}
+
+export function shakeOffset(seed, mag) {
+  const m = clampShake(mag);
+  return {
+    x: shakeJitter(seed * 3 + 1) * m,
+    y: shakeJitter(seed * 3 + 2) * m * 0.4,   // mostly horizontal, a little lift
+    z: shakeJitter(seed * 3 + 3) * m,
+  };
+}
+
 // 04 §3 — vanilla time → sun-position mapping
 export function celestialAngle(t) {
   const f = frac(t / 24000 - 0.25);
@@ -134,6 +171,15 @@ export class DayNight {
     this.scene.fog = new THREE.Fog(0xc0d8ff, 96, 128);
     this.lastFrameTime = performance.now();
     this.moonPhase = -1;
+
+    // B3 §4 — screen shake state. Requests come from Player.onHurt (damage) and
+    // the Particles.explosion hook wired lazily in updateRender (Particles is
+    // constructed one line after DayNight in Game, so the first frame wires it).
+    // The offset itself is applied ONLY in updateRender, after all existing
+    // camera reads, and only while options.screenShake is on.
+    this.shakeMag = 0;
+    this.shakeUntil = -1;
+    this._shakeWired = false;
   }
 
   randInt(a, b) { return a + Math.floor(this.world.rng() * (b - a + 1)); }
@@ -261,6 +307,15 @@ export class DayNight {
   // channel the strike rides.
 
   flash(ticks) { this.flashTicks = Math.max(this.flashTicks, ticks); }
+
+  // B3 §4 — the shake request channel. Callers (Player.onHurt for damage, the
+  // Particles.explosion hook for blasts) only record here; the camera is moved
+  // exclusively in updateRender, gated on the option. Repeated requests in one
+  // tick keep the largest magnitude, never stack past SHAKE_MAX.
+  shakeRequest(mag = SHAKE_MAX) {
+    this.shakeMag = Math.max(this.shakeMag, clampShake(mag));
+    this.shakeUntil = this.world.time + 1;   // §B3.4 — one tick, no decay tail
+  }
 
   // 04 §14
   canSleepNow() {
@@ -437,6 +492,33 @@ export class DayNight {
     } else if (sunDir.y <= 0) {
       this.sky.sunLight.intensity = sunIntensity * 0.25;   // moonlight
     }
+
+    // -------------------------------------------------- B3 §4 — screen shake
+    // Runs AFTER every other camera read in this method (fog biome sampling,
+    // under-fluid tests, Sky.update) so nothing sees the offset camera; the
+    // renderer.render that follows is the only consumer. The window is one tick
+    // of world time (shakeUntil = request tick + 1); the seed is the tick itself,
+    // so the direction holds across interpolated frames and re-rolls per tick.
+    if (!this._shakeWired && this.game.particles) {
+      this._shakeWired = true;
+      this.game.particles.explosionHook = (x, y, z, power) => {
+        const p = this.game.player;
+        if (!p) return;
+        // ≤ 10 blocks: full 0.15 falling to 0 at range — a close blast shakes,
+        // a distant rumble does not. Player.onHurt covers blasts that damage.
+        const d = Math.hypot(p.pos.x - x, p.pos.y + 0.9 - y, p.pos.z - z);
+        const near = Math.max(0, 1 - d / 10);
+        if (near > 0) this.shakeRequest(near * SHAKE_MAX * Math.min(1, power / 3));
+      };
+    }
+    const shakeOpt = this.game.options?.screenShake === true;
+    if (shakeOpt && this.shakeMag > 0 && this.world.time + alpha <= this.shakeUntil) {
+      const o = shakeOffset(this.world.time, this.shakeMag);
+      camera.position.x += o.x;
+      camera.position.y += o.y;
+      camera.position.z += o.z;
+    }
+    if (this.world.time > this.shakeUntil) this.shakeMag = 0;   // expire the 1-tick window
   }
 
   serialize() {

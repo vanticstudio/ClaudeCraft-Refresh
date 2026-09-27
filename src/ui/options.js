@@ -28,6 +28,10 @@ export const DEFAULTS = Object.freeze({
   brightness: 0,           // 0–100
   mipmaps: true,
   particles: 'all',        // 'all' | 'decreased' | 'minimal'
+  // B3 §4 — screen shake on player damage / nearby explosions. DEFAULT OFF on
+  // purpose (accessibility: forced camera motion is a vestibular trigger); the
+  // DayNight camera offset only applies while this is true.
+  screenShake: false,
 });
 
 export function loadOptions() {

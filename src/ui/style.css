@@ -146,6 +146,25 @@ html, body {
   text-shadow: 1px 1px 0 #000;
 }
 
+/* B3 §1/§2 — the attack-cooldown / bow-charge bar (19-BUILDOUT §B3): last child
+   of #status-rows, so it sits in the band between the XP bar and the hotbar at
+   the hotbar's own width. Steel-white fill while the melee cooldown recovers,
+   gold while the bow draws, and a brief brightness pulse when the cooldown
+   completes (the "ready" flash, armed by Hud.updateCombatBar's dirty key). */
+#combat-bar {
+  height: 4px; margin-top: 3px;
+  background: #1c1c1c; border: 1px solid #000;
+  overflow: hidden;
+}
+#combat-bar-fill { height: 100%; width: 0%; background: #d8d8d8; }
+#combat-bar.charge #combat-bar-fill { background: #ffd54a; }
+#combat-bar.ready { animation: combat-ready 300ms ease-out; }
+@keyframes combat-ready {
+  0%   { filter: brightness(1); }
+  35%  { filter: brightness(2.2); }
+  100% { filter: brightness(1); }
+}
+
 #item-name {
   position: absolute; bottom: calc(8px + var(--slot) + 64px); left: 50%;
   transform: translateX(-50%);

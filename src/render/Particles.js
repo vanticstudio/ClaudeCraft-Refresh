@@ -389,7 +389,10 @@ export class Particles {
   blockBreak(x, y, z, blockId) {
     const rng = Math.random;
     const rects = this._rectsFor(blockId);
-    const n = this._n(16);
+    // B3 §6 — 8–14 debris (was a flat 16): the per-break variance reads as
+    // "stuff flying off the block" while the lower ceiling keeps mining combat
+    // (blockBreak + crit + sweep in one tick) away from the MAX cap.
+    const n = this._n(8 + (rng() * 7) | 0);
     for (let i = 0; i < n; i++) {
       if (this.active.length >= MAX) return;   // same up-front cap as colored()
       const ang = rng() * Math.PI * 2;
@@ -401,14 +404,37 @@ export class Particles {
     }
   }
 
-  crit(target) {
-    const n = this._n(8);
+  // B3 §6 — place feedback: 4 debris cubes cut from the placed block's own
+  // atlas faces, biased upward (the block "pops" into place) and short-lived so
+  // build sprees stay cheap. Hooked from interaction.emitPlace, the shared
+  // placement-success point (tryPlace / tryPlaceSpecial / plantSeed).
+  blockPlace(x, y, z, blockId) {
+    const rects = this._rectsFor(blockId);
+    const n = this._n(4);
     for (let i = 0; i < n; i++) {
-      this._spawnColored(0x332211, 0.06,
+      if (this.active.length >= MAX) return;
+      const ang = Math.random() * Math.PI * 2;
+      const sp = Math.random() * 0.05;
+      this._spawnDebris(rects,
+        x + 0.3 + Math.random() * 0.4, y + 0.1 + Math.random() * 0.4, z + 0.3 + Math.random() * 0.4,
+        Math.cos(ang) * sp, 0.08 + Math.random() * 0.06, Math.sin(ang) * sp,
+        8 + (Math.random() * 6) | 0);
+    }
+  }
+
+  // B3 §3 — the crit confirm: gold burst at the struck entity's chest, the same
+  // 0xffd54a the totem-pop uses (Player.die), so "crit" reads as one idea
+  // everywhere. Rides the PUBLIC spawn(colored(...)) channel — the same pattern
+  // every entity-side emitter uses (Shulker's trail / pop) — instead of the
+  // pool internals; the pool path behind spawn() is unchanged.
+  crit(target) {
+    const n = this._n(12);
+    for (let i = 0; i < n; i++) {
+      this.spawn(this.colored(0xffd54a, 0.07),
         target.pos.x + (Math.random() - 0.5) * target.width,
         target.pos.y + target.height * 0.8,
         target.pos.z + (Math.random() - 0.5) * target.width,
-        (Math.random() - 0.5) * 0.04, 0.02 + Math.random() * 0.02, (Math.random() - 0.5) * 0.04,
+        (Math.random() - 0.5) * 0.1, 0.04 + Math.random() * 0.06, (Math.random() - 0.5) * 0.1,
         10 + (Math.random() * 6) | 0, 0.01);
     }
   }
@@ -435,6 +461,10 @@ export class Particles {
   }
 
   explosion(x, y, z, power) {
+    // B3 §4 — the blast→shake trigger fires BEFORE the puffs so DayNight's hook
+    // (wired onto this instance at its first updateRender) sees the same tick.
+    // Optional: unset until DayNight subscribes, never throws without it.
+    this.explosionHook?.(x, y, z, power);
     const n = this._n(24);
     for (let i = 0; i < n; i++) {
       const gray = 0.4 + Math.random() * 0.5;

@@ -25,6 +25,57 @@ setTotemId(idOf('totem_of_undying'));   // B4 — bind the totem id once
 
 const DEG = Math.PI / 180;
 
+// ============================================================================
+// B3 §5 — footstep surface variants (19-BUILDOUT §B3.5). The under-feet BLOCK
+// picks the step event through this table, instead of the template literal
+// `block.step.${matOf(id)}` it used before: same twelve voice families, but the
+// five surfaces you actually walk on (grass / sand / stone / wood / snow) are
+// pinned by explicit block id so the mapping is pure and U18-testable, and a
+// surface can later fork from its dig class without touching emitStep.
+// Every id here is an exact `block.step.<class>` recipe generated in
+// src/audio/events.js (§3.2) — U6/U18 validate the resolution.
+// ============================================================================
+const STEP_BY_MAT = {
+  grass: 'block.step.grass', sand: 'block.step.sand', stone: 'block.step.stone',
+  ore: 'block.step.ore', metal: 'block.step.metal', wood: 'block.step.wood',
+  gravel: 'block.step.gravel', glass: 'block.step.glass', wool: 'block.step.wool',
+  snow: 'block.step.snow', nether: 'block.step.nether', end: 'block.step.end',
+};
+// Explicit per-block picks for the representative walkable surfaces (B3 §5's
+// canonical five first, then the classes the fallback covers anyway).
+const STEP_BY_ID = new Map([
+  [B.GRASS_BLOCK, 'block.step.grass'],
+  [B.OAK_LEAVES, 'block.step.grass'],
+  [B.SAND, 'block.step.sand'],
+  [B.STONE, 'block.step.stone'],
+  [B.COBBLESTONE, 'block.step.stone'],
+  [B.OAK_PLANKS, 'block.step.wood'],
+  [B.OAK_LOG, 'block.step.wood'],
+  [B.SNOW_BLOCK, 'block.step.snow'],
+  [B.SNOW_LAYER, 'block.step.snow'],
+  [B.DIRT, 'block.step.gravel'],
+  [B.GRAVEL, 'block.step.gravel'],
+  [B.ICE, 'block.step.glass'],
+  [B.WOOL_WHITE, 'block.step.wool'],
+  [B.IRON_BLOCK, 'block.step.metal'],
+  [B.COAL_ORE, 'block.step.ore'],
+  [B.NETHERRACK, 'block.step.nether'],
+  [B.END_STONE, 'block.step.end'],
+]);
+
+/**
+ * B3 §5 — the under-feet block id → step sound event id. Returns null for
+ * classes with no verb (air, fluids), exactly as matOf did before. Exported
+ * pure for U18: for every representative block id the returned id must be an
+ * EXACT key in the events registry (the U6 oracle).
+ */
+export function stepEventFor(id) {
+  const pinned = STEP_BY_ID.get(id);
+  if (pinned) return pinned;
+  const cls = matOf(id);
+  return cls ? (STEP_BY_MAT[cls] ?? null) : null;
+}
+
 export class Player extends LivingEntity {
   constructor(world) {
     super(world, 0, 80, 0);
@@ -475,9 +526,9 @@ export class Player extends LivingEntity {
   emitStep(gainMult) {
     const id = this.world.getBlock(
       Math.floor(this.pos.x), Math.floor(this.pos.y - 0.5), Math.floor(this.pos.z));
-    const cls = matOf(id);
-    if (!cls) return;
-    this._selfSound(`block.step.${cls}`, 1, gainMult);
+    const evt = stepEventFor(id);
+    if (!evt) return;
+    this._selfSound(evt, 1, gainMult);
   }
 
   tick(input) {
@@ -1126,6 +1177,12 @@ export class Player extends LivingEntity {
     this.procThorns(source, opts);
     this.hurtTilt = 8;
     this.hurtTiltDir = this.world.rng() < 0.5 ? -1 : 1;
+    // B3 §4 — screen shake on damage (explosions included: Game.explode routes
+    // them through hurt with source 'explosion'). Request-only here — the
+    // camera is touched exclusively inside DayNight.updateRender, and only
+    // while options.screenShake is on. Local player only: host proxies of
+    // remote clients must not shake the host's own camera.
+    if (!this.isNetPlayer) this.world.game?.dayNight?.shakeRequest?.(0.15);
     if (LivingEntity.ARMOR_SOURCES.has(source)) this.addExhaustion(0.1);
     // §3.3 — post-i-frame, post-armor. 'fall' is excluded: the landing already
     // emits player.fall.big for exactly this hit.

@@ -157,6 +157,14 @@ export class Menus {
             <input type="checkbox" id="opt-mipmaps">
             <output></output>
           </label>
+          <!-- B3 §4 — screen shake (DEFAULT OFF, accessibility: forced camera
+               motion is a vestibular trigger). Persisted via the shared
+               loadOptions/saveOptions object like every other row. -->
+          <label class="cc-row">
+            <span>Screen shake</span>
+            <input type="checkbox" id="opt-screenShake">
+            <output></output>
+          </label>
           <label class="cc-row">
             <span>Particles</span>
             <select id="opt-particles">
@@ -340,6 +348,16 @@ export class Menus {
     mip.checked = this.options.mipmaps !== false;
     mip.addEventListener('change', () => {
       this.options.mipmaps = mip.checked;
+      this.applyOptions();
+    });
+
+    // B3 §4 — screen shake checkbox, the mipmaps row's pattern: read the shared
+    // options object, persist via applyOptions (DayNight re-reads
+    // game.options.screenShake per frame, so the toggle applies live mid-world).
+    const shake = $('opt-screenShake');
+    shake.checked = this.options.screenShake === true;
+    shake.addEventListener('change', () => {
+      this.options.screenShake = shake.checked;
       this.applyOptions();
     });
 

@@ -218,6 +218,17 @@ def('player.attack.sweep', {
     });
   },
 });
+// 19-BUILDOUT §B3.3 — the crit confirm (vanilla's strong-attack voice, the
+// sibling of the sweep above; same cap family so one swing never doubles up the
+// cap). A meaty low pluck under a bright tick, fired from interaction.attack's
+// ×1.5 crit branch alongside the gold burst.
+def('player.attack.crit', {
+  ...SELF, capKey: 'attackSweep',
+  recipe: (v, t, p, g) => {
+    pluck(v, t, { freq: 300, bass: true, dur: 0.12, gain: 0.5 * g, pitch: p });
+    return blip(v, t, { wave: 'triangle', freq: 2600, dur: 0.03, gain: 0.25 * g, pitch: p });
+  },
+});
 def('player.armor_equip', {
   ...UI, capKey: 'armor', jitter: 1,
   recipe: (v, t, p, g) => chime(v, t, { freq: 2400, ratio: 2.76, index: 3, dur: 0.15, gain: 0.3 * g, pitch: p }),

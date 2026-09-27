@@ -4,7 +4,7 @@ import { ITEMS } from '../registry/items.js';
 import { BLOCKS } from '../registry/blocks.js';
 import { isGlinted, paintGlintIcon } from '../render/glint.js';
 import { icon3dBlockIdFor, blockIconUrl, blockIconCanvas } from './blockIcons.js';   // UPDATE-polish §4
-import { EFFECT, EFFECT_META } from '../status/effects.js';
+import { EFFECT, EFFECT_META, effectLevel } from '../status/effects.js';
 import { PIP, setPipFrame, stylePip } from './hudIcons.js';   // OVERHAUL §H — pixel HUD icons
 import { ATLAS_CELL, ATLAS_GUTTER } from '../constants.js';
 const ROMAN = ['', 'I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII'];
@@ -111,6 +111,11 @@ export class Hud {
             <div id="hunger-row" class="row-half"></div>
           </div>
           <div id="xp-bar"><div id="xp-fill"></div><div id="xp-level"></div></div>
+          <!-- B3 §1/§2 — the attack-cooldown / bow-charge bar. Last child of
+               #status-rows, so it lands in the thin band between the XP bar and
+               the hotbar at the same width and centring. One element, two
+               drivers (see updateCombatBar). -->
+          <div id="combat-bar" hidden><div id="combat-bar-fill"></div></div>
         </div>
         <div id="effect-stack"></div>
         <div id="offhand-slot"></div>
@@ -132,6 +137,8 @@ export class Hud {
       xpBar: document.getElementById('xp-bar'),
       xpFill: document.getElementById('xp-fill'),
       xpLevel: document.getElementById('xp-level'),
+      combatBar: document.getElementById('combat-bar'),
+      combatBarFill: document.getElementById('combat-bar-fill'),
       hotbar: document.getElementById('hotbar'),
       heldTool: document.getElementById('held-tool'),
       offhand: document.getElementById('offhand-slot'),
@@ -167,6 +174,10 @@ export class Hud {
     this.pips(this.el.air, 10);
     this.nameFlash = 0;
     this.toastTimer = 0;
+    // B3 §1 — the bar starts "already recovered": the ready flash must fire on
+    // the cooldown COMPLETING (a <1 → ≥1 edge), never on the first HUD frame.
+    this._barFull = true;
+    this._barFlashUntil = -1;
   }
 
   pips(rowEl, n) {
@@ -265,6 +276,9 @@ export class Hud {
     // path, so in creative the row must hide here: its pips were styled at
     // creation and would otherwise sit frozen on frame 0 (a full red-heart row).
     if (this.creative) this.el.armor.style.display = 'none';
+    // B3 §1/§2 — combat feedback is a survival-cluster row: hidden with the rest
+    // in creative (update()'s early-out never reaches updateCombatBar there).
+    this.el.combatBar.hidden = true;
     this.el.badge.style.display = this.creative ? 'block' : 'none';
     // The dirty cache would otherwise suppress the re-render on the way back:
     // update() compares against the value it last WROTE, which is still the
@@ -400,8 +414,55 @@ export class Hud {
       this.el.xpLevel.textContent = p.xpLevel > 0 ? p.xpLevel : '';
     }
 
+    this.updateCombatBar(p);
     this.updateHotbar(p);
     this.updateOverlays(p);
+  }
+
+  /**
+   * B3 §1/§2 — ONE thin bar above the hotbar with two drivers, vanilla-priority
+   * ordered (a bow draw outranks the melee cooldown, which keeps recharging
+   * underneath it):
+   *   charge   — the bow draw progress from the usingItem channel
+   *              (p.usingItem.kind === 'bow', 20-tick draw ramp);
+   *   cooldown — the melee attack cooldown, from the SAME timer that scales
+   *              attack damage in interaction.attack (05 §13.1): progress =
+   *              (ticksSinceAttack + 0.5) / (20 / speed), speed = attackSpeed ×
+   *              Haste. Hidden once full — except for a ~6-tick ready flash on
+   *              the <1 → ≥1 edge, so "recovered" is announced exactly once.
+   * Everything is dirty-gated through setDirty; the fill width is quantized to
+   * ~2% steps so the DOM write rate stays at ~20/s during recovery and zero
+   * while idle.
+   */
+  updateCombatBar(p) {
+    const el = this.el.combatBar, bar = this.el.combatBarFill;
+    const t = this.game.world?.time ?? 0;
+    const chan = p.usingItem;
+    let mode = null, pct = 0;
+    if (chan?.kind === 'bow') {
+      // B3 §2 — visible ONLY while drawing; the draw loop's own ramp is 20 ticks.
+      mode = 'charge';
+      pct = Math.min(1, chan.ticks / 20);
+    } else {
+      // B3 §1 — the melee cooldown, from interaction.attack's charge formula.
+      const item = p.heldStack ? ITEMS.get(p.heldStack.id) : null;
+      const speed = (item?.attackSpeed ?? 4.0) * (1 + 0.1 * effectLevel(p, EFFECT.HASTE));
+      pct = Math.min(1, Math.max(0, (p.ticksSinceAttack + 0.5) * speed / 20));
+      if (pct < 1) mode = 'cooldown';
+    }
+    const wasFull = this._barFull;
+    this._barFull = mode === null && pct >= 1;
+    if (this._barFull && !wasFull) this._barFlashUntil = t + 6;   // ready flash: 6 ticks
+    const flash = this._barFull && t <= this._barFlashUntil;
+    const visible = mode !== null || flash;
+    const sig = visible
+      ? `${mode}|${Math.round(pct * 48)}${flash ? '|f' : ''}`
+      : 'off';
+    if (!this.setDirty('combatBar', sig)) return;
+    el.hidden = !visible;
+    el.classList.toggle('charge', mode === 'charge');
+    el.classList.toggle('ready', flash);
+    if (mode !== null) bar.style.width = `${(pct * 100).toFixed(1)}%`;
   }
 
   // Icon / count / durability bar for one slot frame. Shared by the hotbar and
