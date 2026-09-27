@@ -1211,6 +1211,160 @@ async function checkRuntimeMesh(blocks) {
   report('U9', 'runtime gen + light + mesh (3 dims, every block id, worker snapshot parity)', fails, notes);
 }
 
+// ==================================================================== U10
+// Mob skin painter regression: every PAINT recipe must (a) not throw against a
+// recording stub context, (b) emit only valid CSS colors (hex/rgb/rgba), and
+// (c) fully cover its 16×16 canvas (the base fill must exist — a recipe that
+// only stamps decorations leaves transparent texels that render as holes).
+async function checkMobPainters() {
+  const fails = [];
+  const notes = [];
+  try {
+    const { PAINT } = await imp('entities/mobs/models.js');
+    const { mulberry32, xmur3 } = await imp('math/rng.js');
+    const names = Object.keys(PAINT);
+    for (const name of names) {
+      let cells = 0, badColor = null, threw = null;
+      const stub = {
+        set fillStyle(v) {
+          if (!(/^#[0-9a-fA-F]{3,8}$/.test(v) || /^rgba?\(/.test(v))) badColor ??= v;
+          this._fs = v;
+        },
+        get fillStyle() { return this._fs; },
+        fillRect(x, y, w, h) {
+          const x0 = Math.max(0, x), y0 = Math.max(0, y);
+          cells += Math.max(0, Math.min(16, x + w) - x0) * Math.max(0, Math.min(16, y + h) - y0);
+        },
+      };
+      try {
+        PAINT[name](stub, 16, mulberry32(xmur3('mobtex:' + name)()));
+      } catch (e) { threw = e.message; }
+      if (threw) fails.push(`${name}: threw "${threw}"`);
+      if (badColor) fails.push(`${name}: invalid fillStyle "${badColor}"`);
+      if (cells < 256) fails.push(`${name}: coverage ${cells}/256 — base fill missing`);
+    }
+    notes.push(`${names.length} recipes checked (coverage + color validity + no throw)`);
+  } catch (e) {
+    fails.push('mob painter harness threw: ' + (e.stack || e).split('\n').slice(0, 3).join(' | '));
+  }
+  report('U10', 'mob skin painters — full coverage, valid colors, no throw', fails, notes);
+}
+
+// ==================================================================== U11
+// Registry render-field contract (Iron Rule 3 of 19-BUILDOUT-v1.3.md).
+// `tileIndex` / `tileIndexFor` DO NOT EXIST on a block until main.js's boot()
+// runs finalizeBlockTiles(atlas.TILE) — or until a worker entry runs it in its
+// own init branch (the meshWorker pattern). v1.2.6 shipped a mesh worker whose
+// registry copy never resolved, and the static checks saw nothing. This check
+// polices the resolved-field consumer set:
+//   * every consumer of a resolved field must be reachable from main.js
+//     (main-thread, post-finalize) OR belong to a worker graph
+//   * any worker ENTRY whose graph reaches a resolved-field consumer MUST
+//     contain the finalizeBlockTiles init call itself
+//   * main.js must contain the finalizeBlockTiles(atlas.TILE) anchor
+// `tiles`/`tilesFor`/`bucket`/`occludes`/`renderSameIdFaces`/`tint` are plain
+// defBlock data (no resolution) and are deliberately NOT policed — the
+// masking pass keeps 'item.bucket.fill' sound ids out of the scan already.
+const RESOLVED_FIELDS = /\.(tileIndexFor|tileIndex)\b/;
+const WORKER_ENTRIES = ['workers/terrainWorker.js', 'mesh/meshWorker.js'];
+
+function importClosure(entryFile) {
+  const seen = new Set([entryFile]);
+  const queue = [entryFile];
+  while (queue.length) {
+    const f = queue.shift();
+    for (const imp of IMPORTS.get(f) ?? []) {
+      if (!imp.target || seen.has(imp.target)) continue;
+      seen.add(imp.target);
+      queue.push(imp.target);
+    }
+  }
+  return seen;
+}
+
+function checkRegistryContract() {
+  const fails = [];
+  const notes = [];
+  const mainFile = FILES.find(f => f.endsWith('src/main.js'));
+  if (!mainFile) { report('U11', 'registry render-field contract', ['src/main.js not found']); return; }
+  const mainSet = importClosure(mainFile);
+  const mainText = MASKED.get(mainFile);
+  if (!/finalizeBlockTiles/.test(mainText)) {
+    fails.push(`${rel(mainFile)} no longer calls finalizeBlockTiles — the resolved-field contract is broken`);
+  }
+  const consumerSets = new Map();       // worker entry -> its closure (only when needed)
+  const consumers = [];
+  for (const f of FILES) {
+    const m = MASKED.get(f);
+    if (rel(f) === 'src/registry/blocks.js') continue;   // the producer
+    if (RESOLVED_FIELDS.test(m)) consumers.push(f);
+  }
+  for (const entry of WORKER_ENTRIES) {
+    const ef = FILES.find(f => rel(f) === `src/${entry}`);
+    if (!ef) { fails.push(`worker entry src/${entry} missing`); continue; }
+    const set = importClosure(ef);
+    consumerSets.set(ef, set);
+    const reaches = consumers.some(c => set.has(c));
+    if (reaches && !/finalizeBlockTiles/.test(MASKED.get(ef))) {
+      fails.push(`${rel(ef)} reaches resolved-field consumers but never calls finalizeBlockTiles` +
+        ` — its registry copy has no tileIndex (v1.2.6 bug class)`);
+    }
+    for (const c of consumers) {
+      if (set.has(c) && !mainSet.has(c) && !consumerSets.has(c)) consumerSets.set(c, set);
+    }
+  }
+  for (const c of consumers) {
+    if (!mainSet.has(c) && ![...consumerSets.values()].some(s => s.has(c))) {
+      fails.push(`${rel(c)} reads tileIndex/tileIndexFor but is reachable from neither main.js nor a finalizeBlockTiles worker entry`);
+    }
+  }
+  notes.push(`${consumers.length} resolved-field consumers: ${consumers.map(rel).join(', ')}`);
+  report('U11', 'registry render-field contract — finalizeBlockTiles coverage', fails, notes);
+}
+
+// ==================================================================== U12
+// Worker graph purity (Iron Rule 4). Every module reachable from a worker
+// entry must (a) import cleanly under Node (with the browser shims below —
+// module-scope AudioEngine/localStorage is legal browser code) and (b) contain
+// no MODULE-scope DOM or nested-worker usage: a line whose first character is
+// non-whitespace that touches `document.` / `window.` / `new Worker(`. Function
+// bodies are indented and therefore not flagged; that is exactly the
+// canvasTex/buildAtlas carve-out. Simple line heuristic, documented as such.
+async function checkWorkerPurity() {
+  const fails = [];
+  const notes = [];
+  const prevSelf = globalThis.self;
+  globalThis.self = {};                    // worker files do `self.onmessage = …`
+  globalThis.localStorage = globalThis.localStorage ?? {
+    getItem: () => null, setItem: () => {}, removeItem: () => {},
+  };
+  try {
+    for (const entry of WORKER_ENTRIES) {
+      const ef = FILES.find(f => rel(f) === `src/${entry}`);
+      if (!ef) continue;                   // U11 already reported it
+      try {
+        await import(pathToFileURL(ef).href);
+      } catch (e) {
+        fails.push(`${entry}: module graph does not load in Node: ${String(e.message ?? e).split('\n')[0]}`);
+        continue;
+      }
+      for (const f of importClosure(ef)) {
+        const m = MASKED.get(f);
+        for (const line of m.split('\n')) {
+          if (!line || /\s/.test(line[0])) continue;       // indented → inside a body
+          if (/\b(document|window)\s*\./.test(line) || /\bnew\s+Worker\b/.test(line)) {
+            fails.push(`${rel(f)}: module-scope DOM/worker use — "${line.trim().slice(0, 80)}"`);
+          }
+        }
+      }
+      notes.push(`${entry}: ${importClosure(ef).size} modules load clean, no module-scope DOM`);
+    }
+  } finally {
+    globalThis.self = prevSelf;
+  }
+  report('U12', 'worker graph purity — loads in Node, no module-scope DOM', fails, notes);
+}
+
 // ==================================================================== driver
 const imp = p => import(pathToFileURL(join(SRC, p)).href);
 
@@ -1241,6 +1395,9 @@ async function main() {
   await checkSounds(events);
   checkConsole();
   await checkRuntimeMesh(blocks);
+  await checkMobPainters();
+  checkRegistryContract();
+  await checkWorkerPurity();
   finish();
 }
 

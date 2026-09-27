@@ -585,9 +585,9 @@ export class EnderDragon extends LivingEntity {
   buildMesh() {
     const g = new THREE.Group();
     this.parts = {};
-    const bodyMat = new THREE.MeshLambertMaterial({ map: mobTexture('dragon_body') });
+    const bodyMat = new THREE.MeshBasicMaterial({ map: mobTexture('dragon_body') });
     bodyMat.userData.baseColor = new THREE.Color(1, 1, 1);
-    const wingMat = new THREE.MeshLambertMaterial({ map: mobTexture('dragon_wing'), transparent: true, opacity: 0.95 });
+    const wingMat = new THREE.MeshBasicMaterial({ map: mobTexture('dragon_wing'), transparent: true, opacity: 0.95 });
     wingMat.userData.baseColor = new THREE.Color(1, 1, 1);
 
     const box = (w, h, d, mat, x, y, z) => {

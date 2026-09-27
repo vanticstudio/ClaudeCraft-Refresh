@@ -38,126 +38,282 @@ function noiseFill(ctx, size, base, amp, rng) {
 
 const px = (ctx, x, y, c, w = 1, h = 1) => { ctx.fillStyle = c; ctx.fillRect(x, y, w, h); };
 
+// ---- texture-overhaul helpers ---------------------------------------------
+// The original recipes were one noiseFill per body part: coherent-looking at a
+// glance, but per-pixel RNG noise reads as TV static in motion, and flat bases
+// go dead under the unlit material. Three cheap primitives fix both.
+
+// Baked fake-AO gradient: every box face samples the SAME canvas on all six
+// sides, so a light top / dark bottom gives each part dimensional shading.
+// Drawn LAST so it sits over the pattern.
+function vShade(ctx, s, top = 0.10, bottom = 0.16) {
+  ctx.fillStyle = `rgba(255,255,255,${top})`;
+  ctx.fillRect(0, 0, s, 2);
+  ctx.fillStyle = `rgba(255,255,255,${top * 0.5})`;
+  ctx.fillRect(0, 2, s, 1);
+  ctx.fillStyle = `rgba(0,0,0,${bottom})`;
+  ctx.fillRect(0, s - 3, s, 3);
+  ctx.fillStyle = `rgba(0,0,0,${bottom * 0.5})`;
+  ctx.fillRect(0, s - 4, s, 1);
+}
+
+// Coherent blotch clusters: short random walks stamp 1-2px cells, producing
+// connected patches (cow markings, creeper camo, mottle) instead of static.
+function blobs(ctx, s, rng, color, count, size = 3) {
+  ctx.fillStyle = color;
+  for (let i = 0; i < count; i++) {
+    let x = (rng() * s) | 0, y = (rng() * s) | 0;
+    const n = 1 + ((rng() * size) | 0);
+    for (let j = 0; j < n; j++) {
+      ctx.fillRect(x, y, 1, 1);
+      if (rng() < 0.6) ctx.fillRect(x + 1, y, 1, 1);
+      if (rng() < 0.3) ctx.fillRect(x, y + 1, 1, 1);
+      x = (x + ((rng() * 3) | 0) - 1 + s) % s;
+      y = (y + ((rng() * 3) | 0) - 1 + s) % s;
+    }
+  }
+}
+
+// 1px streaks along an axis: hair, wood grain, feather barbs, bone striations.
+function streaks(ctx, s, rng, color, count, horiz, len = 4) {
+  ctx.fillStyle = color;
+  for (let i = 0; i < count; i++) {
+    if (horiz) {
+      ctx.fillRect((rng() * s) | 0, (rng() * s) | 0, 2 + ((rng() * len) | 0), 1);
+    } else {
+      ctx.fillRect((rng() * s) | 0, (rng() * s) | 0, 1, 2 + ((rng() * len) | 0));
+    }
+  }
+}
+
 // ---------------------------------------------------------------- texture recipes (05 §16.2)
 
-const PAINT = {
-  zombie_skin: (c, s, r) => noiseFill(c, s, '#44aa44', 12, r),
-  zombie_shirt: (c, s, r) => noiseFill(c, s, '#2d6b2d', 12, r),
-  zombie_pants: (c, s, r) => noiseFill(c, s, '#345d8a', 12, r),
+// Exported for the smoke harness's U10 painter regression (stub-canvas run).
+export const PAINT = {
+  zombie_skin: (c, s, r) => {
+    noiseFill(c, s, '#4f9e44', 9, r);
+    blobs(c, s, r, '#3d7d34', 6, 4);            // mottled decay patches
+    blobs(c, s, r, '#66b957', 4, 3);
+    for (let i = 0; i < 3; i++) px(c, (r() * s) | 0, (r() * s) | 0, '#28401f');   // scabs
+    vShade(c, s);
+  },
+  zombie_shirt: (c, s, r) => {
+    noiseFill(c, s, '#2f8f8a', 9, r);
+    blobs(c, s, r, '#25716d', 5, 4);
+    for (let x = 0; x < s; x++) if (r() < 0.4) px(c, x, s - 1, '#1c4a47');        // torn hem
+    vShade(c, s);
+  },
+  zombie_pants: (c, s, r) => {
+    noiseFill(c, s, '#3b4f8a', 9, r);
+    blobs(c, s, r, '#2e3f70', 5, 4);
+    for (let x = 0; x < s; x++) if (r() < 0.3) px(c, x, s - 1, '#232f54');        // worn cuffs
+    vShade(c, s);
+  },
   zombie_face: (c, s, r) => {
-    noiseFill(c, s, '#44aa44', 12, r);
-    px(c, 3, 6, '#000', 2, 2); px(c, 11, 6, '#000', 2, 2);
-    px(c, 6, 11, '#1a331a', 4, 1);
+    PAINT.zombie_skin(c, s, r);
+    px(c, 3, 6, '#0c0c0c', 2, 2); px(c, 11, 6, '#0c0c0c', 2, 2);                  // sockets
+    px(c, 6, 11, '#1a331a', 4, 1);                                                 // grim mouth
+    px(c, 7, 10, '#d8d8c8'); px(c, 8, 10, '#c8c8b0');                              // teeth
   },
   skeleton_bone: (c, s, r) => {
-    noiseFill(c, s, '#d8d8c8', 8, r);
-    for (let y = 3; y < s; y += 4) px(c, 0, y, '#9c9c8c', s, 1);
+    noiseFill(c, s, '#e8e5d4', 6, r);
+    for (let y = 3; y < s; y += 4) px(c, 0, y, '#c9c5b0', s, 1);                   // striations
+    streaks(c, s, r, '#d4d0bc', 5, true, 3);
+    vShade(c, s, 0.08, 0.12);
   },
   skeleton_face: (c, s, r) => {
-    noiseFill(c, s, '#d8d8c8', 8, r);
-    px(c, 3, 6, '#000', 2, 2); px(c, 11, 6, '#000', 2, 2);
-    px(c, 7, 8, '#555548', 1, 2);
-    px(c, 5, 12, '#3a3a30', 6, 1);
+    PAINT.skeleton_bone(c, s, r);
+    px(c, 3, 6, '#14140f', 2, 2); px(c, 11, 6, '#14140f', 2, 2);                   // sockets
+    px(c, 7, 9, '#b0ac96', 1, 2);                                                  // nose slit
+    px(c, 5, 12, '#9c9c8c', 6, 1);                                                 // jaw line
+    px(c, 6, 13, '#7a786a', 1, 1); px(c, 9, 13, '#7a786a', 1, 1);
   },
   creeper_skin: (c, s, r) => {
-    const cols = ['#0da70b', '#3ecb3a', '#7ee87b', '#1b8a1a'];
-    for (let y = 0; y < s; y++) for (let x = 0; x < s; x++) px(c, x, y, cols[(r() * 4) | 0]);
+    noiseFill(c, s, '#4fae46', 7, r);
+    // camo blotching — MC's creeper reads as patchy camo, never per-pixel static
+    blobs(c, s, r, '#3a8f33', 5, 5);
+    blobs(c, s, r, '#71d466', 5, 5);
+    blobs(c, s, r, '#2a6f26', 3, 4);
+    blobs(c, s, r, '#8fe485', 3, 3);
+    vShade(c, s, 0.08, 0.14);
   },
   creeper_face: (c, s, r) => {
     PAINT.creeper_skin(c, s, r);
-    px(c, 3, 5, '#000', 3, 3); px(c, 10, 5, '#000', 3, 3);
-    px(c, 6, 8, '#000', 4, 3);
-    px(c, 5, 10, '#000', 2, 4); px(c, 9, 10, '#000', 2, 4);
+    // canonical creeper face: 2×2 eyes + 4×3 mouth with 1×2 fangs
+    px(c, 3, 5, '#0a0a0a', 2, 2); px(c, 11, 5, '#0a0a0a', 2, 2);
+    px(c, 6, 8, '#0a0a0a', 4, 3);
+    px(c, 5, 9, '#0a0a0a', 1, 3); px(c, 10, 9, '#0a0a0a', 1, 3);
+    px(c, 5, 12, '#0a0a0a'); px(c, 10, 12, '#0a0a0a');
   },
-  spider_skin: (c, s, r) => noiseFill(c, s, '#1e1a17', 10, r),
+  spider_skin: (c, s, r) => {
+    noiseFill(c, s, '#2b2118', 8, r);
+    streaks(c, s, r, '#3a2c1e', 10, false, 5);    // leg hair
+    streaks(c, s, r, '#1c150e', 8, true, 3);
+    vShade(c, s, 0.06, 0.20);
+  },
   spider_face: (c, s, r) => {
-    noiseFill(c, s, '#1e1a17', 10, r);
-    for (let i = 0; i < 4; i++) { px(c, 3 + i * 3, 5, '#cc3333'); px(c, 4 + i * 3, 8, '#aa2222'); }
+    PAINT.spider_skin(c, s, r);
+    // two rows of red eyes, MC-arc: large pair above, small pair below-outward
+    px(c, 3, 5, '#cc3333', 2, 2); px(c, 11, 5, '#cc3333', 2, 2);
+    px(c, 6, 7, '#aa2222'); px(c, 9, 7, '#aa2222');
+    px(c, 3, 5, '#ff8877'); px(c, 11, 5, '#ff8877');                               // glints
   },
-  enderman_skin: (c, s, r) => noiseFill(c, s, '#0d0d12', 5, r),
+  enderman_skin: (c, s, r) => {
+    noiseFill(c, s, '#141418', 4, r);
+    streaks(c, s, r, '#1d1d24', 6, true, 4);      // faint dimensional sheen
+    vShade(c, s, 0.05, 0.10);
+  },
   enderman_face: (c, s, r) => {
-    noiseFill(c, s, '#0d0d12', 5, r);
-    px(c, 2, 7, '#e079fa', 4, 1); px(c, 10, 7, '#e079fa', 4, 1);
-    px(c, 3, 7, '#ffffff', 2, 1); px(c, 11, 7, '#ffffff', 2, 1);
+    PAINT.enderman_skin(c, s, r);
+    px(c, 2, 7, '#c85ffa', 4, 1); px(c, 10, 7, '#c85ffa', 4, 1);                   // iris
+    px(c, 3, 7, '#f4d9ff', 2, 1); px(c, 11, 7, '#f4d9ff', 2, 1);                   // glow core
   },
   enderman_face_jaw: (c, s, r) => {
     PAINT.enderman_face(c, s, r);
-    px(c, 4, 11, '#e079fa', 8, 2);
+    px(c, 4, 11, '#b45bd8', 8, 2);                                                 // open jaw
   },
   cow_skin: (c, s, r) => {
-    noiseFill(c, s, '#5d4033', 10, r);
-    for (let i = 0; i < 5; i++) {
-      let bx = (r() * s) | 0, by = (r() * s) | 0;
-      for (let j = 0; j < 5; j++) {
-        px(c, Math.min(s - 2, bx), Math.min(s - 2, by), '#e6e6e6', 2, 2);
-        bx += ((r() * 3) | 0) - 1; by += ((r() * 3) | 0) - 1;
-        bx = Math.max(0, bx); by = Math.max(0, by);
-      }
-    }
+    noiseFill(c, s, '#5d4033', 8, r);
+    blobs(c, s, r, '#e8e8e4', 4, 9);            // large connected white patches
+    blobs(c, s, r, '#4a3328', 3, 3);
+    vShade(c, s, 0.07, 0.15);
   },
   cow_face: (c, s, r) => {
-    noiseFill(c, s, '#5d4033', 10, r);
-    px(c, 5, 2, '#e6e6e6', 6, 8);
-    px(c, 3, 4, '#000', 2, 2); px(c, 11, 4, '#000', 2, 2);
-    px(c, 5, 11, '#e8a5a5', 6, 4);
+    PAINT.cow_skin(c, s, r);
+    px(c, 5, 0, '#e8e8e4', 6, 7);                                                  // blaze
+    px(c, 3, 4, '#101010', 2, 2); px(c, 11, 4, '#101010', 2, 2);                   // eyes
+    px(c, 4, 10, '#e8b5b5', 8, 5);                                                 // muzzle
+    px(c, 5, 12, '#8a5555', 1, 2); px(c, 10, 12, '#8a5555', 1, 2);                 // nostrils
   },
-  pig_skin: (c, s, r) => noiseFill(c, s, '#f0a5a2', 6, r),
+  pig_skin: (c, s, r) => {
+    noiseFill(c, s, '#efa3a0', 5, r);
+    blobs(c, s, r, '#e0908d', 4, 3);
+    for (let i = 0; i < 3; i++) px(c, (r() * s) | 0, (r() * s) | 0, '#8a6f5a');    // mud flecks
+    vShade(c, s, 0.09, 0.13);
+  },
   pig_face: (c, s, r) => {
-    noiseFill(c, s, '#f0a5a2', 6, r);
-    px(c, 3, 5, '#000', 1, 2); px(c, 12, 5, '#000', 1, 2);
-    px(c, 5, 9, '#d18784', 6, 4);
-    px(c, 6, 10, '#5e2e2c', 1, 2); px(c, 9, 10, '#5e2e2c', 1, 2);
+    PAINT.pig_skin(c, s, r);
+    px(c, 3, 5, '#101010', 1, 2); px(c, 12, 5, '#101010', 1, 2);                   // eyes
+    px(c, 4, 8, '#d98f8c', 8, 6);                                                  // snout patch
+    px(c, 6, 10, '#7a4a48', 1, 3); px(c, 9, 10, '#7a4a48', 1, 3);                  // nostrils
   },
-  sheep_wool: (c, s, r) => noiseFill(c, s, '#e6e6e6', 10, r),
-  sheep_skin: (c, s, r) => noiseFill(c, s, '#d1b28a', 8, r),
+  sheep_wool: (c, s, r) => {
+    noiseFill(c, s, '#ece8de', 6, r);
+    streaks(c, s, r, '#f8f6f0', 8, true, 3);      // wool curls
+    streaks(c, s, r, '#d8d2c4', 8, true, 3);
+    c.fillStyle = 'rgba(110,130,60,0.25)';                                          // grass stains
+    c.fillRect(0, s - 2, s, 2);
+    vShade(c, s, 0.08, 0.10);
+  },
+  sheep_skin: (c, s, r) => {
+    noiseFill(c, s, '#cfa878', 7, r);
+    blobs(c, s, r, '#b98f60', 4, 3);
+    vShade(c, s);
+  },
   sheep_face: (c, s, r) => {
-    noiseFill(c, s, '#d1b28a', 8, r);
-    px(c, 3, 6, '#000', 2, 2); px(c, 11, 6, '#000', 2, 2);
-    px(c, 2, 3, '#e8a5a5', 2, 2); px(c, 12, 3, '#e8a5a5', 2, 2);
+    PAINT.sheep_skin(c, s, r);
+    px(c, 3, 6, '#14140f', 2, 2); px(c, 11, 6, '#14140f', 2, 2);                   // eyes
+    px(c, 2, 3, '#e8a5a5', 2, 2); px(c, 12, 3, '#e8a5a5', 2, 2);                   // ears
+    px(c, 6, 11, '#e8c0c0', 4, 3);                                                 // nose
   },
-  chicken_skin: (c, s, r) => noiseFill(c, s, '#f4f4f4', 8, r),
+  chicken_skin: (c, s, r) => {
+    noiseFill(c, s, '#f2efe8', 5, r);
+    streaks(c, s, r, '#dcd8cc', 10, true, 3);     // feather rows
+    for (let i = 0; i < 4; i++) px(c, (r() * s) | 0, (r() * s) | 0, '#c8c4b8');
+    vShade(c, s, 0.08, 0.10);
+  },
   chicken_face: (c, s, r) => {
-    noiseFill(c, s, '#f4f4f4', 8, r);
-    px(c, 4, 6, '#000'); px(c, 11, 6, '#000');
-    px(c, 6, 8, '#e0b23c', 4, 2);
-    px(c, 7, 10, '#b02525', 2, 2);
+    PAINT.chicken_skin(c, s, r);
+    px(c, 4, 6, '#101010'); px(c, 11, 6, '#101010');                               // eyes
+    px(c, 6, 8, '#e0b23c', 4, 2);                                                  // beak base
+    px(c, 7, 10, '#b02525', 2, 2);                                                 // wattle
   },
   chicken_wing: (c, s, r) => {
-    noiseFill(c, s, '#f4f4f4', 8, r);
-    px(c, 0, s - 3, '#d0d0d0', s, 3);
+    PAINT.chicken_skin(c, s, r);
+    // layered feather rows: staggered segments with a darker separator line
+    for (let y = 3; y < s - 2; y += 4) {
+      px(c, 0, y, '#d4d0c4', s, 1);
+      for (let x = ((r() * 4) | 0); x < s; x += 4 + ((r() * 3) | 0)) px(c, x, y + 1, '#e8e4da', 3, 1);
+    }
+    vShade(c, s, 0.06, 0.12);
   },
-  chicken_legs: (c, s, r) => noiseFill(c, s, '#e0b23c', 6, r),
-  bow_stick: (c, s, r) => noiseFill(c, s, '#6b4f2a', 8, r),
+  chicken_legs: (c, s, r) => {
+    noiseFill(c, s, '#dfa33c', 5, r);
+    blobs(c, s, r, '#c08a28', 6, 1);            // scale dots
+    vShade(c, s, 0.07, 0.12);
+  },
+  bow_stick: (c, s, r) => {
+    noiseFill(c, s, '#7a5a30', 7, r);
+    streaks(c, s, r, '#5e4423', 8, false, 5);     // grain
+    px(c, 0, 10, '#3f2f18', s, 2);                                                 // grip wrap
+    px(c, 0, 9, '#8a6a3a', s, 1);
+  },
   // 12-VILLAGES §16 — villager skin/robe, and the iron golem's metal body.
-  villager_skin: (c, s, r) => noiseFill(c, s, '#a8815b', 8, r),
+  villager_skin: (c, s, r) => {
+    noiseFill(c, s, '#bd8f63', 6, r);
+    blobs(c, s, r, '#a8794f', 4, 3);
+    vShade(c, s, 0.08, 0.12);
+  },
   villager_face: (c, s, r) => {
-    noiseFill(c, s, '#a8815b', 8, r);
-    px(c, 6, 6, '#4a3320', 4, 3);                       // unibrow
-    px(c, 4, 7, '#ffffff', 2, 2); px(c, 10, 7, '#ffffff', 2, 2);
-    px(c, 5, 8, '#3a2a5a'); px(c, 11, 8, '#3a2a5a');    // eyes
-    px(c, 7, 9, '#8a6444', 2, 4);                       // big nose
+    PAINT.villager_skin(c, s, r);
+    px(c, 5, 5, '#5a4028', 6, 1);                                                  // unibrow
+    px(c, 4, 6, '#ffffff', 2, 2); px(c, 10, 6, '#ffffff', 2, 2);                   // eye whites
+    px(c, 5, 7, '#3a7a3a'); px(c, 10, 7, '#3a7a3a');                               // green pupils
+    px(c, 7, 7, '#9a7048', 2, 5);                                                  // big nose
+    px(c, 6, 13, '#8a6444', 4, 1);                                                 // mouth
   },
   villager_robe: (c, s, r) => {
-    noiseFill(c, s, '#6b4a34', 8, r);
-    px(c, 0, 5, '#8a5a2a', s, 2);                        // apron trim
+    noiseFill(c, s, '#7a5a3a', 7, r);
+    streaks(c, s, r, '#6a4c30', 5, false, 6);     // cloth folds
+    px(c, 4, 6, '#9a7a52', 8, 7);                                                  // apron
+    for (let x = 4; x < 12; x += 2) px(c, x, 13, '#5a4028');                       // stitching
+    px(c, 0, 5, '#8a5a2a', s, 2);                                                  // apron trim
+    vShade(c, s, 0.07, 0.13);
   },
   iron_golem: (c, s, r) => {
-    noiseFill(c, s, '#d8c9b8', 6, r);
-    for (let y = 2; y < s; y += 5) px(c, 0, y, '#b7a48c', s, 1);  // plate seams
-    px(c, 4, 6, '#5a5048', 2, 2); px(c, 10, 6, '#5a5048', 2, 2);  // eyes
-    px(c, 6, 9, '#6a7a4a', 4, 3);                        // vine patch
+    noiseFill(c, s, '#d5c8b4', 5, r);
+    for (let y = 2; y < s; y += 5) px(c, 0, y, '#b3a28a', s, 1);                   // plate seams
+    for (let y = 4; y < s; y += 5) { px(c, 1, y, '#8a7a64'); px(c, s - 2, y, '#8a7a64'); }   // rivets
+    streaks(c, s, r, '#c4b69e', 4, false, 4);
+    px(c, 6, 9, '#6a8a4a', 4, 3);                                                  // vine patch
+    px(c, 4, 6, '#4a4038', 2, 2); px(c, 10, 6, '#4a4038', 2, 2);                   // eyes
   },
   // 11-END §9 — shulker shell (purpur-toned) with a lid seam + a small face.
   shulker: (c, s, r) => {
-    noiseFill(c, s, '#976b97', 6, r);
-    px(c, 0, Math.floor(s / 2), '#6e4a6e', s, 1);        // lid seam
-    px(c, 5, 6, '#3a2a3a', 2, 2); px(c, 9, 6, '#3a2a3a', 2, 2);   // eyes
+    noiseFill(c, s, '#a877a8', 6, r);
+    streaks(c, s, r, '#8a5f8a', 6, false, 5);     // shell plates
+    px(c, 0, Math.floor(s / 2), '#6e4a6e', s, 1);                                  // lid seam
+    px(c, 5, 6, '#3a2a3a', 2, 2); px(c, 9, 6, '#3a2a3a', 2, 2);                    // eyes
+    px(c, 5, 6, '#d8a8d8'); px(c, 9, 6, '#d8a8d8');                                // glints
   },
   // 13-BOSSES §2.5 — ender dragon + wither skins.
-  dragon_body: (c, s, r) => { noiseFill(c, s, '#101014', 6, r); px(c, 4, 5, '#e079fa', 2, 1); px(c, 10, 5, '#e079fa', 2, 1); px(c, 6, 9, '#4a3a5a', 4, 1); },
-  dragon_wing: (c, s, r) => { noiseFill(c, s, '#2a2033', 4, r); },
-  wither_body: (c, s, r) => { noiseFill(c, s, '#1c1c20', 8, r); for (let y = 2; y < s; y += 4) px(c, 0, y, '#0e0e12', s, 1); },
-  wither_head: (c, s, r) => { noiseFill(c, s, '#1c1c20', 8, r); px(c, 4, 5, '#3a3a3a', 2, 2); px(c, 10, 5, '#3a3a3a', 2, 2); px(c, 6, 10, '#3a3a3a', 4, 1); },
+  dragon_body: (c, s, r) => {
+    noiseFill(c, s, '#1a1a20', 5, r);
+    for (let y = 1; y < s; y += 3) for (let x = (y % 2) * 2; x < s; x += 4) px(c, x, y, '#2c2c36');   // scales
+    px(c, 4, 5, '#e079fa', 2, 1); px(c, 10, 5, '#e079fa', 2, 1);                   // eye glints
+    px(c, 6, 9, '#4a3a5a', 4, 1);
+    vShade(c, s, 0.05, 0.12);
+  },
+  dragon_wing: (c, s, r) => {
+    noiseFill(c, s, '#2a2033', 4, r);
+    // membrane veins radiating from the shoulder corner
+    for (let i = 0; i < 5; i++) {
+      let x = 1, y = 1 + i * 3;
+      for (let j = 0; j < 9; j++) { px(c, x, y, '#1a1422'); x++; y += (i & 1) ? 0 : 1; }
+    }
+    vShade(c, s, 0.06, 0.14);
+  },
+  wither_body: (c, s, r) => {
+    noiseFill(c, s, '#26262c', 6, r);
+    for (let y = 2; y < s; y += 4) px(c, 0, y, '#141418', s, 1);                   // rib seams
+    blobs(c, s, r, '#303038', 4, 2);
+    vShade(c, s, 0.05, 0.12);
+  },
+  wither_head: (c, s, r) => {
+    PAINT.wither_body(c, s, r);
+    px(c, 4, 5, '#0e0e12', 2, 2); px(c, 10, 5, '#0e0e12', 2, 2);                   // sockets
+    px(c, 6, 10, '#3a3a3a', 4, 1);
+  },
 };
 
 export function mobTexture(name) {
@@ -190,10 +346,15 @@ function boxGeo(w, h, d) {
 export function part(texName, w, h, d, pivot, offset, faceTexName = null) {
   const geo = boxGeo(w, h, d);
   const mats = [];
-  const side = new THREE.MeshLambertMaterial({ map: mobTexture(texName) });
+  // MeshBasicMaterial (unlit) — MC entities shade by the light level AT THEIR
+  // POSITION (applyLightScalar's brightness(level) scalar), exactly like the
+  // chunk shader. MeshLambertMaterial applied the scene lights ON TOP of that
+  // scalar, double-darkening every mob: at sunset the Lambert term and the
+  // scalar each took ~0.25, leaving mobs at ~6% brightness — black silhouettes.
+  const side = new THREE.MeshBasicMaterial({ map: mobTexture(texName) });
   side.userData.baseColor = new THREE.Color(1, 1, 1);
   if (faceTexName) {
-    const face = new THREE.MeshLambertMaterial({ map: mobTexture(faceTexName) });
+    const face = new THREE.MeshBasicMaterial({ map: mobTexture(faceTexName) });
     face.userData.baseColor = new THREE.Color(1, 1, 1);
     // BoxGeometry material order: +X, −X, +Y, −Y, +Z, −Z; face on +Z (model front)
     mats.push(side, side, side, side, face, side);
