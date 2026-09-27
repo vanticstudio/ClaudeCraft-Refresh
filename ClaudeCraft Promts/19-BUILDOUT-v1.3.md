@@ -67,9 +67,9 @@
 
 | Phase | Title | Size | Status | Depends on |
 |---|---|---|---|---|
-| B0 | Harness hardening + worker purity check | S | ☐ not started | — |
-| B1 | Worker-side lighting | L | ☐ not started | B0 |
-| B2 | Chunk shader GLSL3 + textureGrad (seam fix) | M | ☐ not started | — |
+| B0 | Harness hardening + worker purity check | S | ☑ DONE (U11+U12, `npm run verify`) | — |
+| B1 | Worker-side lighting | L | ☑ DONE (U14 parity byte-identical + fallback gate 49/49) | B0 |
+| B2 | Chunk shader GLSL3 + textureGrad (seam fix) | M | ☑ DONE (U13) | — |
 | B3 | Feel & combat polish | M | ☐ not started | — |
 | B4 | New items & systems (fishing, shield, totem, clock/compass) | L | ☐ not started | B0 |
 | B5 | Dungeons & structures | L | ☐ not started | B0 |
@@ -711,3 +711,6 @@ touch layouts.
 |---|---|---|---|---|
 | 2026-09-27 | — | GLM 5.3 flash | `7234d22` | ⚠ shipped broken (invisible world); fixed in `ee7c5ae` |
 | 2026-09-27 | — | GLM 5.3 flash (recovery) | `ee7c5ae` | greedy extents + worker tileIndex + staging needsUpdate + mob materials + texture overhaul + U9/U10 |
+| 2026-09-27 | B0 | Claude (build-out) | B0 commit | U11 registry-field contract + U12 worker purity + `npm run verify`; 12/12 |
+| 2026-09-27 | B2 | Claude (build-out) | B2 commit + fixup | GLSL3 textureGrad seam fix; U13 initially read MASKED (template literals are blanked) — fixed to inspect raw source; NOTE: renderer.js WebGL2 assert skipped (three r185 hardcodes isWebGL2=true); U13 was briefly committed red by a chained command — fixed forward next commit |
+| 2026-09-27 | B1 | Claude (build-out) | B1 commit | LightBFS grid refactor (WorldGrid/HoodGrid), lightWorker pool, promote dispatch + sync fallback; U14 parity byte-identical (228k/83k delta writes) + no-Worker fallback gate 49/49; DEVIATIONS from spec: emitTable dropped (workers import pure blocks.js legally — U12-guarded), pendingLight set dropped (hoodAtLeast already gates it), light pool init moved to CONSTRUCTOR (initWorkers-time init left pre-startWorld ticks with undefined pools — the fallback check caught it) |
