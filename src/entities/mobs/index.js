@@ -13,9 +13,11 @@ import { Blaze, ZombifiedPiglin, WitherSkeleton, MagmaCube, Piglin } from './net
 import { Villager, IronGolem, ZombieVillager } from './villager.js';
 import { Shulker } from './Shulker.js';   // 11-END §9
 import { Wither } from './Wither.js';     // 13-BOSSES §8
+import { Sentinel } from './Sentinel.js'; // B12 §3 — "The Hollow" miniboss
 
 export const HOSTILE_TYPES = new Set(['zombie', 'skeleton', 'creeper', 'spider', 'enderman',
-  'ghast', 'blaze', 'wither_skeleton', 'magma_cube', 'zombie_villager', 'shulker']);   // golem/villager/boss neutral
+  'ghast', 'blaze', 'wither_skeleton', 'magma_cube', 'zombie_villager', 'shulker',
+  'sentinel']);   // golem/villager/boss neutral
 
 const CTORS = {
   zombie: Zombie, skeleton: Skeleton, creeper: Creeper, spider: Spider,
@@ -25,6 +27,7 @@ const CTORS = {
   villager: Villager, iron_golem: IronGolem, zombie_villager: ZombieVillager,   // 12-VILLAGES
   shulker: Shulker,   // 11-END §9
   wither: Wither,     // 13-BOSSES §8 (restore path; summoned imperatively)
+  sentinel: Sentinel, // B12 §3 — gen-spawned Hollow miniboss
 };
 
 export function createMob(world, type, x, y, z, opts = {}) {

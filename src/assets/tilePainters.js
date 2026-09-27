@@ -857,6 +857,65 @@ P.beacon_base = (c, x, y, r) => noise(c, x, y, r, '#1b1029', 6);
 P.beacon_shell = (c, x, y) => glassy(c, x, y, '#c9dbdc');
 P.beacon_core = (c, x, y, r) => { noise(c, x, y, r, '#62e9d8', 5); rect(c, x, y, 5, 5, 6, 6, '#a6fff2'); };
 
+// ============ B12 — "The Hollow" ============
+// §B12 §2 — dark teal-gray mottled stone. Same two-octave strata + fracture-
+// fleck recipe as P.stone (§6) so it reads as stone, just cold and deep; the
+// faint cyan lumens are the biome's own light leaking through the rock.
+P.hollow_stone = (c, x, y, r) => {
+  grain(c, x, y, r, '#465f5c', { amp: 9, cellX: 7, cellY: 4, dither: 3, oct2: { cellX: 2, cellY: 2, amp: 5 } });
+  for (let i = 0; i < 7; i++) {                              // fracture fleck clusters
+    const fx = r() * 15 | 0, fy = r() * 15 | 0;
+    px(c, x, y, fx, fy, '#6a8783');                          // 1px highlight
+    px(c, x, y, fx, fy + 1, '#314744');                      // …over a shadow
+    if (r() < 0.6) { px(c, x, y, fx + 1, fy, '#5a7572'); px(c, x, y, fx + 1, fy + 1, '#3a504d'); }
+    if (r() < 0.3) px(c, x, y, fx + 1, fy + 1, '#54706d');
+  }
+  for (let i = 0; i < 2; i++) {                              // darker crack lines
+    let wx = r() * 13 | 0, wy = r() * 13 | 0;
+    for (let s = 0; s < 5; s++) {
+      px(c, x, y, wx, wy, '#2c403d');
+      wx += r() < 0.65 ? 1 : 0; wy += r() < 0.5 ? 1 : 0;
+    }
+  }
+  for (let i = 0; i < 3; i++) {                              // cyan lumens (echo glow)
+    if (r() < 0.5) continue;
+    const lx = r() * 14 | 0, ly = r() * 14 | 0;
+    px(c, x, y, lx, ly, '#7fe0d0');
+    if (r() < 0.5) px(c, x, y, lx + 1, ly, '#3a7a70');
+  }
+  edgeLight(c, x, y);
+};
+// §B12 §2 — echo_ore: the hollow stone base with the ore flecks recipe (§6).
+// rimBase is the stone's own tone so the shadows bed into it; the cyan crystal
+// flecks carry the bright gleam like every other ore tile.
+P.echo_ore = (c, x, y, r) => {
+  grain(c, x, y, r, '#465f5c', { amp: 9, cellX: 6, cellY: 3, dither: 4, oct2: { cellX: 2, cellY: 1.5, amp: 5 } });
+  oreFlecks(c, x, y, r, '#4aead8', '#465f5c');
+  edgeLight(c, x, y);
+};
+// §B12 §2 — hollow_growth: cross-sprite, a pale teal stalk crowned with three
+// glowing bulbs (the emission-4 light source). Palette rides the §6 cross
+// sprite treatment; '.' = transparent.
+const GROWTH_MAP = [
+  '................',
+  '......T.........',
+  '.....TGT........',
+  '......G....T....',
+  '.......T..GT....',
+  '.......S..G.....',
+  '.....T.S.S......',
+  '....TGT.S.......',
+  '.....G.SS.......',
+  '......SS........',
+  '.......S........',
+  '.......S........',
+  '.......S........',
+  '......SS........',
+  '................',
+  '................',
+];
+P.hollow_growth = (c, x, y, r) => crossSprite(c, x, y, GROWTH_MAP, { S: '#2e5a54', G: '#7ff0dc', T: '#aefef0' }, r);
+
 P.crafting_table_top = (c, x, y, r) => {
   planks(c, x, y, r, '#a76e35');
   for (let i = 0; i < 16; i++) {

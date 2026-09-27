@@ -88,6 +88,8 @@ const BLOCK_TILES = [
   'shulker_box_top', 'shulker_box_side', 'shulker_box_bottom',
   // 13-BOSSES §2.5 — boss blocks
   'dragon_egg', 'wither_skeleton_skull', 'beacon_base', 'beacon_shell', 'beacon_core',
+  // B12 — "The Hollow"
+  'hollow_stone', 'echo_ore', 'hollow_growth',
 ];
 const DESTROY_TILES = Array.from({ length: 10 }, (_, i) => 'destroy_' + i);
 const ITEM_TILES = Object.keys(PAINTERS).filter(n => n.startsWith('item_')).sort();

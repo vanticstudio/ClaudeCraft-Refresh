@@ -2,6 +2,31 @@
 // Driven from audio.tick() (AMENDS 01 §3 tick step 10) — never from render.
 import { BLOCKS, B } from '../registry/blocks.js';
 import { STATE } from '../constants.js';
+import { BIOMES } from '../world/gen/biomes.js';
+import { EVENTS, P } from './events.js';
+import { drone } from './primitives.js';
+
+// ============================================================================
+// B12 — "The Hollow" ambience cue (19-BUILDOUT §B12: "low drone via the
+// existing ambience.js table"). ADDITIVE ENTRY, defined here because events.js
+// is outside this phase's file list — the entry shape is copied verbatim from
+// the §3.5 loop rows in events.js (same bus/cap/priority/loop columns) and
+// should be relocated there (and gain a mob.sentinel.* voice row) when the
+// orchestrator sweeps. The recipe starts SILENT under the exact contract of
+// weather.rain.loop/ambient.wind.loop: ambience.js drives `droneGain` from the
+// gate on the same tick, so there is never a loud first half-second.
+// §2.9 drone: two detuned saws an octave apart under a sine, LP'd to 260 Hz,
+// with a slow 0.11 Hz cutoff wobble so the dark reads as breathing, not static.
+// ============================================================================
+EVENTS['ambient.hollow.loop'] = {
+  bus: 'ambient', maxDist: 24, cap: 1, capKey: 'hollowLoop', priority: P.FAR,
+  replicate: false, loop: true, jitter: 0,
+  recipe: (v, t, p, g) => drone(v, t, {
+    freqs: [55, 55.7, 110], waves: ['sawtooth', 'sawtooth', 'sine'],
+    gain: 0, lpFreq: 260, attack: 2.5,
+    lfo: { rate: 0.11, depth: 0.35, target: 'lp' }, loop: true,
+  }),
+};
 
 const SAMPLE_CELLS = 48;        // §3.5: 48 getBlock/s — noise in the budget
 const SAMPLE_RADIUS = 12;
@@ -15,6 +40,7 @@ export class Ambience {
     this.engine = engine;
     this.rain = null;
     this.wind = null;
+    this.hollow = null;         // B12 — the Hollow's low drone (single loop, like wind)
     this.clusters = { water: [], lava: [] };   // [{ x,y,z, handle }]
     this.fires = [];
   }
@@ -30,6 +56,7 @@ export class Ambience {
     }
     this.updateRain(g);
     this.updateWind(g);
+    this.updateHollow(g);       // B12
     if (tickCount % 20 === 0) this.sampleFluids(g);   // §3.5: once per second
   }
 
@@ -65,6 +92,26 @@ export class Ambience {
       if (!this.wind) return;
     }
     this.wind.setParam('loopGain', gain, 0.5);
+  }
+
+  // B12 — the Hollow's low drone. Gate mirrors updateWind's shape (single
+  // non-positional loop, param-driven gain): active only when the player's
+  // column IS the Hollow biome AND the sky is sealed above them — the biome
+  // describes the column's deep caves (02 §6.1 storage is per column), so the
+  // canSeeSky test keeps the drone underground where the biome actually plays.
+  updateHollow(g) {
+    const p = g.player.pos;
+    const biome = g.world.biomeAt(Math.floor(p.x), Math.floor(p.z));
+    const active = biome === BIOMES.HOLLOW && !g.world.canSeeSky(p.x, p.y, p.z);
+    if (!active) {
+      if (this.hollow) { this.hollow.stop(1.5); this.hollow = null; }
+      return;
+    }
+    if (!this.hollow) {
+      this.hollow = this.engine.startLoop('ambient.hollow.loop', null);
+      if (!this.hollow) return;
+    }
+    this.hollow.setParam('droneGain', 0.16, 1.0);
   }
 
   // §3.5 fluid cluster loops — positional ambience without scanning the world.
@@ -150,6 +197,7 @@ export class Ambience {
   silence() {
     this.rain?.stop(0.5); this.rain = null;
     this.wind?.stop(0.5); this.wind = null;
+    this.hollow?.stop(0.5); this.hollow = null;   // B12
     for (const kind of ['water', 'lava']) {
       for (const c of this.clusters[kind]) c.handle?.stop(0.3);
       this.clusters[kind].length = 0;

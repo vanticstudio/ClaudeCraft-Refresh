@@ -7,11 +7,141 @@ import { BLOCKS, B } from '../../registry/blocks.js';   // 01 §5 — one height
 import { stampVillages } from './village.js';   // 12-VILLAGES §2
 import { stampDungeons } from './dungeons.js';  // B5 — dungeons/ruins/wells
 import { ID, BIOMES, TREE_CFG, GRASS_COUNT, FLOWER_COUNT, CANE_BIOMES,
-         PUMPKIN_BIOMES, HERD_WEIGHTS } from './biomes.js';
+         PUMPKIN_BIOMES, HERD_WEIGHTS, hollowAt, HOLLOW_SURFACE_MIN,
+         HOLLOW_Y_MAX } from './biomes.js';
 
 const LOGS = { oak: ID.oak_log, birch: ID.birch_log, spruce: ID.spruce_log };
 const LEAVES = { oak: ID.oak_leaves, birch: ID.birch_leaves, spruce: ID.spruce_leaves };
 const isLeafId = id => id === ID.oak_leaves || id === ID.birch_leaves || id === ID.spruce_leaves;
+
+// The chunk-centre column index (z<<4|x = 136) — never masked; see the B12
+// header for why village.js's centre-keyed gate needs it untouched.
+const HOLLOW_CENTER_CI = (8 << 4) | 8;
+
+// ============================================================================
+// B12 — "The Hollow" (19-BUILDOUT §B12). Applied at the END of decorate: every
+// surface-decoration decision (trees, cane, pumpkin, grass/flowers, villages,
+// dungeon/ruin gates, snow) has already read the biome by then, so the mask can
+// never influence the pass that applies it, and its own re-application is
+// idempotent (the predicate below never reads the biome except to detect an
+// already-masked column).
+//
+// WHY MUTATE colD (the LRU-cached column record) at all: terrain.js builds the
+// chunk's biomes array with `Uint8Array.from(colD.biome)` AFTER decorate
+// returns — this pass is the only hook in B12's file list that runs before
+// that copy, so it is the only route the HOLLOW id has into chunk.biomes.
+//
+// WHY the mask is safe for every other gen reader: the LRU shares colD across
+// chunks, so a LATER decorate (neighbour tree re-derivation, village/dungeon
+// anchor gates) and any chunk REVISIT re-reading colD can observe masked
+// values. The companion contract in biomes.js holds that stable:
+//   1. only PLAINS columns are ever masked, and every per-biome gen table
+//      (TREE_CFG/GRASS_COUNT/FLOWER_COUNT/CANE_BIOMES/PUMPKIN_BIOMES/
+//      HERD_WEIGHTS/BIOME_TEMPS) carries an index-12 entry byte-equal to
+//      plains's, so reads of 12 behave exactly like reads of 3;
+//   2. the chunk-CENTRE column (136) is never masked — village.js's
+//      VILLAGE_BIOMES gate (outside B12's file list) and the tree/cane/pumpkin
+//      centre reads key on ctx.biomeAt of a chunk centre and must keep seeing
+//      the original biome in every derivation order.
+// With both halves held, first-visit and re-visit derivations agree at every
+// read site (ores' only biome gate is MOUNTAINS — never masked; dungeons'
+// desert gate is negative — a masked column fails it exactly like its plains
+// original; surfaceBlockFor(12, h) === surfaceBlockFor(3, h) for every masked
+// height band, since plains only exists at 64..91).
+// ============================================================================
+
+// B12 §3 — 1 sentinel per ~32 hollow chunks (the brief's recalibration of the
+// spec's "~1 per 40×40 HOLLOW region"), gated on the chunk-centre column
+// passing the biome predicate and landed on a standable underground cell
+// verified against this chunk's own blocks.
+const HOLLOW_SENTINEL_CHANCE = 1 / 32;
+// B12 §2 — growth density per cave-floor cell in the band. Emission 4 each.
+// Measured: the band holds ~0.46 solid-floor air cells per hollow column, so
+// 0.35 lands ~7 growths per hollow chunk — every ~2.5 columns of cave floor:
+// clustered enough to read as glow patches, sparse enough to stay moody (spec:
+// "navigable without torches but stays moody").
+const HOLLOW_GROWTH_DENSITY = 0.35;
+// B12 §2 — echo_ore veins in the band's hollow stone (rare, per spec).
+const ECHO_ORE_CHANCE = 0.0015;
+
+function stampHollow(ctx, blocks, cx, cz, colD) {
+  const wx0 = cx * 16, wz0 = cz * 16;
+  const HOLLOW = BIOMES.HOLLOW;
+  const spawns = [];
+
+  // 1. The biome mask (B12 §1). Sample the cave-noise band FIRST: three
+  //    cheese-field points at y 8/14/20 — all strictly inside y < 24, never
+  //    above it (the noise itself carries the spec's y<24 constraint).
+  const bandNoise = new Float64Array(256);
+  for (let z = 0; z < 16; z++) {
+    for (let x = 0; x < 16; x++) {
+      const ci = (z << 4) | x;
+      const wx = wx0 + x, wz = wz0 + z;
+      bandNoise[ci] = (ctx.cheeseAt(wx, 8, wz) + ctx.cheeseAt(wx, 14, wz) + ctx.cheeseAt(wx, 20, wz)) / 3;
+      if (ci === HOLLOW_CENTER_CI) continue;                 // centre stays original (see header)
+      const cur = colD.biome[ci];
+      if (cur !== BIOMES.PLAINS && cur !== HOLLOW) continue; // idempotent on revisits
+      if (colD.h[ci] < HOLLOW_SURFACE_MIN) continue;         // dry land only — never oceans
+      if (hollowAt(colD.h[ci], bandNoise[ci])) colD.biome[ci] = HOLLOW;
+    }
+  }
+
+  // 2. The band's blocks (B12 §2): plain stone → hollow_stone; echo_ore
+  //    sprinkled into it by a stateless posHash (per-cell, so both the carve
+  //    order and any later re-derivation agree); growth on the cave floors.
+  for (let z = 0; z < 16; z++) {
+    for (let x = 0; x < 16; x++) {
+      const ci = (z << 4) | x;
+      if (colD.biome[ci] !== HOLLOW) continue;
+      const wx = wx0 + x, wz = wz0 + z;
+      for (let y = 2; y < HOLLOW_Y_MAX; y++) {
+        const i = (y << 8) | ci;
+        if (blocks[i] !== ID.stone) continue;
+        blocks[i] = ID.hollow_stone;
+        if (posHash(ctx.seeds.detail, wx, y, wz) < ECHO_ORE_CHANCE) blocks[i] = ID.echo_ore;
+      }
+      for (let y = 4; y < HOLLOW_Y_MAX; y++) {
+        const i = (y << 8) | ci;
+        if (blocks[i] !== ID.air) continue;                  // ore hash above keys on stone cells,
+        const below = BLOCKS[blocks[((y - 1) << 8) | ci]];   // this one on air cells — never the same cell
+        if (!below.opaque || !below.collidable) continue;    // solid floor only (lava fails)
+        if (posHash(ctx.seeds.detail, wx, y, wz) >= HOLLOW_GROWTH_DENSITY) continue;
+        blocks[i] = ID.hollow_growth;
+      }
+    }
+  }
+
+  // 3. The Sentinel (B12 §3). The gate reads the PREDICATE at the centre
+  //    column, not the stored biome — the centre is exempt from masking, so
+  //    this is stable across every derivation order.
+  const rng = splitmix32(chunkSeed(ctx.seeds.detail, cx, cz));
+  const centreH = colD.h[HOLLOW_CENTER_CI];
+  const centreNoise = bandNoise[HOLLOW_CENTER_CI];
+  if (centreH >= HOLLOW_SURFACE_MIN && hollowAt(centreH, centreNoise) && rng() < HOLLOW_SENTINEL_CHANCE) {
+    // First standable cell in the y 8..20 band: 3 cells of air (2.9-tall box)
+    // with clear horizontal neighbours at foot level (the 1.2-wide box must not
+    // spawn half-buried in a cave wall), over an opaque floor — scanned in a
+    // fixed ci-then-y order so the pick is a pure function of the chunk's blocks.
+    const at = i => blocks[i];
+    const solidFloor = i => { const bl = BLOCKS[at(i)]; return bl.opaque && bl.collidable; };
+    const clear = i => at(i) === ID.air;
+    outer:
+    for (let ci = 0; ci < 256; ci++) {
+      if (colD.biome[ci] !== HOLLOW) continue;               // spawn inside the biome
+      for (let y = 20; y >= 8; y--) {
+        const i = (y << 8) | ci;
+        if (!clear(i) || !clear(i + 256) || !clear(i + 512)) continue;
+        if (!solidFloor(i - 256)) continue;
+        const lx = ci & 15, lz = ci >> 4;
+        if (lx === 0 || lx === 15 || lz === 0 || lz === 15) continue;   // keep clear-test in-chunk
+        if (!clear(i + 1) || !clear(i - 1) || !clear(i + 16) || !clear(i - 16)) continue;
+        spawns.push({ type: 'sentinel', x: wx0 + lx + 0.5, y, z: wz0 + lz + 0.5 });
+        break outer;
+      }
+    }
+  }
+  return spawns;
+}
 
 // Trunk height roll — one rng draw per species (02 §10.4)
 export function rollTreeHeight(species, rng) {
@@ -296,9 +426,14 @@ export function decorate(ctx, blocks, cx, cz, colD, states = null) {
       else if (SOLID_TOP[id] && top < 127) set(x, top + 1, z, ID.snow_layer);
     }
   }
-  // B5 — merge dungeon spawn records into the village spawn stream (same
-  // terrain.js contract; chunk.pendingSpawns resolves both)
-  const spawns = [...(village?.spawns ?? []), ...(dungeon?.spawns ?? [])];
+  // 6. B12 — "The Hollow" (last: every surface pass above must have already
+  //    read the un-masked biome; see stampHollow's header for the stability
+  //    contract that makes the LRU-shared colD mutation safe)
+  const hollowSpawns = stampHollow(ctx, blocks, cx, cz, colD);
+
+  // B5/B12 — merge dungeon + hollow spawn records into the village spawn
+  // stream (same terrain.js contract; chunk.pendingSpawns resolves all three)
+  const spawns = [...(village?.spawns ?? []), ...(dungeon?.spawns ?? []), ...hollowSpawns];
   return { villageMeta: village?.villageMeta ?? null, spawns };
 }
 

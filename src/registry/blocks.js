@@ -1347,6 +1347,46 @@ defBlock(187, 'beacon', {
 });
 
 // =======================================================================
+// B12 — "The Hollow" (19-BUILDOUT-v1.3 §B12). Blocks 145/146/147.
+//
+// Id allocation: 145–147 are the orchestrator's B12 slots (144 is B5's
+// mossy_cobblestone). They numerically sit inside 10-NETHER's 115–149 range
+// exactly as B5's 144 already does — the registry is dense-array-indexed, not
+// range-policed, and U5 only checks 0..255 uniqueness.
+//
+// Hollow stone is the biome's substrate: the generator swaps plain stone for it
+// in masked columns' y<24 band (features.js stampHollow). Blast 9 gives the
+// wither-resistant feel §B12 asks for ("blast-resistant 9 — wither-resistant
+// feel") without hardness getting in the way of digging (§: "hardness ~2").
+//
+// ECHO DROP DEVIATION (19-BUILDOUT §B12 + phase brief): echo_ore is specced to
+// drop an `echo_shard` ITEM, but item registry ids are OUTSIDE this phase's
+// file list and `echo_shard` does not resolve (idOf throws) — verified at
+// build time. Until the orchestrator registers it, the drop resolves to
+// `emerald` (the item §B12's Sentinel loot falls back to as well). Swap the
+// constant below to 'echo_shard' when the item lands; nothing else references
+// the name.
+const ECHO_DROP = 'emerald';
+
+defBlock(145, 'hollow_stone', {
+  hardness: 2.0, blast: 9.0, tool: 'pickaxe', tier: 0,
+  drops: gated(dropSelf('hollow_stone')),
+});
+// §B12 §2 — rare band ore; iron-pick tier (1) to drop; Fortune multiplies the
+// shard count exactly like coal_ore's coal (the ore() gate wraps the closure).
+ore(146, 'echo_ore', 1,
+  ctx => [{ name: ECHO_DROP, count: fortuneM(ctx.fortune ?? 0, ctx.rng) }],
+  function (ctx) { return harvestOK(this, ctx.toolClass, ctx.toolTier) ? ri(ctx.rng, 2, 5) : 0; });
+// §B12 §2 — the biome's glow source: cross-shape, emission 4 so the cave band
+// is navigable without torches but stays moody (spec's own words). Lives on the
+// band's stone floors; support loss pops it like any below-supported plant.
+defBlock(147, 'hollow_growth', {
+  ...CROSS, emission: 4, needsSupport: 'below',
+  neighborUpdate: needsBelow([B.STONE, B.HOLLOW_STONE]),
+  canPlaceAt: (world, x, y, z) => [B.STONE, B.HOLLOW_STONE].includes(world.getBlock(x, y - 1, z)),
+});
+
+// =======================================================================
 // Material classes — the `Mat` column (16-AUDIO AMENDS 06 §2, table 16 §3.1).
 //
 // Transcribed verbatim from 16 §3.1 rather than threaded through each defBlock
@@ -1365,10 +1405,12 @@ const MAT = {
   stone: ['stone', 'cobblestone', 'mossy_cobblestone', 'sandstone', 'bedrock', 'obsidian', 'furnace', 'furnace_lit', 'coal_block',
     'enchanting_table', 'grindstone', 'brewing_stand',
     'blast_furnace', 'blast_furnace_lit', 'smoker', 'smoker_lit', 'emerald_ore',   // 12-VILLAGES
+    'hollow_stone',   // B12 — substrate stone class
     'redstone_wire', 'redstone_torch', 'lever', 'stone_button', 'stone_pressure_plate',
     'repeater', 'comparator', 'piston', 'sticky_piston', 'piston_head', 'observer',
     'dispenser', 'dropper', 'hopper', 'redstone_lamp', 'redstone_lamp_lit', 'redstone_block'],
-  ore: ['coal_ore', 'iron_ore', 'gold_ore', 'diamond_ore', 'redstone_ore', 'lapis_ore'],
+  ore: ['coal_ore', 'iron_ore', 'gold_ore', 'diamond_ore', 'redstone_ore', 'lapis_ore',
+    'echo_ore'],   // B12
   metal: ['iron_block', 'gold_block', 'diamond_block', 'anvil',
     'bell', 'emerald_block'],   // 12-VILLAGES
   wood: ['oak_planks', 'birch_planks', 'spruce_planks', 'oak_log', 'birch_log', 'spruce_log',
@@ -1383,7 +1425,9 @@ const MAT = {
     'sugar_cane_block', 'short_grass', 'dandelion', 'poppy', 'dead_bush', 'tnt',
     'brown_mushroom', 'red_mushroom',   // 09-POTIONS §7.1
     'hay_bale',   // 12-VILLAGES
-    'chorus_plant', 'chorus_flower'],   // 11-END (plant-like → grass voice)
+    'chorus_plant', 'chorus_flower',   // 11-END (plant-like → grass voice)
+    'hollow_growth',   // B12 — plant-like → grass voice
+  ],
   glass: ['glass', 'ice', 'glowstone',
     'beacon'],   // 13-BOSSES — glassy shell voice
   // 16 §3.1 — the two reserved dimension classes. Their rows carry no block list
