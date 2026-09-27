@@ -1,0 +1,24 @@
+{
+  "name": "ClaudeCraft",
+  "short_name": "ClaudeCraft",
+  "id": "./",
+  "start_url": "./",
+  "scope": "./",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#101014",
+  "theme_color": "#101014",
+  "description": "The complete Minecraft survival loop in the browser — original, procedural, offline-capable.",
+  "icons": [
+    {
+      "src": "menu/logo-primary.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "menu/logo-primary.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

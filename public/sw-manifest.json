@@ -1,0 +1,24 @@
+{
+  "generated": "2026-09-27T08:45:23.168Z",
+  "files": [
+    "./",
+    "./assets/NetHost-C6Z_bliZ.js",
+    "./assets/index-CY6wSc-L.js",
+    "./assets/index-Du8lM1hu.css",
+    "./assets/lightWorker-D291xyep.js",
+    "./assets/meshWorker-CD1jC23L.js",
+    "./assets/terrainWorker-DrX7JL0t.js",
+    "./menu/bg-dark.png",
+    "./menu/bg-sunset.png",
+    "./menu/buttons/btn-continue.png",
+    "./menu/buttons/btn-new-game.png",
+    "./menu/buttons/btn-press-start.png",
+    "./menu/buttons/btn-quit.png",
+    "./menu/buttons/btn-settings.png",
+    "./menu/fonts/bungee-latin.woff2",
+    "./menu/fonts/vt323-latin.woff2",
+    "./menu/logo-emerald.png",
+    "./menu/logo-primary.png",
+    "./menu/logo-stacked.png"
+  ]
+}

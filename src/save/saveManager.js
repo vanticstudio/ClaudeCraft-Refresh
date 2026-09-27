@@ -267,6 +267,62 @@ export class SaveManager {
     }
   }
 
+  // B11 — gather every record of the CURRENT world in the EXACT on-disk shapes
+  // (buildMeta()'s meta + serializeChunk()'s chunk records keyed by their store
+  // key). exportWorld.js wraps this in the .ccworld container; nothing here
+  // re-encodes — the records are already structured-clone-safe. NOTE: this reads
+  // the LAST COMMITTED state, so callers exporting mid-session should saveAll()
+  // first (the title-screen button exports after Save & Quit, which already did).
+  // Resolves null when there is no open world / no db (degraded session).
+  exportAll() {
+    if (!this.db || !this.meta) return Promise.resolve(null);
+    return new Promise((resolve, reject) => {
+      let tx;
+      try { tx = this.db.transaction('chunks', 'readonly'); }
+      catch (err) { reject(err); return; }   // closed connection — same bail as saveAll
+      const keysReq = tx.objectStore('chunks').getAllKeys();
+      const recsReq = tx.objectStore('chunks').getAll();
+      tx.oncomplete = () => {
+        const players = this.meta.players ?? {};
+        resolve({
+          meta: this.meta,
+          chunks: keysReq.result.map((key, i) => ({ key, record: recsReq.result[i] })),
+          // v3 nests players INSIDE meta; the player section below is the host's
+          // own record, exported redundantly per the B11 file layout. Import only
+          // consults it when meta carries no players map (legacy v1/v2 files).
+          player: players[this.hostId] ?? Object.values(players)[0] ?? null,
+        });
+      };
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  // B11 — install a parsed .ccworld as this browser's ONE world. DB 'mc-world'
+  // has no world slots (every record lives under fixed keys), so "import as a
+  // NEW world" = wipe + write + stamp a fresh worldId onto the meta (done by
+  // importWorld before it calls this — this method just persists what it gets).
+  async installWorld({ meta, chunks }) {
+    await this.deleteWorld();
+    await this.open();
+    if (this.unavailable) throw new Error('storage unavailable — cannot import');
+    return new Promise((resolve, reject) => {
+      let tx;
+      try { tx = this.db.transaction(['meta', 'chunks'], 'readwrite'); }
+      catch (err) { reject(err); return; }
+      tx.objectStore('meta').put(meta, 'world');
+      const store = tx.objectStore('chunks');
+      for (const { key, record } of chunks) store.put(record, key);
+      tx.oncomplete = () => {
+        // mirror open()'s post-load state exactly: meta + the full key set
+        this.meta = meta;
+        this.savedChunkKeys = new Set(chunks.map(c => c.key));
+        resolve(meta);
+      };
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
+    });
+  }
+
   deleteWorld() {
     return new Promise(resolve => {
       this.db?.close();

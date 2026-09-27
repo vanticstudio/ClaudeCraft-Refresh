@@ -2,6 +2,14 @@
 // Title screen = the desert/badlands sunset scene from 19-MAIN-MENU §3.
 import { loadOptions, saveOptions } from './options.js';
 import { emitSound, audio } from '../audio/engine.js';
+import { exportWorld, importWorld } from '../world/exportWorld.js';
+import { setupPWA, promptInstall } from '../pwa.js';
+
+// B11 — PWA registration runs from HERE (module scope of menus.js, imported by
+// main.js at boot): main.js is off-limits in the platform wave's file contract,
+// and menus.js is the natural owner of the install hint anyway. One guard so
+// multiple Menus instances never double-register.
+let PWA_SET_UP = false;
 
 // The five audio buses (16 AMENDS 01 §15.3). Order is the display order.
 const OPT_ROWS = [
@@ -59,6 +67,18 @@ export class Menus {
               <img src="menu/buttons/btn-settings.png" alt="Settings"></button>
             <button class="cc-btn" id="btn-quit-title" title="Quit">
               <img src="menu/buttons/btn-quit.png" alt="Quit"></button>
+            <!-- B11 — platform row: world export/import + the quiet PWA install
+                 hint. Text buttons: the art pack has no Export/Install plates. -->
+            <div class="cc-platform-row">
+              <button class="cc-btn-text" id="btn-export" title="Download this world as a .ccworld file" hidden>Export world</button>
+              <button class="cc-btn-text" id="btn-import" title="Install a .ccworld file as a new world">Import world&hellip;</button>
+              <button class="cc-btn-text" id="cc-install" title="Install ClaudeCraft as an app" hidden>Install app</button>
+            </div>
+            <!-- one-line status channel (B11): import results, offline
+                 multiplayer notice — there is no toast surface on the title
+                 screen, so this stands in -->
+            <div id="cc-status" class="cc-status" role="status" aria-live="polite"></div>
+            <input type="file" id="cc-import-file" accept=".ccworld" hidden>
           </div>
 
         </div>
@@ -73,7 +93,7 @@ export class Menus {
         <button id="btn-resume">Resume</button>
         <button id="btn-pause-settings">Options…</button>
         <button id="btn-quit">Save &amp; Quit to Title</button>
-        <div style="opacity:0.6;font-size:14px">Sprint: double-tap W · Drop stack: Shift+Q · Debug: F3 · Game mode: F4</div>
+        <div style="opacity:0.6;font-size:14px">Sprint: double-tap W · Drop stack: Shift+Q · Debug: F3 · Game mode: F4<span id="cc-touch-hint"></span></div>
       </div>
       <div id="screen-death" class="screen">
         <h1>You Died!</h1>
@@ -181,6 +201,10 @@ export class Menus {
       logo: $('cc-logo'), wordmark: $('cc-wordmark'),
       start: $('cc-start'), menu: $('cc-menu'), settings: $('cc-settings'),
       stage: document.querySelector('#screen-title .cc-title'),
+      // B11 — platform row + status channel
+      btnExport: $('btn-export'), btnImport: $('btn-import'),
+      install: $('cc-install'), status: $('cc-status'),
+      importFile: $('cc-import-file'),
     };
     // wordmark fallback: swap in the CSS-text twin if the logo PNG fails (§3.1)
     this.el.logo.addEventListener('error', () => {
@@ -217,6 +241,20 @@ export class Menus {
     btn('btn-quit', () => hooks.onQuit());
     btn('btn-respawn', () => hooks.onRespawn());
     btn('btn-death-title', () => hooks.onQuit());
+    // B11 — export/import + install hint
+    btn('btn-export', () => this.exportWorldFile());
+    btn('btn-import', () => this.el.importFile.click());
+    btn('cc-install', async () => {
+      await promptInstall();
+      // accepted → appinstalled hides it anyway; dismissed → hide now (quiet
+      // UX: never nag twice for the same criteria window)
+      this.setInstallHint(false);
+    });
+    this.el.importFile.addEventListener('change', () => {
+      const file = this.el.importFile.files?.[0];
+      this.el.importFile.value = '';   // re-selecting the same file must re-fire
+      this.importWorldFile(file);
+    });
     // scoped to the title screen, so it cannot swallow keys during play
     this.el.title.addEventListener('keydown', e => this._onTitleKey(e));
     // The panel is no longer inside #screen-title, so Escape and the focus trap
@@ -333,6 +371,37 @@ export class Menus {
     });
 
     this.applyTitleButtons();
+
+    // B11 — PWA: register the SW + capture the install prompt (module-owned
+    // here, not main.js — see the header note). The hint only ever shows when
+    // the browser says it can install.
+    if (!PWA_SET_UP) {
+      PWA_SET_UP = true;
+      setupPWA({
+        onInstallAvailable: () => this.setInstallHint(true),
+        onInstalled: () => this.setInstallHint(false),
+      });
+    }
+
+    // B11 — offline guard for multiplayer: the Host/Join buttons are injected
+    // by NetMenus AFTER this constructor runs, so the guard is a capture-phase
+    // listener on the menu itself, matching the injected labels. stopPropagation
+    // in capture phase prevents the button's own onclick from firing.
+    this.el.menu.addEventListener('click', e => {
+      if (navigator.onLine) return;
+      const label = (e.target?.closest?.('button')?.textContent ?? '').trim();
+      if (/multiplayer/i.test(label)) {
+        e.stopPropagation();
+        e.preventDefault();
+        this.setStatus('Multiplayer needs a connection');
+      }
+    }, true);
+
+    // B11 — touch-friendly hint on the pause sheet (coarse pointers only)
+    if (typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches) {
+      const hint = document.getElementById('cc-touch-hint');
+      if (hint) hint.textContent = ' · Touch: left stick moves, right side looks/mine, buttons right';
+    }
   }
 
   /** One writer for the shared options object: buses live, then persist (§15.3). */
@@ -470,6 +539,57 @@ export class Menus {
     this.el.stage.classList.toggle('cc-started', this.started);
     this.el.btnContinue.hidden = !this.hasSave;
     this.el.btnDelete.hidden = !this.hasSave;   // lives in the settings panel
+    this.el.btnExport.hidden = !this.hasSave;   // B11 — nothing to export without a world
+  }
+
+  // -------- B11: status line + platform actions --------
+  /** The title screen's one-line status channel (no toast surface exists here). */
+  setStatus(msg, ms = 3200) {
+    if (!this.el.status) return;
+    this.el.status.textContent = msg;
+    clearTimeout(this._statusTimer);
+    if (ms > 0) this._statusTimer = setTimeout(() => { this.el.status.textContent = ''; }, ms);
+  }
+
+  setInstallHint(on) {
+    this.el.install.hidden = !on;
+  }
+
+  /** Download the current world as a .ccworld blob (Export button). */
+  async exportWorldFile() {
+    const save = this.game.save;
+    if (!save?.hasWorld()) { this.setStatus('Nothing to export yet'); return; }
+    try {
+      const buf = await exportWorld(save);
+      const slug = String(save.meta.seed || 'world').replace(/[^a-z0-9_-]+/gi, '-').slice(0, 24) || 'world';
+      const url = URL.createObjectURL(new Blob([buf], { type: 'application/octet-stream' }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `claudecraft-${slug}.ccworld`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      this.setStatus('World exported');
+    } catch (err) {
+      this.setStatus('Export failed: ' + (err?.message ?? err));
+    }
+  }
+
+  /** Install a .ccworld file as a NEW world (Import button → file input). */
+  async importWorldFile(file) {
+    if (!file) return;
+    try {
+      // The layout is one save slot per browser: an import overwrites it —
+      // ask before destroying an existing world (exporting first is the escape hatch).
+      if (this.game.save?.hasWorld() && !confirm('Importing replaces the current world. Continue?')) return;
+      const buf = await file.arrayBuffer();
+      const meta = await importWorld(this.game.save, buf);
+      // refresh the title's world "list" — a single-slot UI, so the render
+      // function is applyTitleButtons via setHasSave (Continue appears)
+      this.setHasSave(true);
+      this.setStatus(`Imported "${meta.seed}" — press Continue to play`);
+    } catch (err) {
+      this.setStatus('Import failed: ' + (err?.message ?? err));
+    }
   }
 
   setHasSave(has) {

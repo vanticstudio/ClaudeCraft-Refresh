@@ -2,7 +2,14 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- B11 — touch: cover the notch, kill pinch/double-tap zoom (drag-look and
+       the tap controls misfire otherwise). -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+  <!-- B11 — PWA: installability requires the manifest + theme-color in the DOM.
+       (index.html sits outside the phase's touch-list; additive-only — documented
+       deviation in the phase report.) -->
+  <meta name="theme-color" content="#101014">
+  <link rel="manifest" href="./manifest.webmanifest">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='9' fill='%235d9b3e'/><rect y='9' width='16' height='7' fill='%238a6142'/></svg>">
   <title>ClaudeCraft</title>
 </head>

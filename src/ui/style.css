@@ -722,3 +722,12 @@ html, body {
 }
 .slot-abs > .icon3d { position: absolute; inset: 0; }
 .cv-tab > .icon3d { width: calc(16 * var(--gpx)); height: calc(16 * var(--gpx)); }
+
+/* B11 — platform wave: title-screen Export/Import row + the one-line status
+   channel. Touch controls are self-contained inline styles built by input.js
+   (hud.js off-limits this wave), so nothing else is added here. */
+.cc-platform-row { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-top: 10px; }
+.cc-platform-row .cc-btn-text { margin: 0; }
+.cc-status { min-height: 18px; margin-top: 6px; text-align: center;
+  font-family: monospace; font-size: 13px; color: #ffd479;
+  opacity: 0.9; text-shadow: 1px 1px 0 #000; }
