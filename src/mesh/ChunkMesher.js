@@ -405,23 +405,32 @@ export class ChunkMesher {
       const n = FACE_NORMALS[f];
       const axis = n[0] !== 0 ? 0 : n[1] !== 0 ? 1 : 2;
       const [t1, t2] = FACE_TANGENTS[f];
-      for (let d = 0; d < 16; d++) this.greedyLayer(blocks, states, f, axis, t1, t2, d);
+      // The chunk is 16×128×16: a Y-normal layer is 128 deep and an X/Z
+      // face's tangent grid is 16×128. The original pass scanned every
+      // extent as 16 — only the bottom 16³ ever produced faces, so every
+      // chunk above y=15 meshed EMPTY (invisible world).
+      const dMax = axis === 1 ? 128 : 16;
+      const aMax = t1 === 1 ? 128 : 16;
+      const bMax = t2 === 1 ? 128 : 16;
+      for (let d = 0; d < dMax; d++) this.greedyLayer(blocks, states, f, axis, t1, t2, d, aMax, bMax);
     }
     this.keyMap = null;
   }
 
-  greedyLayer(blocks, states, f, axis, t1, t2, d) {
-    const mKey = GREEDY_KEYS;                 // Int32Array(256); 0 = no face
+  greedyLayer(blocks, states, f, axis, t1, t2, d, aMax, bMax) {
+    const mKey = GREEDY_KEYS;                 // Int32Array(2048); 0 = no face
     mKey.fill(0);
     const n = FACE_NORMALS[f];
     const hood = this.hood;                   // local refs for the hot loop
-    for (let b = 0; b < 16; b++) {
-      const rowBase = b << 4;
-      for (let a = 0; a < 16; a++) {
-        // mask grid (a along t1, b along t2) → cell coords
-        const x = axis === 0 ? d : a;
-        const y = axis === 1 ? d : (axis === 2 ? b : a);
-        const z = axis === 2 ? d : b;
+    for (let b = 0; b < bMax; b++) {
+      const rowBase = b * aMax;
+      for (let a = 0; a < aMax; a++) {
+        // mask grid (a along t1, b along t2) → cell coords; d carries the
+        // normal axis. (a,b,d) partition the three axes — the old hardcoded
+        // x=d/a, y=d/a, z=b table collapsed Z faces onto the x=y diagonal.
+        const x = axis === 0 ? d : (t1 === 0 ? a : b);
+        const y = axis === 1 ? d : (t1 === 1 ? a : b);
+        const z = axis === 2 ? d : (t1 === 2 ? a : b);
         const ci = (y << 8) | (z << 4) | x;
         const id = blocks[ci];
         if (id === 0) continue;
@@ -471,22 +480,23 @@ export class ChunkMesher {
       }
     }
     // 0fps greedy rect expansion: grow w along t1, then h along t2.
-    for (let b = 0; b < 16; b++) {
-      for (let a = 0; a < 16; ) {
-        if (!mKey[b << 4 | a]) { a++; continue; }
-        const tuple = GREEDY_TUPLES[b << 4 | a];
+    for (let b = 0; b < bMax; b++) {
+      const rowBase = b * aMax;
+      for (let a = 0; a < aMax; ) {
+        if (!mKey[rowBase | a]) { a++; continue; }
+        const tuple = GREEDY_TUPLES[rowBase | a];
         let w = 1;
-        while (a + w < 16 && mKey[b << 4 | (a + w)] && GREEDY_TUPLES[b << 4 | (a + w)] === tuple) w++;
+        while (a + w < aMax && mKey[rowBase | (a + w)] && GREEDY_TUPLES[rowBase | (a + w)] === tuple) w++;
         let h = 1;
-        outer: while (b + h < 16) {
+        outer: while (b + h < bMax) {
           for (let ww = 0; ww < w; ww++) {
-            const m = (b + h) << 4 | (a + ww);
+            const m = (b + h) * aMax | (a + ww);
             if (!mKey[m] || GREEDY_TUPLES[m] !== tuple) break outer;
           }
           h++;
         }
         for (let hh = 0; hh < h; hh++) {
-          for (let ww = 0; ww < w; ww++) mKey[(b + hh) << 4 | (a + ww)] = 0;
+          for (let ww = 0; ww < w; ww++) mKey[(b + hh) * aMax | (a + ww)] = 0;
         }
         this.emitCubeRect(f, axis, t1, t2, d, a, b, w, h, tuple);
         a += w;
@@ -498,9 +508,9 @@ export class ChunkMesher {
     const builder = tuple.bld;
     builder.ensure(4, 6);
     const n = FACE_NORMALS[f];
-    const x = axis === 0 ? d : a;
-    const y = axis === 1 ? d : (axis === 2 ? b : a);
-    const z = axis === 2 ? d : b;
+    const x = axis === 0 ? d : (t1 === 0 ? a : b);
+    const y = axis === 1 ? d : (t1 === 1 ? a : b);
+    const z = axis === 2 ? d : (t1 === 2 ? a : b);
     const uvr = this.tileUV, t4 = tuple.tile * 4;
     const shade = FACE_SHADE[f];
     // span sentinels + merged-tile origin — the shader's fract() path keys
@@ -530,7 +540,9 @@ export class ChunkMesher {
     }
     builder.quad(verts[0], verts[1], verts[2], verts[3],
       tuple.ao[0] + tuple.ao[2] > tuple.ao[1] + tuple.ao[3]);
-    this.trackY(y, y + 1);
+    // the rect may span many cells along Y (tangent axis 1) — track the full
+    // extent or the bounding sphere clips merged cliff faces
+    this.trackY(y, y + (t1 === 1 ? w : t2 === 1 ? h : 1));
   }
 
   faceVisible(a, bId) {
@@ -1204,15 +1216,16 @@ export class ChunkMesher {
 
 const V4 = [0, 0, 0, 0];
 
-// OVERHAUL §G — greedy scratch: per-corner light (cornerLight), the 16×16
-// layer mask, per-cell merge tuples, and a reused position scratch. All
+// OVERHAUL §G — greedy scratch: per-corner light (cornerLight), the layer
+// mask (16×128 max — X/Z-face tangent grids span the full chunk height),
+// per-cell merge tuples, and a reused position scratch. All
 // module-level, so a build() allocates nothing in the hot path beyond the
 // keyMap/tuple objects (which the worker's GC absorbs off-thread).
 const CSKY = new Uint8Array(4);
 const CBLK = new Uint8Array(4);
 const CAO = new Uint8Array(4);
-const GREEDY_KEYS = new Int32Array(256);
-const GREEDY_TUPLES = new Array(256);
+const GREEDY_KEYS = new Int32Array(2048);
+const GREEDY_TUPLES = new Array(2048);
 const SCRATCH3 = [0, 0, 0];
 // FACE_UVS varies u along this tangent axis per face (±X faces run u along Z,
 // every other face along X or Y per faceTables) — greedy spans resolve the

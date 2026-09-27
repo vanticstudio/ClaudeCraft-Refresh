@@ -1018,6 +1018,199 @@ function checkConsole() {
   report('U8', 'no stray console.log outside the F3 overlay and the startup banner', fails, [note]);
 }
 
+// ==================================================================== U9
+// Runtime gen + light + mesh regression. U1-U8 are static — v1.2.6 shipped a
+// greedy pass that only scanned the bottom 16³ of each chunk (every chunk
+// above y=15 meshed EMPTY → invisible world) and a mesh worker whose registry
+// copy had no resolved tileIndex (tileFor threw per job → loading stalled at
+// 0/49 → watchdog nuked the spawn ring) and none of it was observable here.
+// This check executes the REAL pipeline in Node: the three dimension
+// generators, the real LightEngine, the real mesher on the main-thread path
+// AND the worker snapshot path, plus a synthetic chunk holding every block id
+// (incl. waterlogged variants and powered dust) so every emitter runs.
+async function checkRuntimeMesh(blocks) {
+  const fails = [];
+  const notes = [];
+  try {
+    // World.js's import chain reaches audio/engine.js's module-scope
+    // `export const audio = new AudioEngine()`, which reads localStorage in
+    // its ctor — legal in the browser, absent in Node. Stub the storage API
+    // (never written by this harness: values are read and discarded).
+    globalThis.localStorage = {
+      getItem: () => null, setItem: () => {}, removeItem: () => {},
+    };
+    const [
+      { ChunkMesher, rawToGeometry }, { World }, { Chunk, ChunkState },
+      { finalizeBlockTiles }, { createGenerator }, { createNetherGenerator },
+      { createEndGenerator }, { TILE_NAMES },
+      { ATLAS_COLS, ATLAS_CELL, ATLAS_SIZE, TILE_PX, ATLAS_GUTTER, chunkKey },
+    ] = await Promise.all([
+      imp('mesh/ChunkMesher.js'), imp('world/World.js'), imp('world/Chunk.js'),
+      imp('registry/blocks.js'), imp('world/gen/terrain.js'),
+      imp('world/gen/nether.js'), imp('world/gen/end.js'),
+      imp('assets/atlas.js'), imp('constants.js'),
+    ]);
+    const { BLOCKS, B, WATERLOGGED } = blocks;
+
+    // exact buildAtlas tileUV (half-texel inset, §7.2)
+    finalizeBlockTiles(Object.fromEntries(TILE_NAMES.map((n, i) => [n, i])));
+    const tileUV = new Float32Array(1024 * 4);
+    for (let t = 0; t < 1024; t++) {
+      const x0 = (t & (ATLAS_COLS - 1)) * ATLAS_CELL + ATLAS_GUTTER;
+      const y0 = (t >> 5) * ATLAS_CELL + ATLAS_GUTTER;
+      tileUV[t * 4] = (x0 + 0.5) / ATLAS_SIZE;
+      tileUV[t * 4 + 1] = (y0 + 0.5) / ATLAS_SIZE;
+      tileUV[t * 4 + 2] = (x0 + TILE_PX - 0.5) / ATLAS_SIZE;
+      tileUV[t * 4 + 3] = (y0 + TILE_PX - 0.5) / ATLAS_SIZE;
+    }
+
+    const validateGeometry = (label, geos) => {
+      for (const bucket of ['opaque', 'cutout', 'water']) {
+        const g = geos[bucket];
+        if (!g) continue;
+        const vc = g.attributes.position.count;
+        if (g.index.count % 6 !== 0) fails.push(`${label}: ${bucket} index count ${g.index.count} not a quad multiple`);
+        for (const name of ['position', 'normal', 'uv', 'aSpan', 'aTileUV', 'color', 'tint']) {
+          const a = g.attributes[name];
+          if (!a) { fails.push(`${label}: ${bucket} missing attribute ${name}`); continue; }
+          for (let i = 0; i < a.array.length; i++) {
+            if (!Number.isFinite(a.array[i])) { fails.push(`${label}: ${bucket}.${name}[${i}] non-finite`); break; }
+          }
+        }
+        if (g.index.array.constructor === Uint16Array && vc > 65536) {
+          fails.push(`${label}: ${bucket} Uint16 index with ${vc} verts`);
+        }
+      }
+    };
+
+    // build a 5×5 generated grid in a real World, light the inner 3×3 (the
+    // promote() contract), mesh the inner 3×3 on both paths and compare.
+    const meshGrid = (label, makeGenerator, dim, hasSky) => {
+      const world = new World('smoke-' + label);
+      world.activeDim = dim;
+      world.hasSkyLight = hasSky;
+      const gen = makeGenerator('smoke-seed');
+      const chunks = new Map();
+      for (let dx = -2; dx <= 2; dx++) {
+        for (let dz = -2; dz <= 2; dz++) {
+          const c = new Chunk(dx, dz, dim);
+          const r = gen.generateChunk(dx, dz);
+          c.install(r.blocks, r.heightMap, r.biomes, r.states ?? null);
+          chunks.set(c.key, c);
+          world.chunks.set(c.key, c);
+        }
+      }
+      world.chunkVersion += 25;
+      const mesher = new ChunkMesher(tileUV);
+      // promote() order + captureHood's contract: EVERY chunk in the 5×5 must
+      // reach LIT (the inner ring's 3×3 hoods reach the outer ring) before any
+      // build — mesh the inner 3×3 only after the full grid is lit.
+      for (const c of world.chunks.values()) world.light.initialLight(c);
+      let meshedBuckets = 0, verts = 0, meshedCount = 0;
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dz = -1; dz <= 1; dz++) {
+          const c = chunks.get(chunkKey(dx, dz)) ?? world.chunks.get(chunkKey(dx, dz));
+          if (!c) { fails.push(`${label}: chunk ${dx},${dz} missing`); continue; }
+          const geos = mesher.build(world, c);
+          if (!geos) { fails.push(`${label}: mesher.build returned null for ${c.key}`); continue; }
+          meshedCount++;
+          validateGeometry(`${label} ${c.key}`, geos);
+          // worker snapshot path — deterministic parity with the sync path
+          const snap = { hood: [], center: null };
+          for (let ax = -1; ax <= 1; ax++) {
+            for (let az = -1; az <= 1; az++) {
+              const h = world.chunks.get(chunkKey(dx + ax, dz + az));
+              snap.hood[(ax + 1) * 3 + (az + 1)] = {
+                blocks: h.blocks.slice(), states: h.states.slice(),
+                skyLight: h.skyLight.slice(), blockLight: h.blockLight.slice(),
+                biomes: h.biomes.slice(),
+              };
+            }
+          }
+          snap.center = { blocks: c.blocks.slice(), states: c.states.slice(), minY: c.minY, maxY: c.maxY };
+          const raw = mesher.buildFromSnapshot(snap);
+          for (const bucket of ['opaque', 'cutout', 'water']) {
+            const g = geos[bucket], r = raw[bucket];
+            const gv = g ? g.attributes.position.count : 0;
+            const rv = r ? r.pos.length / 3 : 0;
+            if (gv !== rv) fails.push(`${label} ${c.key}: ${bucket} sync ${gv} vs snapshot ${rv} verts`);
+            if (r) { meshedBuckets++; verts += rv; }
+          }
+        }
+      }
+      notes.push(`${label}: ${meshedCount}/9 chunks meshed both paths, ${meshedBuckets} non-empty buckets, ${verts} verts`);
+    };
+
+    meshGrid('overworld', createGenerator, 0, true);
+    meshGrid('nether', createNetherGenerator, 1, false);
+    meshGrid('end', createEndGenerator, 2, false);
+
+    // Synthetic chunk: one of EVERY block id (state 0) on stone platforms,
+    // waterlogged variants for waterloggable blocks, and dust at powers 0/15.
+    {
+      const world = new World('smoke-synthetic');
+      const chunks = new Map();
+      const synth = () => {
+        const c = new Chunk(0, 0, 0);
+        const blocks = new Uint8Array(32768);
+        const states = new Uint8Array(32768);
+        for (let z = 0; z < 16; z++) for (let x = 0; x < 16; x++) blocks[(0 << 8) | (z << 4) | x] = B.BEDROCK;
+        const ids = [];
+        for (const blk of BLOCKS) if (blk && blk.id !== 0) ids.push(blk);
+        // 5×5 per layer, 3-cell spacing so faces never touch; layer k at y = 70 + 3k
+        ids.forEach((blk, k) => {
+          const x = (k % 5) * 3, z = Math.floor(k / 5) % 5 * 3, layer = Math.floor(k / 25);
+          const y = 70 + layer * 3;
+          const i = (y << 8) | (z << 4) | x;
+          blocks[(y - 1) << 8 | (z << 4) | x] = B.STONE;
+          blocks[i] = blk.id;
+          if (blk.waterloggable) states[i] = WATERLOGGED;
+        });
+        // powered dust: powers ride the state nibble (07 §4.5)
+        const dust = BLOCKS.find(b => b && b.name === 'redstone_dust');
+        if (dust) {
+          [[0, 15], [3, 0], [6, 7], [9, 1]].forEach(([x, power], k) => {
+            const y = 70 + (Math.floor(ids.length / 25) + 1) * 3;
+            const z = k * 3;
+            blocks[(y - 1) << 8 | (z << 4) | x] = B.STONE;
+            blocks[(y << 8) | (z << 4) | x] = dust.id;
+            states[(y << 8) | (z << 4) | x] = power;
+          });
+        }
+        c.install(blocks, new Uint8Array(256).fill(128), new Uint8Array(256).fill(3), states);
+        return c;
+      };
+      const center = synth();
+      world.chunks.set(center.key, center);
+      // stone-slab neighbours so boundary faces cull against something real
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dz = -1; dz <= 1; dz++) {
+          if (!dx && !dz) continue;
+          const c = new Chunk(dx, dz, 0);
+          const blocks = new Uint8Array(32768);
+          for (let z = 0; z < 16; z++) for (let x = 0; x < 16; x++) blocks[(40 << 8) | (z << 4) | x] = B.STONE;
+          c.install(blocks, new Uint8Array(256).fill(41), new Uint8Array(256).fill(3), null);
+          world.chunks.set(c.key, c);
+        }
+      }
+      world.chunkVersion += 9;
+      const mesher = new ChunkMesher(tileUV);
+      for (const c of world.chunks.values()) world.light.initialLight(c);
+      const geos = mesher.build(world, center);
+      if (!geos) fails.push('synthetic: mesher.build returned null');
+      else {
+        validateGeometry('synthetic', geos);
+        const nv = ['opaque', 'cutout', 'water'].reduce((s, b) => s + (geos[b] ? geos[b].attributes.position.count : 0), 0);
+        if (nv === 0) fails.push('synthetic: every block id meshed to ZERO vertices');
+        else notes.push(`synthetic: ${BLOCKS.filter(b => b && b.id).length} block ids → ${nv} verts`);
+      }
+    }
+  } catch (e) {
+    fails.push('runtime harness threw: ' + (e.stack || e).split('\n').slice(0, 3).join(' | '));
+  }
+  report('U9', 'runtime gen + light + mesh (3 dims, every block id, worker snapshot parity)', fails, notes);
+}
+
 // ==================================================================== driver
 const imp = p => import(pathToFileURL(join(SRC, p)).href);
 
@@ -1047,6 +1240,7 @@ async function main() {
   await checkIds(blocks, items);
   await checkSounds(events);
   checkConsole();
+  await checkRuntimeMesh(blocks);
   finish();
 }
 

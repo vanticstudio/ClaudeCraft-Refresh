@@ -708,8 +708,12 @@ export class ChunkManager {
       } else if (!this.buildChunk(chunk)) {
         // hoodAtLeast exempts FAILED neighbours, ChunkMesher.captureHood does
         // not, so this pre-check passes exactly where the build is guaranteed
-        // to fail. Keep the key queued on failure or the chunk never meshes.
-        this.remeshQueue.add(chunk.key);
+        // to fail. Re-queue once — but count the failure like the worker path
+        // does, or a chunk the mesher throws on re-queues FOREVER, silently
+        // pinning the loading gate at 0/N until the 400-tick watchdog nukes
+        // the whole spawn ring.
+        chunk.meshFailures = (chunk.meshFailures ?? 0) + 1;
+        if (chunk.meshFailures < 2) this.remeshQueue.add(chunk.key);
       }
       built++;
     }
