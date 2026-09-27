@@ -5,16 +5,23 @@
 // emit TILE-LOCAL uv (0..span) + the tile's atlas origin in aTileUV, and the
 // fragment shader folds them back with fract(). Adds per-vertex biome tint,
 // and turns the light curve's ambient floor into a uniform (brightness option).
+// B2 — GLSL3 + textureGrad: the merged path's fract() has a 1→0 discontinuity
+// at every cell boundary inside a merged quad; with implicit derivatives the
+// GPU spikes the mip level at the seam texel and samples the tile's average
+// color — a visible grid on flat terrain. textureGrad() with the gradient
+// taken from the UNFOLDED vUv (scaled into tile space) feeds the sampler a
+// continuous derivative, so mip selection never sees the wrap. three r185 is
+// WebGL2-only, so ES 3.0 core dFdx/dFdy/textureGrad need no extensions.
 import * as THREE from 'three';
 import { AMBIENT_FLOOR, TILE_PX, ATLAS_SIZE } from '../constants.js';
 
 const VERT = /* glsl */`
-attribute vec4 color;
-attribute vec2 aSpan;
-attribute vec2 aTileUV;
-attribute vec3 tint;
-varying vec2 vUv; varying vec4 vCol; varying float vDist;
-varying vec2 vSpan; varying vec2 vTileUV; varying vec3 vTint;
+in vec4 color;
+in vec2 aSpan;
+in vec2 aTileUV;
+in vec3 tint;
+out vec2 vUv; out vec4 vCol; out float vDist;
+out vec2 vSpan; out vec2 vTileUV; out vec3 vTint;
 void main() {
   vUv = uv; vCol = color;
   vSpan = aSpan; vTileUV = aTileUV; vTint = tint;
@@ -32,8 +39,9 @@ uniform float uAlphaTest; uniform float uAlpha;
 uniform float uDimAmbient;
 uniform float uNightVision;
 uniform float uBright;
-varying vec2 vUv; varying vec4 vCol; varying float vDist;
-varying vec2 vSpan; varying vec2 vTileUV; varying vec3 vTint;
+in vec2 vUv; in vec4 vCol; in float vDist;
+in vec2 vSpan; in vec2 vTileUV; in vec3 vTint;
+out vec4 fragColor;
 const vec3 BLOCK_TINT = vec3(1.00, 0.89, 0.69);
 // inner tile span in atlas UV (TILE_PX-1 texels). aTileUV carries the tile's
 // ALREADY-inset origin (uvRect u0 = (x0+0.5)/ATLAS_SIZE), so the merged path
@@ -46,11 +54,14 @@ float brightness(float l) {
 }
 void main() {
   // merged path: fract() walks the tile texture across the quad's span; the
-  // +1e-4-below-span vertex UVs keep the last texel sampled exactly.
+  // +1e-4-below-span vertex UVs keep the last texel sampled exactly. The mip
+  // gradient rides the UNFOLDED vUv — continuous across the fract() wrap.
   float merged = step(2.01, vSpan.x + vSpan.y);
   vec2 f = fract(vUv);
   vec2 auv = mix(vUv, vTileUV + f * TILE_INNER, merged);
-  vec4 tex = texture2D(uAtlas, auv);
+  vec4 tex = (merged > 0.5)
+    ? textureGrad(uAtlas, auv, dFdx(vUv) * TILE_INNER, dFdy(vUv) * TILE_INNER)
+    : texture(uAtlas, auv);
   if (tex.a < uAlphaTest) discard;
   float effSky = max(vCol.r * 15.0 - uSkyDarken, 0.0);
   // 09-POTIONS §6.5 / AMENDS 04 §11.2 — Night Vision floors the sky channel to 15.
@@ -60,7 +71,7 @@ void main() {
   light = max(light, vec3(uDimAmbient));
   vec3 rgb = tex.rgb * vTint * light * vCol.b;
   float fog = smoothstep(uFogNear, uFogFar, vDist);
-  gl_FragColor = vec4(mix(rgb, uFogColor, fog), tex.a * uAlpha * vCol.a);
+  fragColor = vec4(mix(rgb, uFogColor, fog), tex.a * uAlpha * vCol.a);
 }`;
 
 // Shared uniform objects — mutate .value only, never replace the objects.
@@ -85,6 +96,7 @@ export function createChunkMaterials(atlasTexture) {
   const make = (alphaTest, alpha, opts) => new THREE.ShaderMaterial({
     vertexShader: VERT,
     fragmentShader: FRAG,
+    glslVersion: THREE.GLSL3,
     uniforms: {
       ...sharedUniforms,
       uAlphaTest: { value: alphaTest },

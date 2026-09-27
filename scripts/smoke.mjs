@@ -1365,6 +1365,29 @@ async function checkWorkerPurity() {
   report('U12', 'worker graph purity — loads in Node, no module-scope DOM', fails, notes);
 }
 
+// ==================================================================== U13
+// Chunk shader GLSL3 contract (B2). The chunk materials must compile as
+// ES 3.0 (glslVersion: THREE.GLSL3): the merged-quad path samples with
+// textureGrad so the fract() wrap never spikes the mip LOD (seam-grid fix),
+// the fragment declares its own `out vec4` (GLSL3 mode provides no
+// gl_FragColor compatibility define), and the GLSL1 syntax is fully gone.
+function checkShaderGLSL3() {
+  const fails = [];
+  const notes = [];
+  const m = MASKED.get(FILES.find(f => rel(f) === 'src/mesh/materials.js'));
+  if (!m) { report('U13', 'chunk shader GLSL3 contract', ['materials.js not found']); return; }
+  if (!/glslVersion:\s*THREE\.GLSL3/.test(m)) fails.push('createChunkMaterials missing glslVersion: THREE.GLSL3');
+  if (!/textureGrad\(/.test(m)) fails.push('merged path missing textureGrad sampling (seam-grid fix reverted)');
+  if (/gl_FragColor/.test(m)) fails.push('fragment still writes gl_FragColor — illegal in explicit GLSL3 (declare out vec4)');
+  if (/\battribute\s/.test(m) || /\bvarying\s/.test(m)) fails.push('GLSL1 attribute/varying keywords present — convert to in/out');
+  if (!/out\s+vec4\s+\w+/.test(m)) fails.push('fragment missing out vec4 declaration');
+  for (const attr of ['color', 'aSpan', 'aTileUV', 'tint']) {
+    if (!new RegExp(`in\\s+vec[234]\\s+${attr};`).test(m)) fails.push(`vertex missing custom attribute declaration: ${attr}`);
+  }
+  notes.push('GLSL3 + textureGrad + out fragColor + 4 custom attributes declared');
+  report('U13', 'chunk shader GLSL3 contract (B2 seam fix in place)', fails, notes);
+}
+
 // ==================================================================== driver
 const imp = p => import(pathToFileURL(join(SRC, p)).href);
 
@@ -1398,6 +1421,7 @@ async function main() {
   await checkMobPainters();
   checkRegistryContract();
   await checkWorkerPurity();
+  checkShaderGLSL3();
   finish();
 }
 
