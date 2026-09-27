@@ -1783,6 +1783,28 @@ async function checkB4Systems() {
   }
 }
 
+// ==================================================================== U-EXT
+// Build-out phase checks (19-BUILDOUT-v1.3.md): each phase's regression test
+// lives self-contained in scripts/checks/<id>-<name>.mjs (exit 0 = pass) and
+// the harness runs it as a subprocess — the standalone file stays the single
+// source of truth and any phase can also be run/debugged on its own.
+async function checkPhaseFiles() {
+  const fails = [];
+  const notes = [];
+  const files = existsSync(join(HERE, 'checks'))
+    ? readdirSync(join(HERE, 'checks')).filter(n => n.endsWith('.mjs')).sort() : [];
+  if (!files.length) { report('U-EXT', 'phase regression files (scripts/checks)', ['no check files found']); return; }
+  await Promise.all(files.map(f => new Promise(resolve => {
+    execFile(process.execPath, [join(HERE, 'checks', f)], { timeout: 120000 }, (err, stdout, stderr) => {
+      const tail = String(stdout ?? '').split('\n').filter(Boolean).slice(-1)[0] ?? '';
+      if (err) fails.push(`${f}: ${tail || String(stderr ?? err.message).split('\n')[0]}`);
+      else notes.push(`${f}: ${tail}`);
+      resolve();
+    });
+  })));
+  report('U-EXT', `phase regression files — ${files.length} standalone checks (U18/U19/U20/U21/U22/U24)`, fails, notes);
+}
+
 // ==================================================================== driver
 const imp = p => import(pathToFileURL(join(SRC, p)).href);
 
@@ -1821,6 +1843,7 @@ async function main() {
   await checkPathfinding();
   await checkDungeons();
   await checkB4Systems();
+  await checkPhaseFiles();
   finish();
 }
 
