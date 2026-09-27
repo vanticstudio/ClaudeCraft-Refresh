@@ -57,6 +57,14 @@ html, body {
 #crosshair::before { left: 8px; top: 0; width: 2px; height: 18px; }
 #crosshair::after { left: 0; top: 8px; width: 18px; height: 2px; }
 
+/* version line on the pause screen (single source: __APP_VERSION__ = package.json) */
+.cc-pause-version {
+  margin-top: 10px;
+  font-size: 12px; letter-spacing: 1px;
+  color: rgba(255, 240, 225, 0.55);
+  text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.5);
+}
+
 /* B4 — held-tool strip: clock dial / compass needle floating above the hotbar.
    32-texel sprite at the shared 1 texel = 1.5 css px scale → 16·--px box, and
    NO base transform (the compass inline-rotates around its centre). */

@@ -45,7 +45,7 @@ export class Menus {
           <div class="cc-ground seams"></div>
           <div class="cc-vignette"></div>
 
-          <div class="cc-badge">CLAUDECRAFT &middot; v${__APP_VERSION__} ALPHA</div>
+          <div class="cc-badge">CLAUDECRAFT &middot; v${__APP_VERSION__}</div>
           <div class="cc-credit">Made by Vantic</div>
 
           <div class="cc-center">
@@ -94,6 +94,7 @@ export class Menus {
         <button id="btn-pause-settings">Options…</button>
         <button id="btn-quit">Save &amp; Quit to Title</button>
         <div style="opacity:0.6;font-size:14px">Sprint: double-tap W · Drop stack: Shift+Q · Debug: F3 · Game mode: F4<span id="cc-touch-hint"></span></div>
+        <div class="cc-pause-version">ClaudeCraft v${__APP_VERSION__}</div>
       </div>
       <div id="screen-death" class="screen">
         <h1>You Died!</h1>
