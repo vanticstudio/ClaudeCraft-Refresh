@@ -364,6 +364,8 @@ defBlock(2, 'grass_block', {
 
 defBlock(3, 'dirt', { hardness: 0.5, blast: 0.5, tool: 'shovel' });
 defBlock(4, 'cobblestone', { hardness: 2.0, blast: 6.0, tool: 'pickaxe', tier: 0, drops: gated(dropSelf('cobblestone')) });
+// B5 — dungeons stamp mossy cobble as their floor/wall blend; drops itself
+defBlock(144, 'mossy_cobblestone', { hardness: 2.0, blast: 6.0, tool: 'pickaxe', tier: 0, drops: gated(dropSelf('mossy_cobblestone')) });
 defBlock(5, 'oak_planks', { hardness: 2.0, blast: 3.0, tool: 'axe' });
 defBlock(6, 'birch_planks', { hardness: 2.0, blast: 3.0, tool: 'axe' });
 defBlock(7, 'spruce_planks', { hardness: 2.0, blast: 3.0, tool: 'axe' });
@@ -1360,7 +1362,7 @@ defBlock(187, 'beacon', {
 const MAT = {
   // 08 §2.2: enchanting_table + grindstone → 'stone' (anvil is 'metal').
   // 07-REDSTONE §13: stone-material components + metal-ish machines.
-  stone: ['stone', 'cobblestone', 'sandstone', 'bedrock', 'obsidian', 'furnace', 'furnace_lit', 'coal_block',
+  stone: ['stone', 'cobblestone', 'mossy_cobblestone', 'sandstone', 'bedrock', 'obsidian', 'furnace', 'furnace_lit', 'coal_block',
     'enchanting_table', 'grindstone', 'brewing_stand',
     'blast_furnace', 'blast_furnace_lit', 'smoker', 'smoker_lit', 'emerald_ore',   // 12-VILLAGES
     'redstone_wire', 'redstone_torch', 'lever', 'stone_button', 'stone_pressure_plate',

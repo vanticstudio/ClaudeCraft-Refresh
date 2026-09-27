@@ -516,6 +516,18 @@ P.cobblestone = (c, x, y, r) => {
     if (r() < 0.5) px(c, x, y, hx, hy + 1, '#565656');
   }
 };
+// B5 — dungeon block: cobble with creeping moss blotches (same base as cobble,
+// then green clusters in the mortar recesses)
+P.mossy_cobblestone = (c, x, y, r) => {
+  P.cobblestone(c, x, y, r);
+  for (let i = 0; i < 7; i++) {
+    const mx = Math.floor(r() * 15), my = Math.floor(r() * 15);
+    px(c, x, y, mx, my, '#5a7a3a');
+    if (r() < 0.7) px(c, x, y, mx + 1, my, '#4c6a30');
+    if (r() < 0.5) px(c, x, y, mx, my + 1, '#6a8a46');
+    if (r() < 0.3) px(c, x, y, mx + 1, my + 1, '#3e5a28');
+  }
+};
 P.oak_planks = (c, x, y, r) => planks(c, x, y, r, '#b8945f');
 P.birch_planks = (c, x, y, r) => planks(c, x, y, r, '#d7c185');
 P.spruce_planks = (c, x, y, r) => planks(c, x, y, r, '#82603c');

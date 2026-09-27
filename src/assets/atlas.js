@@ -14,7 +14,7 @@ import {
 
 // Canonical order: blocks, destroy stages, then item sprites (alphabetical).
 const BLOCK_TILES = [
-  'stone', 'grass_top', 'grass_side', 'dirt', 'cobblestone',
+  'stone', 'grass_top', 'grass_side', 'dirt', 'cobblestone', 'mossy_cobblestone',
   'oak_planks', 'birch_planks', 'spruce_planks',
   'oak_log_side', 'oak_log_top', 'birch_log_side', 'birch_log_top',
   'spruce_log_side', 'spruce_log_top',

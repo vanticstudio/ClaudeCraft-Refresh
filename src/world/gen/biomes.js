@@ -38,6 +38,12 @@ export const ID = {
   water: 63,
   lava: 64,
   dead_bush: 66,
+  // B5 — dungeon/ruin stamps (must match the registry's canonical ids)
+  cobblestone: 4,
+  mossy_cobblestone: 144,
+  chest: 37,
+  spawner: 141,
+  tnt: 51,
 };
 
 // 02 §6.1 — biome enum (stored per column, saved with chunk)

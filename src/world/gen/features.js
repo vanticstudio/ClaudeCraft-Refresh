@@ -5,6 +5,7 @@
 import { splitmix32, chunkSeed, posHash, rngInt } from '../../math/rng.js';
 import { BLOCKS, B } from '../../registry/blocks.js';   // 01 §5 — one heightmap predicate
 import { stampVillages } from './village.js';   // 12-VILLAGES §2
+import { stampDungeons } from './dungeons.js';  // B5 — dungeons/ruins/wells
 import { ID, BIOMES, TREE_CFG, GRASS_COUNT, FLOWER_COUNT, CANE_BIOMES,
          PUMPKIN_BIOMES, HERD_WEIGHTS } from './biomes.js';
 
@@ -274,6 +275,11 @@ export function decorate(ctx, blocks, cx, cz, colD, states = null) {
   // (clears it in the stamped volumes), before snow so taiga roofs get caps.
   const village = stampVillages(ctx, blocks, cx, cz, states);   // states: door/bed/crop nibbles
 
+  // 4b. B5 — dungeon/ruin/well stamps (after villages: an underground room
+  // carving beneath a village is fine; a ruin overwriting a village house is
+  // not, and this order keeps villages authoritative on the surface)
+  const dungeon = stampDungeons(ctx, blocks, cx, cz);
+
   // 5. Snow & ice — climate rule (02 §10.6)
   for (let z = 0; z < 16; z++) {
     for (let x = 0; x < 16; x++) {
@@ -290,7 +296,10 @@ export function decorate(ctx, blocks, cx, cz, colD, states = null) {
       else if (SOLID_TOP[id] && top < 127) set(x, top + 1, z, ID.snow_layer);
     }
   }
-  return village;   // { villageMeta|null, spawns }
+  // B5 — merge dungeon spawn records into the village spawn stream (same
+  // terrain.js contract; chunk.pendingSpawns resolves both)
+  const spawns = [...(village?.spawns ?? []), ...(dungeon?.spawns ?? [])];
+  return { villageMeta: village?.villageMeta ?? null, spawns };
 }
 
 // Cells whose 4 horizontal neighbors must be air for cactus growth;

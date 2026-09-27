@@ -192,7 +192,9 @@ export function createNoiseCtx(worldSeed) {
   const seeds = {};
   // 12-VILLAGES AMENDS 02 §2.2 — 'village' appended; each stream is independent,
   // so adding it leaves every existing stream (and world) byte-identical.
-  for (const s of ['terrain', 'carver', 'ore', 'tree', 'plant', 'herd', 'detail', 'village']) {
+  // B5 — 'dungeon' appended the same way: dungeons/ruins/wells get their own
+  // stream, existing worldgen stays byte-identical.
+  for (const s of ['terrain', 'carver', 'ore', 'tree', 'plant', 'herd', 'detail', 'village', 'dungeon']) {
     seeds[s] = mix32(worldSeed ^ hashString('sys:' + s));
   }
 

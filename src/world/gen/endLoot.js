@@ -29,6 +29,19 @@ const POOLS = {
     ['gold_ingot', 15, 2, 7], ['iron_ingot', 10, 4, 8], ['diamond', 5, 2, 7], ['emerald', 2, 2, 6],
     ['@ench_diamond', 21, 1, 1], ['@ench_iron', 21, 1, 1],
   ] },
+  // B5 — overworld dungeon chests: mid-tier utility + a chance at early enchants
+  dungeon: { rolls: [3, 6], pool: [
+    ['bread', 15, 1, 4], ['apple', 12, 1, 3], ['iron_ingot', 10, 1, 4], ['gold_ingot', 6, 1, 3],
+    ['redstone', 10, 2, 6], ['string', 10, 1, 4], ['bone', 10, 1, 4], ['rotten_flesh', 8, 1, 3],
+    ['bucket', 5, 1, 1], ['iron_pickaxe', 4, 1, 1], ['iron_sword', 4, 1, 1],
+    ['emerald', 2, 1, 2], ['diamond', 2, 1, 2], ['gold_nugget', 8, 2, 6],
+  ], book: [15, 25] },
+  // B5 — desert ruin chest: emerald/gold weighted, rare enchanted gear
+  desert_ruin: { rolls: [2, 4], pool: [
+    ['emerald', 12, 1, 3], ['gold_ingot', 12, 1, 4], ['gold_nugget', 10, 2, 5],
+    ['iron_ingot', 8, 1, 3], ['bread', 10, 1, 2], ['apple', 8, 1, 2],
+    ['@ench_iron', 6, 1, 1],
+  ] },
 };
 const DIAMOND_GEAR = ['diamond_sword', 'diamond_pickaxe', 'diamond_shovel', 'diamond_helmet', 'diamond_chestplate', 'diamond_leggings', 'diamond_boots'];
 const IRON_GEAR = ['iron_sword', 'iron_pickaxe', 'iron_shovel', 'iron_helmet', 'iron_chestplate', 'iron_leggings', 'iron_boots'];

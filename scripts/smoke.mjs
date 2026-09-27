@@ -1632,6 +1632,85 @@ async function checkPathfinding() {
   }
 }
 
+// ==================================================================== U16
+// B5 — dungeon generation: over a 21×21 generated region, dungeons must exist
+// (spawner blocks), be structurally sound (solid floor, hollow interior,
+// mossy shell present), be accompanied by loot chests, the loot pools must
+// roll deterministically, and different seeds must produce different layouts.
+async function checkDungeons() {
+  const fails = [];
+  const notes = [];
+  globalThis.localStorage = globalThis.localStorage ?? {
+    getItem: () => null, setItem: () => {}, removeItem: () => {},
+  };
+  try {
+    const { createGenerator } = await imp('world/gen/terrain.js');
+    const { rollChestLoot } = await imp('world/gen/endLoot.js');
+    const { B } = (await imp('registry/blocks.js'));
+
+    const R = 10;   // 21×21 region
+    const scan = (seed) => {
+      const gen = createGenerator(seed);
+      const spawners = [], chests = [], mossy = [];
+      for (let dx = -R; dx <= R; dx++) {
+        for (let dz = -R; dz <= R; dz++) {
+          const r = gen.generateChunk(dx, dz);
+          for (let i = 0; i < 32768; i++) {
+            const id = r.blocks[i];
+            if (id === B.SPAWNER) spawners.push([(dx * 16) + (i & 15), i >> 8, (dz * 16) + ((i >> 4) & 15)]);
+            else if (id === B.CHEST) chests.push([(dx * 16) + (i & 15), i >> 8, (dz * 16) + ((i >> 4) & 15)]);
+            else if (id === B.MOSSY_COBBLESTONE) mossy.push(1);
+          }
+        }
+      }
+      return { spawners, chests, mossy: mossy.length };
+    };
+
+    const { spawners, chests, mossy } = scan('u16-seed');
+    if (spawners.length === 0) fails.push('no dungeon spawners found in a 21×21 region (chance/anchor broken)');
+    if (chests.length < spawners.length) fails.push(`loot chests (${chests.length}) < spawners (${spawners.length})`);
+    if (mossy === 0) fails.push('no mossy_cobblestone stamped — dungeon shell missing');
+    for (const [x, y, z] of spawners.slice(0, 8)) {
+      // spawner integrity via a 1-chunk regen around it: solid floor + air ring
+      const gen = createGenerator('u16-seed');
+      const cx = x >> 4, cz = z >> 4;
+      const r = gen.generateChunk(cx, cz);
+      const idx = (yy, lz, lx) => (yy << 8) | (lz << 4) | lx;
+      const lx = x & 15, lz = z & 15;
+      const below = r.blocks[idx(y - 1, lz, lx)];
+      if (!below || !({ 1: 1, 4: 1, 144: 1 })[below]) fails.push(`dungeon ${x},${y},${z}: spawner floor is ${below} (not cobble/mossy/stone)`);
+      const ring = [[1, 0], [-1, 0], [0, 1], [0, -1]].filter(([dx, dz]) => {
+        const nx = lx + dx, nz = lz + dz;
+        if (nx < 0 || nx > 15 || nz < 0 || nz > 15) return false;
+        return r.blocks[idx(y, nz, nx)] === 0;   // air at spawner level
+      });
+      if (ring.length < 2) fails.push(`dungeon ${x},${y},${z}: spawner not in an open room`);
+    }
+    // loot pools: deterministic + non-empty
+    for (const table of ['dungeon', 'desert_ruin']) {
+      const a = new Array(27).fill(null), b = new Array(27).fill(null);
+      rollChestLoot(a, table, 'u16-seed', 10, 20, 30);
+      rollChestLoot(b, table, 'u16-seed', 10, 20, 30);
+      const filled = a.filter(Boolean).length;
+      if (filled === 0) fails.push(`${table}: loot roll placed nothing`);
+      if (JSON.stringify(a) !== JSON.stringify(b)) fails.push(`${table}: loot roll is not deterministic`);
+      if (a.filter(Boolean).some(s => !Number.isInteger(s?.id) || s.id <= 0 || !(s.count > 0))) fails.push(`${table}: malformed stack in loot`);
+    }
+    // different seeds → different structure placements (3 pairs, ≥1 must differ)
+    let differs = 0;
+    for (const s of ['u16-a', 'u16-b', 'u16-c']) {
+      const A = JSON.stringify(scan(s).spawners);
+      const Bd = JSON.stringify(scan(s + '-alt').spawners);
+      if (A !== Bd) differs++;
+    }
+    if (differs === 0) fails.push('seed variation: all 3 seed pairs produced identical spawner sets');
+    notes.push(`21×21 region: ${spawners.length} dungeons, ${chests.length} chests, ${mossy} mossy blocks; loot pools deterministic`);
+    report('U16', 'dungeon generation — integrity, loot, seed variation (B5)', fails, notes);
+  } catch (e) {
+    report('U16', 'dungeon generation (B5)', ['harness threw: ' + (e.stack || e).split('\n').slice(0, 3).join(' | ')]);
+  }
+}
+
 // ==================================================================== driver
 const imp = p => import(pathToFileURL(join(SRC, p)).href);
 
@@ -1668,6 +1747,7 @@ async function main() {
   checkShaderGLSL3();
   await checkLightParity();
   await checkPathfinding();
+  await checkDungeons();
   finish();
 }
 
