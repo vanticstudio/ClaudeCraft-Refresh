@@ -1,6 +1,18 @@
 // Sky + block light: BFS flood / two-queue removal (01 §10 structures,
 // 04 §8–9 algorithms). All positions are world coordinates; queues cross
 // chunk borders freely. Light writes only into chunks ≥ GENERATED.
+//
+// B1 — ONE ALGORITHM, TWO GRIDS. The BFS lives in LightBFS and touches the
+// world ONLY through a grid object's hooks (light/setLight/opacity/chunkAt/
+// markDirty/hasSkyLight/dirtied). Two grids implement it:
+//   WorldGrid — live chunks (the edit path + the sync fallback), extracted
+//     verbatim from the old engine methods.
+//   HoodGrid  — a 3×3 plain-data snapshot (worker path). Neighbor writes are
+//     recorded as deltas for the main thread to replay; the center's arrays
+//     are the result.
+// LightEngine extends LightBFS with the world-backed edit entry points
+// (onBlockChanged / setBlockEmission / lightPanic), and computeChunkLight is
+// the snapshot entry point lightWorker.js calls. No second BFS exists anywhere.
 import { BLOCKS, B, WATERLOGGED } from '../registry/blocks.js';
 import { MAX_Y, chunkKey, LIGHT_NODE_BUDGET } from '../constants.js';
 import { ChunkState } from './Chunk.js';
@@ -60,48 +72,20 @@ export function terminatesSky(id, state = 0) {
   return BLOCKS[id].opacity > 0 || id === B.SNOW_LAYER || id === B.CACTUS;
 }
 
-export class LightEngine {
+// ============================================================================
+// Grids — the BFS's only view of the world.
+// ============================================================================
+
+// Live-chunk grid: byte-for-byte the old engine accessors (1-entry chunk cache,
+// unloaded = light 0 / opacity-15 wall, missing write dropped, border+corner
+// dirty fan-out).
+class WorldGrid {
   constructor(world) {
     this.world = world;
-    this.propQ = [new Queue4(), new Queue4()];      // [SKY, BLOCK]
-    this.unlightQ = [new Queue4(), new Queue4()];
-    this.dirtied = new Set();                       // chunk keys touched
-    this.node = new Int32Array(4);                  // pop scratch
-    // 01 §10.3 safety valve — ONE shared budget per edit. `guard` used to be a
-    // local of each loop, so a single onBlockChanged could legally drain
-    // removeLight(100k) + 3× propagate(400k) + removeLight(100k) = 1.4M nodes,
-    // 14× the spec's abort threshold.
-    this.budgetOn = false;
-    this.nodeBudget = 0;
-    this.panicked = false;
-    this._panic = [0, 0, 0];                        // cell that blew the budget
+    this.dirtied = new Set();
+    this._cc = null; this._ccx = 0; this._ccz = 0; this._ccv = -1;
   }
-
-  // 01 §10.3 — "abort, zero both light arrays of the 3×3 neighborhood, and
-  // re-run initialLight on them spread over the next 9 ticks (one chunk per
-  // tick)". Dropping the 3×3 back to GENERATED IS that re-run request:
-  // ChunkManager.promote() already budgets 2 chunks/tick and gates on a
-  // GENERATED 3×3. Bug-net, not a feature — logged when hit.
-  lightPanic() {
-    this.panicked = true;
-    console.warn('[light] node budget exhausted at', this._panic.join(','), '— relighting 3x3');
-    this.propQ[SKY].clear(); this.propQ[BLOCK].clear();
-    this.unlightQ[SKY].clear(); this.unlightQ[BLOCK].clear();
-    const cx = this._panic[0] >> 4, cz = this._panic[2] >> 4;
-    for (let dx = -1; dx <= 1; dx++) {
-      for (let dz = -1; dz <= 1; dz++) {
-        const c = this.world.chunks.get(chunkKey(cx + dx, cz + dz));
-        if (!c || c.state < ChunkState.GENERATED || !c.skyLight) continue;
-        c.skyLight.fill(0); c.blockLight.fill(0);
-        c.state = ChunkState.GENERATED;
-        this.dirtied.add(c.key);
-      }
-    }
-  }
-
-  // ---- raw cell access (drops writes into missing / ungenerated chunks) ----
-  // BFS locality is high, so a 1-entry chunk cache removes almost every
-  // string-keyed Map lookup (the initialLight hot path).
+  get hasSkyLight() { return this.world.hasSkyLight; }
 
   chunkAt(x, z) {
     const cx = x >> 4, cz = z >> 4;
@@ -116,22 +100,20 @@ export class LightEngine {
     return valid;
   }
 
-  getLightArr(channel, c) { return channel === SKY ? c.skyLight : c.blockLight; }
-
   light(channel, x, y, z) {
     // 10-NETHER §13.2 — above the ceiling, sky light is 15 only in sky dimensions.
-    if (y > MAX_Y) return channel === SKY ? (this.world.hasSkyLight ? 15 : 0) : 0;
+    if (y > MAX_Y) return channel === SKY ? (this.hasSkyLight ? 15 : 0) : 0;
     if (y < 0) return 0;
     const c = this.chunkAt(x, z);
     if (!c) return 0;
-    return this.getLightArr(channel, c)[(y << 8) | ((z & 15) << 4) | (x & 15)];
+    return (channel === SKY ? c.skyLight : c.blockLight)[(y << 8) | ((z & 15) << 4) | (x & 15)];
   }
 
   setLight(channel, x, y, z, v) {
     if (y < 0 || y > MAX_Y) return false;
     const c = this.chunkAt(x, z);
     if (!c) return false;
-    this.getLightArr(channel, c)[(y << 8) | ((z & 15) << 4) | (x & 15)] = v;
+    (channel === SKY ? c.skyLight : c.blockLight)[(y << 8) | ((z & 15) << 4) | (x & 15)] = v;
     this.markDirty(c, x, z);
     return true;
   }
@@ -163,6 +145,141 @@ export class LightEngine {
     if (oz) this.dirtied.add(chunkKey(c.cx, c.cz + oz));
     if (ox && oz) this.dirtied.add(chunkKey(c.cx + ox, c.cz + oz));
   }
+
+  // 04 §9.1 step 2 — heightTop of a not-yet-resident chunk is 0 (the world
+  // contract), so frontier seeds treat ungenerated columns as open sky.
+  heightTop(x, z) { return this.world.heightTop(x, z); }
+}
+
+// Snapshot grid (B1 worker path): 9 slots indexed (dx+1)*3 + (dz+1), each
+// { blocks, states, heightMap, skyLight?, blockLight? } in hood-LOCAL 16×128×16
+// layout, center slot 4. The BFS keeps using WORLD coordinates; this grid maps
+// them through the center chunk's base. Reads never leave the hood (missing
+// slot = the same unloaded wall the WorldGrid gives); writes land in the
+// center's result arrays directly, or — for the 8 neighbors — into their
+// throwaway copies AND a delta list the main thread replays to keep both sides
+// byte-identical with the sync path.
+class HoodGrid {
+  constructor(hood, opts = {}) {
+    this.hood = hood;
+    this.opts = opts;
+    const center = hood[4];
+    this.baseX = center.cx * 16;
+    this.baseZ = center.cz * 16;
+    this.dirtied = new Set();
+    this.deltas = [];                // flat [channel, x, y, z, v, ...]
+    this._cc = null; this._ccx = 0; this._ccz = 0;
+  }
+  get hasSkyLight() { return this.opts.hasSkyLight ?? true; }
+
+  chunkAt(x, z) {
+    const cx = x >> 4, cz = z >> 4;
+    if (this._cc && this._ccx === cx && this._ccz === cz) return this._cc;
+    const lx = cx * 16 - this.baseX, lz = cz * 16 - this.baseZ;
+    let c = null;
+    if (lx >= -16 && lx <= 31 && lz >= -16 && lz <= 31) {
+      const slot = this.hood[((lx >> 4) + 1) * 3 + ((lz >> 4) + 1)];
+      // mirrors WorldGrid's validity rule exactly: a GENERATED slot (even
+      // not-yet-LIT, light arrays zeroed) is traversable and writable; only a
+      // missing slot walls the BFS the way an ungenerated chunk does
+      if (slot && slot.state >= ChunkState.GENERATED) c = slot;
+    }
+    this._cc = c; this._ccx = cx; this._ccz = cz;
+    return c;
+  }
+
+  light(channel, x, y, z) {
+    if (y > MAX_Y) return channel === SKY ? (this.hasSkyLight ? 15 : 0) : 0;
+    if (y < 0) return 0;
+    const c = this.chunkAt(x, z);
+    if (!c) return 0;
+    return (channel === SKY ? c.skyLight : c.blockLight)[(y << 8) | ((z & 15) << 4) | (x & 15)];
+  }
+
+  setLight(channel, x, y, z, v) {
+    if (y < 0 || y > MAX_Y) return false;
+    const c = this.chunkAt(x, z);
+    if (!c) return false;
+    (channel === SKY ? c.skyLight : c.blockLight)[(y << 8) | ((z & 15) << 4) | (x & 15)] = v;
+    this.markDirty(c, x, z);
+    // center (slot 4) writes ARE the result; neighbor writes must reach the
+    // main thread's live arrays — record for replay.
+    if (c !== this.hood[4]) this.deltas.push(channel, x, y, z, v);
+    return true;
+  }
+
+  opacity(x, y, z) {
+    if (y < 0) return 15;
+    if (y > MAX_Y) return 0;
+    const c = this.chunkAt(x, z);
+    if (!c) return 15;                              // outside the hood: wall
+    const lx = x - this.baseX, lz = z - this.baseZ;
+    const i = (y << 8) | ((lz & 15) << 4) | (lx & 15);
+    const o = BLOCKS[c.blocks[i]].opacity;
+    return (c.states[i] & WATERLOGGED) ? Math.max(o, 1) : o;
+  }
+
+  markDirty(c, x, z) {
+    this.dirtied.add(c.key);
+    // the border rule from world coords: (lx & 15) works for negative lx too
+    // (-1 & 15 === 15, 16 & 15 === 0), and the written cell's own WORLD chunk
+    // is (x - (lx & 15)) >> 4 regardless of which slot it landed in.
+    const lx = x - this.baseX, lz = z - this.baseZ;
+    const ox = (lx & 15) === 0 ? -1 : ((lx & 15) === 15 ? 1 : 0);
+    const oz = (lz & 15) === 0 ? -1 : ((lz & 15) === 15 ? 1 : 0);
+    if (ox || oz) {
+      const cx = (x - (lx & 15)) >> 4, cz = (z - (lz & 15)) >> 4;
+      if (ox) this.dirtied.add(chunkKey(cx + ox, cz));
+      if (oz) this.dirtied.add(chunkKey(cx, cz + oz));
+      if (ox && oz) this.dirtied.add(chunkKey(cx + ox, cz + oz));
+    }
+  }
+
+  // Sky-frontier height reads (04 §9.1 step 2): the 4 horizontal neighbors'
+  // heightmaps from the hood slots; a missing slot = 0 (open sky), matching
+  // the WorldGrid's heightTop-of-unloaded contract.
+  heightTop(x, z) {
+    const lx = x - this.baseX, lz = z - this.baseZ;
+    if (lx < -16 || lx > 31 || lz < -16 || lz > 31) return 0;
+    const slot = this.hood[((lx >> 4) + 1) * 3 + ((lz >> 4) + 1)];
+    if (!slot || !slot.blocks) return 0;
+    return slot.heightMap[((lz & 15) << 4) | (lx & 15)];
+  }
+}
+
+// ============================================================================
+// LightBFS — propagate / removal / initial chunk lighting. Verbatim from the
+// pre-B1 engine; every world touch goes through the grid hooks above.
+// ============================================================================
+
+class LightBFS {
+  constructor(grid) {
+    this.grid = grid;
+    this.propQ = [new Queue4(), new Queue4()];      // [SKY, BLOCK]
+    this.unlightQ = [new Queue4(), new Queue4()];
+    this.node = new Int32Array(4);                  // pop scratch
+    this.budgetOn = false;
+    this.nodeBudget = 0;
+    this.panicked = false;
+    this._panic = [0, 0, 0];
+  }
+  get dirtied() { return this.grid.dirtied; }
+  get hasSkyLight() { return this.grid.hasSkyLight; }
+
+  // 01 §10.3 budget exhaustion on the SNAPSHOT grid (worker path): there is no
+  // 3×3 to demote — abort the job; the main thread drops the result and
+  // promote() re-dispatches. LightEngine overrides with the full repair.
+  lightPanic() {
+    this.panicked = true;
+    this.propQ[SKY].clear(); this.propQ[BLOCK].clear();
+    this.unlightQ[SKY].clear(); this.unlightQ[BLOCK].clear();
+  }
+
+  light(channel, x, y, z) { return this.grid.light(channel, x, y, z); }
+  setLight(channel, x, y, z, v) { return this.grid.setLight(channel, x, y, z, v); }
+  opacity(x, y, z) { return this.grid.opacity(x, y, z); }
+  chunkAt(x, z) { return this.grid.chunkAt(x, z); }
+  heightTop(x, z) { return this.grid.heightTop(x, z); }
 
   // ---- propagation (04 §9.2) ----
 
@@ -279,7 +396,7 @@ export class LightEngine {
     // 10-NETHER §13.2 — in a no-sky dimension, skyLight stays 0 everywhere; only
     // emitters + block-light border import run. The Nether's darkness is a pure
     // block-light problem (the shader's ambient floor keeps it navigable).
-    if (this.world.hasSkyLight) {
+    if (this.hasSkyLight) {
       // 1. column seed: skyLight 15 from the top down to the heightmap top
       for (let z = 0; z < 16; z++) {
         for (let x = 0; x < 16; x++) {
@@ -301,7 +418,7 @@ export class LightEngine {
           const wx = baseX + x, wz = baseZ + z;
           let hMax = H;
           for (const [dx, dz] of H4) {
-            const nH = this.world.heightTop(wx + dx, wz + dz);
+            const nH = this.heightTop(wx + dx, wz + dz);
             if (nH > hMax) hMax = nH;
           }
           const yTop = hMax > H ? hMax : H + 1;
@@ -323,7 +440,7 @@ export class LightEngine {
 
     // 4. border import from already-LIT neighbors
     const importCol = (nx, nz) => {
-      const nc = this.world.chunks.get(chunkKey(nx >> 4, nz >> 4));
+      const nc = this.chunkAt(nx >> 4, nz >> 4);
       if (!nc || nc.state < ChunkState.LIT) return;
       const li = ((nz & 15) << 4) | (nx & 15);
       for (let y = 0; y <= MAX_Y; y++) {
@@ -347,7 +464,41 @@ export class LightEngine {
     return this.dirtied;
   }
 
-  // ---- block edits (04 §9.4 wrapped per 01 §10.2) ----
+  // Height reads for the sky-frontier step are a GRID hook: WorldGrid reads
+  // the live world (heightTop of unloaded = 0), HoodGrid reads its slots.
+}
+
+// ============================================================================
+// LightEngine — the world-backed façade the rest of the game talks to.
+// ============================================================================
+
+export class LightEngine extends LightBFS {
+  constructor(world) {
+    super(new WorldGrid(world));
+    this.world = world;
+  }
+
+  // 01 §10.3 — "abort, zero both light arrays of the 3×3 neighborhood, and
+  // re-run initialLight on them spread over the next 9 ticks (one chunk per
+  // tick)". Dropping the 3×3 back to GENERATED IS that re-run request:
+  // ChunkManager.promote() already budgets 2 chunks/tick and gates on a
+  // GENERATED 3×3. Bug-net, not a feature — logged when hit.
+  lightPanic() {
+    this.panicked = true;
+    console.warn('[light] node budget exhausted at', this._panic.join(','), '— relighting 3x3');
+    this.propQ[SKY].clear(); this.propQ[BLOCK].clear();
+    this.unlightQ[SKY].clear(); this.unlightQ[BLOCK].clear();
+    const cx = this._panic[0] >> 4, cz = this._panic[2] >> 4;
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dz = -1; dz <= 1; dz++) {
+        const c = this.world.chunks.get(chunkKey(cx + dx, cz + dz));
+        if (!c || c.state < ChunkState.GENERATED || !c.skyLight) continue;
+        c.skyLight.fill(0); c.blockLight.fill(0);
+        c.state = ChunkState.GENERATED;
+        this.dirtied.add(c.key);
+      }
+    }
+  }
 
   /**
    * @param oldState/newState  AMENDS 01 §4.6 — REQUIRED for bit 7. This method
@@ -447,6 +598,28 @@ export class LightEngine {
     this.budgetOn = false; this.panicked = false;
     return this.dirtied;
   }
+}
+
+// ============================================================================
+// B1 snapshot entry point — lightWorker.js drives this; U14 drives it too.
+// center/hood layout: hood[(dx+1)*3 + (dz+1)] = { cx, cz, blocks, states,
+// heightMap, skyLight?, blockLight? } — light arrays present ONLY for slots
+// whose live chunk is already ≥ LIT (the border-import contract). Missing
+// light arrays = the slot is a BFS wall, exactly like an ungenerated chunk on
+// the main-thread path. Returns { skyLight, blockLight, deltas, dirtied }:
+// deltas is a flat [channel, x, y, z, v, ...] list of NEIGHBOR-array writes
+// the caller must replay into the live chunks.
+// ============================================================================
+export function computeChunkLight(center, hood, opts = {}) {
+  const grid = new HoodGrid(hood, opts);
+  const bfs = new LightBFS(grid);
+  bfs.initialLight(center);
+  return {
+    skyLight: center.skyLight,
+    blockLight: center.blockLight,
+    deltas: Int32Array.from(grid.deltas),
+    dirtied: [...grid.dirtied],
+  };
 }
 
 export { SKY, BLOCK };

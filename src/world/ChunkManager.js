@@ -14,6 +14,7 @@ import {
   MAX_JOBS_IN_FLIGHT, WORKER_COUNT, REMESH_FRAME_BUDGET_MS, REMESH_FRAME_MAX,
   INITIAL_MESH_PER_TICK, MAX_Y, CHUNK_CELLS, WORKER_READY_TIMEOUT_MS,
   MESH_WORKER_COUNT,
+  LIGHT_WORKER_COUNT,
 } from '../constants.js';
 
 const MESH_BUCKETS = ['opaque', 'cutout', 'water'];
@@ -57,6 +58,21 @@ export class ChunkManager {
     this.meshBroken = false;           // pool dead → permanent main-thread fallback
     this.meshJobs = new Map();         // chunk key → { worker, epoch } in flight
     this.meshNextId = 1;
+    // B1 — lighting pool (same discipline as the mesh pool above); built in the
+    // CONSTRUCTOR so any tick before startWorld's initWorkers still finds a
+    // degraded-but-functional pool instead of undefined fields.
+    this.lightWorkers = [];
+    this.lightNext = 0;
+    this.lightReady = false;
+    this.lightBroken = false;          // pool dead → permanent sync fallback
+    this.lightJobs = new Map();        // chunk key → { worker, epoch } in flight
+    this.lightNextId = 1;
+    // BOTH pools boot at construction, not at seed time: a tick that runs
+    // before startWorld's initWorkers (and any no-Worker environment) must
+    // find a degraded-but-functional manager, not undefined pools. initWorkers
+    // re-calls initMeshWorkers — guarded no-op below.
+    this.initMeshWorkers();
+    this.initLightWorkers();
   }
 
   initWorkers(seedString) {
@@ -89,10 +105,127 @@ export class ChunkManager {
     this.initMeshWorkers();
   }
 
+  get useLightPool() {
+    return !this.lightBroken && this.lightWorkers.length > 0 && this.lightReady;
+  }
+
+  // B1 — the lighting pool boots identically to the mesh pool: a failed spawn
+  // or a dead worker only demotes the session to main-thread lighting.
+  initLightWorkers() {
+    for (let w = 0; w < LIGHT_WORKER_COUNT; w++) {
+      let worker;
+      try {
+        worker = new Worker(new URL('../workers/lightWorker.js', import.meta.url), { type: 'module' });
+      } catch (err) { console.error('[lightWorker] spawn failed', err); this.lightBroken = true; return; }
+      worker.onmessage = e => this.onLightWorkerMessage(w, e.data);
+      worker.onerror = err => {
+        console.error('[lightWorker]', err?.message ?? err);
+        this.dropLightJobsOf(w);
+        this.lightBroken = true;
+      };
+      worker.postMessage({ type: 'init' });
+      this.lightWorkers.push(worker);
+    }
+  }
+
+  dropLightJobsOf(w) {
+    for (const [key, job] of [...this.lightJobs]) {
+      if (job.worker !== w) continue;
+      this.lightJobs.delete(key);
+      // promote() re-picks still-GENERATED chunks next tick (sync path now)
+    }
+  }
+
+  onLightWorkerMessage(w, msg) {
+    if (msg.type === 'lightReady') { this.lightReady = true; return; }
+    if (msg.type === 'lightError') {
+      if (msg.id === -1) { this.lightBroken = true; return; }   // init failure
+      console.error('[lightWorker] job failed:', msg.message);
+      for (const [key, job] of this.lightJobs) {
+        if (job.id !== msg.id) continue;
+        this.lightJobs.delete(key);
+        const chunk = this.world.chunks.get(key);
+        if (chunk && chunk.state === ChunkState.GENERATED) {
+          // one pool retry is one too many for light — fall back to the sync
+          // path for this chunk only; the loading gate is never hostage to it
+          chunk.forceSyncLight = true;
+        }
+      }
+      return;
+    }
+    if (msg.type !== 'lit') return;
+    const key = chunkKey(msg.cx, msg.cz);
+    const job = this.lightJobs.get(key);
+    this.lightJobs.delete(key);
+    const chunk = this.world.chunks.get(key);
+    // stale: unloaded, or the chunk's data changed after the snapshot (an edit
+    // bumps lightEpoch in markDirty) — promote() re-picks GENERATED chunks, so
+    // a dropped result re-dispatches with a fresh snapshot automatically.
+    if (!chunk || !job
+      || job.epoch !== msg.epoch
+      || job.epoch !== (chunk.lightEpoch ?? 0)) return;
+    if (chunk.state !== ChunkState.GENERATED) return;
+    // transferred result arrays install DIRECTLY (zero-copy)
+    chunk.skyLight = msg.skyLight;
+    chunk.blockLight = msg.blockLight;
+    chunk.state = ChunkState.LIT;
+    // replay the worker's NEIGHBOR-array writes — the main thread's live
+    // arrays must end up byte-identical to the sync path (U14's contract)
+    const deltas = msg.deltas;
+    for (let k = 0; k < deltas.length; k += 5) {
+      const ch = deltas[k], x = deltas[k + 1], y = deltas[k + 2], z = deltas[k + 3], v = deltas[k + 4];
+      const c = this.world.chunks.get(chunkKey(x >> 4, z >> 4));
+      if (!c || c.state < ChunkState.GENERATED) continue;
+      (ch === 0 ? c.skyLight : c.blockLight)[(y << 8) | ((z & 15) << 4) | (x & 15)] = v;
+    }
+    // the worker's dirtied set mirrors WorldGrid.markDirty's border+corner rule
+    for (const dk of msg.dirtied) {
+      const c = this.world.chunks.get(dk);
+      if (c && c.state === ChunkState.MESHED) this.remeshQueue.add(dk);
+    }
+  }
+
+  // B1 — snapshot a chunk's 3×3 hood (blocks/states/heightMap + current light
+  // for every ≥ GENERATED slot) and transfer it to a light worker.
+  dispatchLightJob(chunk) {
+    const worker = this.lightWorkers[this.lightNext];
+    if (!worker) return false;
+    const hood = new Array(9);
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dz = -1; dz <= 1; dz++) {
+        const c = this.world.chunks.get(chunkKey(chunk.cx + dx, chunk.cz + dz));
+        // promote() gated the center's 3×3 ≥ GENERATED; a missing slot ships
+        // as null (the worker walls it, exactly like an ungenerated chunk)
+        hood[(dx + 1) * 3 + (dz + 1)] = c ? {
+          cx: c.cx, cz: c.cz, key: c.key, state: c.state,
+          blocks: c.blocks.slice(), states: c.states.slice(),
+          heightMap: c.heightMap.slice(),
+          skyLight: c.skyLight.slice(), blockLight: c.blockLight.slice(),
+        } : null;
+      }
+    }
+    const epoch = chunk.lightEpoch ?? 0;
+    const id = this.lightNextId++;
+    this.lightJobs.set(chunk.key, { worker: this.lightNext, id, epoch });
+    this.lightNext = (this.lightNext + 1) % this.lightWorkers.length;
+    const transfer = [];
+    for (const h of hood) {
+      if (!h) continue;
+      transfer.push(h.blocks.buffer, h.states.buffer, h.heightMap.buffer,
+        h.skyLight.buffer, h.blockLight.buffer);
+    }
+    worker.postMessage({
+      type: 'light', id, cx: chunk.cx, cz: chunk.cz, epoch,
+      hasSkyLight: this.world.hasSkyLight, hood,
+    }, transfer);
+    return true;
+  }
+
   // OVERHAUL §W — the meshing pool boots lazily-tolerant: a failed spawn or a
   // dead worker only demotes the session to main-thread meshing (never fatal —
   // terrain gen above owns the fatal path).
   initMeshWorkers() {
+    if (this.meshWorkers.length || this.meshBroken) return;   // ctor already ran
     for (let w = 0; w < MESH_WORKER_COUNT; w++) {
       let worker;
       try {
@@ -226,6 +359,9 @@ export class ChunkManager {
     for (const w of this.meshWorkers) w.terminate();   // OVERHAUL §W
     this.meshWorkers.length = 0;
     this.meshJobs.clear();
+    for (const w of this.lightWorkers) w.terminate();   // B1
+    this.lightWorkers.length = 0;
+    this.lightJobs.clear();
   }
 
   onWorkerMessage(msg) {
@@ -296,6 +432,7 @@ export class ChunkManager {
     this.pending.clear();
     this.jobWorker.clear();
     this.meshJobs.clear();             // OVERHAUL §W — dimension flush
+    this.lightJobs.clear();            // B1 — dimension flush
     this.requestList.length = 0;
     this.requestQueued.clear();        // the index tracks the list exactly
     this.lastPlayerChunk = null;
@@ -529,6 +666,13 @@ export class ChunkManager {
     candidates.sort((a, b) => a[0] - b[0]);
     for (let i = 0; i < Math.min(budget, candidates.length); i++) {
       const chunk = candidates[i][1];
+      // B1 — pool path: dispatch a light job; the LIT transition + remesh
+      // bookkeeping happen in onLightWorkerMessage when the result lands.
+      if (this.useLightPool && !chunk.forceSyncLight && !this.lightJobs.has(chunk.key)) {
+        chunk.lightEpoch = (chunk.lightEpoch ?? 0) + 1;
+        this.dispatchLightJob(chunk);
+        continue;
+      }
       const dirtied = this.world.light.initialLight(chunk);   // sets state LIT
       for (const k of dirtied) {
         const c = this.world.chunks.get(k);
@@ -578,6 +722,7 @@ export class ChunkManager {
       this.world.chunkVersion++;
       this.remeshQueue.delete(chunk.key);
       this.meshJobs.delete(chunk.key);            // OVERHAUL §W — stale job drop
+      this.lightJobs.delete(chunk.key);           // B1 — stale light job drop
       // 01 §9 grants every chunk ONE re-queue. The counter was never cleared, so
       // a chunk that errored once and then unloaded went straight to FAILED on
       // re-approach — and the map grew for the whole session.
@@ -608,7 +753,12 @@ export class ChunkManager {
   // predates this bump is discarded on arrival (stale-guard).
   markDirty(key) {
     const chunk = this.world.chunks.get(key);
-    if (chunk && chunk.state >= ChunkState.LIT) {
+    if (!chunk) return;
+    // B1 — an edit to a GENERATED chunk with a light job in flight makes the
+    // job's snapshot stale: bump its epoch so the result drops and promote()
+    // re-dispatches from post-edit data.
+    if (this.lightJobs.has(key)) chunk.lightEpoch = (chunk.lightEpoch ?? 0) + 1;
+    if (chunk.state >= ChunkState.LIT) {
       chunk.dirty = true;
       chunk.meshEpoch = (chunk.meshEpoch ?? 0) + 1;
       this.remeshQueue.add(key);

@@ -1394,6 +1394,150 @@ function checkShaderGLSL3() {
   report('U13', 'chunk shader GLSL3 contract (B2 seam fix in place)', fails, notes);
 }
 
+// ==================================================================== U14
+// B1 — light parity: the worker path (computeChunkLight over 3×3 snapshots +
+// delta replay) must produce BYTE-IDENTICAL light to the sync path
+// (world.light.initialLight on live chunks). Drives both paths INTERLEAVED in
+// the same ring order over two identically generated 5×5 grids, then diffs
+// every chunk's skyLight/blockLight.
+async function checkLightParity() {
+  const fails = [];
+  const notes = [];
+  globalThis.localStorage = globalThis.localStorage ?? {
+    getItem: () => null, setItem: () => {}, removeItem: () => {},
+  };
+  try {
+    const [{ LightEngine, computeChunkLight }, { World }, { Chunk, ChunkState },
+      { createGenerator }, { createNetherGenerator }, { finalizeBlockTiles },
+      { TILE_NAMES }] = await Promise.all([
+      imp('world/LightEngine.js'), imp('world/World.js'), imp('world/Chunk.js'),
+      imp('world/gen/terrain.js'), imp('world/gen/nether.js'),
+      imp('registry/blocks.js'), imp('assets/atlas.js'),
+    ]);
+    // Iron Rule 3 — the fallback-mesh section builds REAL chunk geometry, so the
+    // resolved-field contract applies here exactly as it does in meshWorker init
+    finalizeBlockTiles(Object.fromEntries(TILE_NAMES.map((n, i) => [n, i])));
+
+    const parity = (label, makeGen, hasSky) => {
+      const worldA = new World('parity-' + label);
+      const worldB = new World('parity-' + label);
+      const gen = makeGen('parity-seed');
+      for (let dx = -2; dx <= 2; dx++) {
+        for (let dz = -2; dz <= 2; dz++) {
+          for (const w of [worldA, worldB]) {
+            const c = new Chunk(dx, dz, 0);
+            const r = gen.generateChunk(dx, dz);
+            c.install(r.blocks, r.heightMap, r.biomes, r.states ?? null);
+            w.chunks.set(c.key, c);
+          }
+        }
+      }
+      worldA.chunkVersion += 25; worldB.chunkVersion += 25;
+      // ring order: center → ring1 → ring2 (promote()'s nearest-first shape)
+      const order = [];
+      for (let dx = -2; dx <= 2; dx++) for (let dz = -2; dz <= 2; dz++) order.push([dx, dz]);
+      order.sort((a, b) => (a[0] * a[0] + a[1] * a[1]) - (b[0] * b[0] + b[1] * b[1]));
+      let litCount = 0, deltaWrites = 0;
+      const chunkKeyStr = (x, z) => `${x},${z}`;   // chunkKey's exact format
+      for (const [dx, dz] of order) {
+        // --- sync path on world A ---
+        const ca = worldA.chunks.get(chunkKeyStr(dx, dz));
+        worldA.light.initialLight(ca);
+        // --- worker path on world B ---
+        const cb = worldB.chunks.get(chunkKeyStr(dx, dz));
+        const hood = new Array(9);
+        for (let ax = -1; ax <= 1; ax++) {
+          for (let az = -1; az <= 1; az++) {
+            const c = worldB.chunks.get(chunkKeyStr(dx + ax, dz + az));
+            hood[(ax + 1) * 3 + (az + 1)] = c ? {
+              cx: c.cx, cz: c.cz, key: c.key, state: c.state,
+              blocks: c.blocks.slice(), states: c.states.slice(),
+              heightMap: c.heightMap.slice(),
+              skyLight: c.skyLight.slice(), blockLight: c.blockLight.slice(),
+            } : null;
+          }
+        }
+        const r = computeChunkLight(hood[4], hood, { hasSkyLight: hasSky });
+        cb.skyLight = r.skyLight; cb.blockLight = r.blockLight;
+        cb.state = ChunkState.LIT;
+        for (let k = 0; k < r.deltas.length; k += 5) {
+          const ch = r.deltas[k], x = r.deltas[k + 1], y = r.deltas[k + 2],
+            z = r.deltas[k + 3], v = r.deltas[k + 4];
+          const c = worldB.chunks.get(chunkKeyStr(x >> 4, z >> 4));
+          if (!c || c.state < ChunkState.GENERATED) continue;
+          (ch === 0 ? c.skyLight : c.blockLight)[(y << 8) | ((z & 15) << 4) | (x & 15)] = v;
+          deltaWrites++;
+        }
+        litCount++;
+      }
+      // byte-diff every chunk's light
+      let diffs = 0;
+      for (let dx = -2; dx <= 2; dx++) {
+        for (let dz = -2; dz <= 2; dz++) {
+          const ca = worldA.chunks.get(chunkKeyStr(dx, dz));
+          const cb = worldB.chunks.get(chunkKeyStr(dx, dz));
+          for (const arr of ['skyLight', 'blockLight']) {
+            const a = ca[arr], b = cb[arr];
+            for (let i = 0; i < a.length; i++) {
+              if (a[i] !== b[i]) { diffs++; if (diffs < 4) fails.push(`${label} ${dx},${dz} ${arr}[${i}]: sync ${a[i]} vs worker ${b[i]}`); break; }
+            }
+          }
+        }
+      }
+      notes.push(`${label}: ${litCount} chunks lit both paths, ${deltaWrites} delta writes, ${diffs === 0 ? 'byte-identical' : diffs + ' DIFFS'}`);
+      return diffs === 0;
+    };
+    parity('overworld', createGenerator, true);
+    parity('nether', createNetherGenerator, false);
+
+    // --- fallback contract: a browser with NO Worker support must still fully
+    // load a world. ChunkManager degrades to sync meshing + sync lighting; drive
+    // it through tick() headless and require the loading gate to close.
+    const { ChunkManager } = await imp('world/ChunkManager.js');
+    const THREE = await import('three');
+    const cmWorld = new World('fallback-contract');
+    // exact buildAtlas tileUV rects (half-texel inset, §7.2) so the mesher
+    // produces real UV data on the fallback path too
+    const ATLAS = await imp('constants.js');
+    const tileUV = new Float32Array(1024 * 4);
+    for (let t = 0; t < 1024; t++) {
+      const x0 = (t % ATLAS.ATLAS_COLS) * ATLAS.ATLAS_CELL + ATLAS.ATLAS_GUTTER;
+      const y0 = ((t / ATLAS.ATLAS_COLS) | 0) * ATLAS.ATLAS_CELL + ATLAS.ATLAS_GUTTER;
+      tileUV[t * 4] = (x0 + 0.5) / ATLAS.ATLAS_SIZE;
+      tileUV[t * 4 + 1] = (y0 + 0.5) / ATLAS.ATLAS_SIZE;
+      tileUV[t * 4 + 2] = (x0 + ATLAS.TILE_PX - 0.5) / ATLAS.ATLAS_SIZE;
+      tileUV[t * 4 + 3] = (y0 + ATLAS.TILE_PX - 0.5) / ATLAS.ATLAS_SIZE;
+    }
+    const cm = new ChunkManager(cmWorld, new THREE.Scene(),
+      { opaque: new THREE.MeshBasicMaterial(), cutout: new THREE.MeshBasicMaterial(), water: new THREE.MeshBasicMaterial() }, tileUV);
+    if (!cm.meshBroken || !cm.lightBroken) fails.push('expected graceful degradation (meshBroken/lightBroken) without Worker support');
+    const genF = createGenerator('fallback-seed');
+    // ±5 install: the 7×7 gate ring needs its ±4 neighbors LIT, and those need
+    // ±5 GENERATED to become light candidates (hoodAtLeast's contract)
+    for (let dx = -5; dx <= 5; dx++) {
+      for (let dz = -5; dz <= 5; dz++) {
+        const c = new Chunk(dx, dz, 0);
+        const r = genF.generateChunk(dx, dz);
+        c.install(r.blocks, r.heightMap, r.biomes, r.states ?? null);
+        cmWorld.chunks.set(c.key, c);
+      }
+    }
+    cmWorld.chunkVersion += 121;
+    // Game's LOADING branch drives tick() + drainRemesh() every tick; promote's
+    // budget is 8/tick while loading, so a few dozen iterations close the gate
+    for (let i = 0; i < 40 && cm.loadingProgress(0, 0).meshed < 49; i++) {
+      cm.tick(8, 8);
+      cm.drainRemesh(8, 8, 40, 12);
+    }
+    const lp = cm.loadingProgress(0, 0);
+    if (lp.meshed < lp.needed) fails.push(`fallback loading gate open: ${lp.meshed}/${lp.needed} meshed after 40 ticks`);
+    notes.push(`fallback: no-Worker degradation OK, loading gate ${lp.meshed}/${lp.needed}`);
+  } catch (e) {
+    fails.push('light parity harness threw: ' + (e.stack || e).split('\n').slice(0, 3).join(' | '));
+  }
+  report('U14', 'light parity — sync vs worker snapshot path (B1)', fails, notes);
+}
+
 // ==================================================================== driver
 const imp = p => import(pathToFileURL(join(SRC, p)).href);
 
@@ -1428,6 +1572,7 @@ async function main() {
   checkRegistryContract();
   await checkWorkerPurity();
   checkShaderGLSL3();
+  await checkLightParity();
   finish();
 }
 

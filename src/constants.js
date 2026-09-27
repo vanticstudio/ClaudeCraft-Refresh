@@ -46,6 +46,13 @@ export const MESH_WORKER_COUNT =
   (typeof navigator !== 'undefined' && navigator.hardwareConcurrency > 4)
     ? Math.min(4, Math.max(2, (navigator.hardwareConcurrency - 2) >> 1))
     : 2;
+// B1 — lighting pool: same sizing heuristic as the mesh pool. initialLight's
+// unbudgeted BFS was the last main-thread streaming hitch; it now dispatches
+// to workers with the same sync-fallback + ready-gate discipline.
+export const LIGHT_WORKER_COUNT =
+  (typeof navigator !== 'undefined' && navigator.hardwareConcurrency > 4)
+    ? Math.min(2, Math.max(1, (navigator.hardwareConcurrency - 2) >> 2))
+    : 1;
 // 01 §9 — a terrain worker that never reports `ready` (blocked Worker
 // constructor, a throw inside its init branch) used to park the player on
 // "Building terrain…" forever with nothing able to observe it. ChunkManager arms
